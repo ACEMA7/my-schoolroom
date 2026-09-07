@@ -231,6 +231,9 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
         .form-group{margin-bottom:14px}
         .form-group label{display:block;font-weight:600;font-size:13px;color:var(--gray-600);margin-bottom:5px}
         .form-group input,.form-group select,.form-group textarea{width:100%;padding:9px 12px;border:1.5px solid var(--gray-200);border-radius:6px;font-size:14px;outline:none;font-family:inherit}
+        /* datalist 输入框右侧下拉箭头指示：仅保留原生浏览器自带箭头，去除自定义背景箭头避免重复 */
+        .form-group input[list]{padding-right:30px;appearance:auto;cursor:pointer}
+        .form-group input[list]::-webkit-calendar-picker-indicator{opacity:1;cursor:pointer}
         .form-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:14px}
         .stat-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:14px;margin-bottom:20px}
         .stat-card{background:#fff;border-radius:8px;padding:16px;box-shadow:var(--shadow);text-align:center;border-top:3px solid var(--primary)}
@@ -603,6 +606,12 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
     <div class="modal-overlay" id="editModal" onclick="if(event.target===this) closeEditModal()">
         <div class="edit-modal" id="editModalBox" role="dialog" aria-label="修改扣分记录"></div>
     </div>
+    <div class="modal-overlay" id="dormitoryManageModal" onclick="if(event.target===this) closeDormitoryManageModal()">
+        <div class="edit-modal" id="dormitoryManageBox" role="dialog" aria-label="宿舍号管理"></div>
+    </div>
+    <div class="modal-overlay" id="transferModal" onclick="if(event.target===this) closeTransferModal()">
+        <div class="edit-modal" id="transferModalBox" role="dialog" aria-label="调宿"></div>
+    </div>
 
     <script>
     // ==================== 配置 ====================
@@ -625,6 +634,9 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
     // ==================== 移动端历史栈 ====================
     var viewHistory = [];
 
+    // ==================== 学生名单检索状态 ====================
+    var studentSearch = { className: '', name: '', residence: '' };
+
     // ==================== 数据访问辅助函数 ====================
     function getFloorById(id) {
         if (!DB || !DB.floors) return null;
@@ -638,7 +650,84 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
 
     function getDormitoriesByFloor(floorId) {
         if (!DB || !DB.dormitories) return [];
-        return DB.dormitories.filter(function(d) { return d.floorId === floorId; });
+        // 仅返回 dormitoryList 中的生效宿舍号；被删除的宿舍不再出现在选择列表中
+        var activeSet = {};
+        (DB.dormitoryList || []).forEach(function(r){ activeSet[String(r)] = true; });
+        return DB.dormitories.filter(function(d) {
+            return d.floorId === floorId && activeSet[String(d.roomNumber)];
+        });
+    }
+    // 判断宿舍号是否已被删除（用于历史记录显示）
+    // 修复：若该宿舍仍有学生入住，视为未删除（数据一致性兜底）
+    function isDormitoryDeleted(roomNumber){
+        if(!DB || !Array.isArray(DB.dormitoryList)) return false;
+        if(DB.dormitoryList.indexOf(String(roomNumber)) !== -1) return false;
+        // 宿舍号不在 dormitoryList，但有学生入住 → 视为有效宿舍（导入遗漏修复）
+        var dorm = getDormitoryByRoomNumber(roomNumber);
+        if(dorm && getStudentsByDormitory(dorm.id).length > 0) return false;
+        return true;
+    }
+    // 通过宿舍ID获取显示名称：已删除的宿舍号标注 [已删除]
+    function getDormDisplayNameById(dormitoryId){
+        var d = getDormitoryById(dormitoryId);
+        if(!d) return '-';
+        return isDormitoryDeleted(d.roomNumber) ? (d.roomNumber + '[已删除]') : d.roomNumber;
+    }
+    // 历史记录中宿舍号快照的显示（已删除标注）
+    function getDormSnapshotDisplay(roomNumber){
+        if(!roomNumber) return '-';
+        return isDormitoryDeleted(roomNumber) ? (roomNumber + '[已删除]') : roomNumber;
+    }
+    // 通过宿舍号查找 dormitory（含已删除的，用于历史数据回显）
+    function getDormitoryByRoomNumber(roomNumber){
+        if(!DB || !DB.dormitories) return null;
+        return DB.dormitories.find(function(d){ return String(d.roomNumber) === String(roomNumber); }) || null;
+    }
+    // 获取排序后的生效宿舍号列表（按楼层优先、宿舍号从小到大：101,102,...,201,202...）
+    // className 非空时仅返回该班级学生入住的宿舍号
+    function getSortedDormNumbers(className){
+        var set = {};
+        if(className){
+            DB.students.forEach(function(s){
+                if(s.className !== className || s.dormitoryId == null) return;
+                var d = getDormitoryById(s.dormitoryId);
+                if(d) set[String(d.roomNumber)] = true;
+            });
+        } else {
+            (DB.dormitoryList || []).forEach(function(r){ set[String(r)] = true; });
+        }
+        return Object.keys(set).sort(function(a, b){ return parseInt(a, 10) - parseInt(b, 10); });
+    }
+    // 生成宿舍号 select 选项 HTML
+    function dormSelectOptions(className, selectedVal){
+        var nums = getSortedDormNumbers(className);
+        var opts = '<option value="">请选择宿舍</option>';
+        nums.forEach(function(n){ opts += '<option value="'+n+'"'+(n===selectedVal?' selected':'')+'>'+n+'</option>'; });
+        return opts;
+    }
+    // 获取某宿舍已占用的床号
+    function getOccupiedBeds(dormitoryId){
+        var beds = {};
+        getStudentsByDormitory(dormitoryId).forEach(function(s){ if(s.bedNumber) beds[String(s.bedNumber)] = true; });
+        return beds;
+    }
+    // 生成床号 select 选项 HTML（1-8，已占用的标注"已满"并禁用）
+    function bedSelectOptions(dormitoryId, selectedVal, excludeStudentId){
+        var opts = '<option value="">请选择床号</option>';
+        var occupied = {};
+        if(dormitoryId){
+            getStudentsByDormitory(dormitoryId).forEach(function(s){
+                if(excludeStudentId && s.id === excludeStudentId) return;
+                if(s.bedNumber) occupied[String(s.bedNumber)] = true;
+            });
+        }
+        for(var b = 1; b <= 8; b++){
+            var bstr = String(b);
+            var disabled = occupied[bstr] ? ' disabled' : '';
+            var label = occupied[bstr] ? (b+'（已满）') : String(b);
+            opts += '<option value="'+bstr+'"'+(bstr===selectedVal?' selected':'')+disabled+'>'+label+'</option>';
+        }
+        return opts;
     }
 
     function getStudentById(id) {
@@ -649,6 +738,19 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
     function getStudentsByDormitory(dormitoryId) {
         if (!DB || !DB.students) return [];
         return DB.students.filter(function(s) { return s.dormitoryId === dormitoryId; });
+    }
+    // 判断是否为非住宿生（走读生）：dormitoryId 为 null 或未定义
+    function isNonResidentStudent(student){
+        return !student || student.dormitoryId == null;
+    }
+    // 获取住宿学生列表（排除走读生），用于住宿信息/扣分登记等场景
+    function getResidentStudents(className){
+        if(!DB||!Array.isArray(DB.students)) return [];
+        return DB.students.filter(function(s){
+            if(s.dormitoryId == null) return false;
+            if(className && s.className !== className) return false;
+            return true;
+        });
     }
 
     function getRecordsByDormitory(dormitoryId) {
@@ -828,13 +930,13 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
         var dormitories = [];
         var dormId = 1;
         floors.forEach(function(f) {
-            for (var r = 1; r <= 20; r++) dormitories.push({ id: dormId++, floorId: f.id, roomNumber: String(f.sortOrder*100+r), capacity: 4 });
+            for (var r = 1; r <= 20; r++) dormitories.push({ id: dormId++, floorId: f.id, roomNumber: String(f.sortOrder*100+r), capacity: 8 });
         });
         var floor7 = floors.find(function(f){return f.name==='七楼';});
-        dormitories.push({ id: dormId++, floorId: floor7.id, roomNumber: '723', capacity: 4 });
+        dormitories.push({ id: dormId++, floorId: floor7.id, roomNumber: '723', capacity: 8 });
         var floor3 = floors.find(function(f){return f.name==='三楼';});
-        dormitories.push({ id: dormId++, floorId: floor3.id, roomNumber: '322', capacity: 4 });
-        dormitories.push({ id: dormId++, floorId: floor3.id, roomNumber: '323', capacity: 4 });
+        dormitories.push({ id: dormId++, floorId: floor3.id, roomNumber: '322', capacity: 8 });
+        dormitories.push({ id: dormId++, floorId: floor3.id, roomNumber: '323', capacity: 8 });
 
         var surnames = ['张','李','王','赵','钱','孙','周','吴','郑','冯','陈','褚','卫','蒋','沈','韩','杨','朱','秦','尤'];
         var given = ['伟','芳','娜','敏','静','丽','强','磊','军','洋','勇','艳','杰','娟','涛','明','超','霞','平','刚'];
@@ -898,7 +1000,9 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
         }
         var leaveRecords = [];
         var absenceRecords = [];
-        DB = { floors, dormitories, students, deductionItems, deductionRecords: records, leaveRecords: leaveRecords, absenceRecords: absenceRecords, users, nextIds: { floor:9, dormitory: dormId, student: stuId, item:300, record: recId, leave:1, absence:1, user: nextUserId } };
+        // dormitoryList：系统生效的所有宿舍号（字符串数组），作为宿舍号选择/显示的唯一数据源
+        var dormitoryList = dormitories.map(function(d){ return String(d.roomNumber); });
+        DB = { floors, dormitories, dormitoryList, students, deductionItems, deductionRecords: records, leaveRecords: leaveRecords, absenceRecords: absenceRecords, users, nextIds: { floor:9, dormitory: dormId, student: stuId, item:300, record: recId, leave:1, absence:1, user: nextUserId } };
         saveDBToLocal();
     }
 
@@ -988,6 +1092,24 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
         if(!Array.isArray(DB.absenceRecords)) DB.absenceRecords=[];
         if(!DB.nextIds) DB.nextIds={};
         if(typeof DB.nextIds.absence!=='number') DB.nextIds.absence=1;
+        // dormitoryList：生效宿舍号列表；旧数据缺失时从 dormitories 重建
+        if(!Array.isArray(DB.dormitoryList) || DB.dormitoryList.length===0){
+            DB.dormitoryList = (DB.dormitories||[]).map(function(d){ return String(d.roomNumber); });
+        }
+        // 兜底：确保 dormitories 中存在但不在 dormitoryList 的历史宿舍不会被误删，
+        // 同时移除 dormitoryList 中已不存在于 dormitories 的脏条目
+        var existingRooms = {};
+        (DB.dormitories||[]).forEach(function(d){ existingRooms[String(d.roomNumber)] = true; });
+        DB.dormitoryList = DB.dormitoryList.filter(function(r){ return existingRooms[String(r)]; });
+        // 数据一致性修复：所有有学生入住的宿舍号必须在 dormitoryList 中（防止"已删除"误标）
+        (DB.students||[]).forEach(function(s){
+            if(s.dormitoryId == null) return;
+            var d = (DB.dormitories||[]).find(function(x){ return x.id === s.dormitoryId; });
+            if(d){
+                var rn = String(d.roomNumber);
+                if(DB.dormitoryList.indexOf(rn) === -1) DB.dormitoryList.push(rn);
+            }
+        });
         // 退宿停宿记录字段迁移：补齐 status / studentId / startDate / endDate（兼容历史数据）
         if(Array.isArray(DB.leaveRecords)){
             var todayStr=new Date().toISOString().split('T')[0];
@@ -1107,6 +1229,7 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
             var payload = {
                 floors: DB.floors,
                 dormitories: DB.dormitories,
+                dormitoryList: DB.dormitoryList || [],
                 students: DB.students,
                 deductionItems: DB.deductionItems,
                 users: DB.users,
@@ -1215,15 +1338,17 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
             // 基础数据表：v2.0 时以云端为准覆盖本地（管理员统一维护，云端为权威来源）
             // 退宿/停宿/请假记录例外：按 id 合并（整体覆盖会把其他设备刚完成的审核状态回滚为待审核）
             if (isV2) {
-                var before = JSON.stringify([DB.floors, DB.dormitories, DB.students, DB.deductionItems, DB.users, DB.leaveRecords || [], DB.absenceRecords || []]);
+                var before = JSON.stringify([DB.floors, DB.dormitories, DB.dormitoryList || [], DB.students, DB.deductionItems, DB.users, DB.leaveRecords || [], DB.absenceRecords || []]);
                 DB.floors = decoded.floors || DB.floors;
                 DB.dormitories = decoded.dormitories || DB.dormitories;
+                // dormitoryList：系统生效宿舍号列表，以云端为准覆盖（管理员增删宿舍号需同步到所有设备）
+                DB.dormitoryList = Array.isArray(decoded.dormitoryList) ? decoded.dormitoryList : (DB.dormitoryList || []);
                 DB.students = decoded.students || DB.students;
                 DB.deductionItems = decoded.deductionItems || DB.deductionItems;
                 DB.users = decoded.users || DB.users;
                 DB.leaveRecords = mergeLeaveRecordArrays(DB.leaveRecords || [], decoded.leaveRecords || []);
                 DB.absenceRecords = mergeAbsenceRecordArrays(DB.absenceRecords || [], decoded.absenceRecords || []);
-                var after = JSON.stringify([DB.floors, DB.dormitories, DB.students, DB.deductionItems, DB.users, DB.leaveRecords, DB.absenceRecords]);
+                var after = JSON.stringify([DB.floors, DB.dormitories, DB.dormitoryList, DB.students, DB.deductionItems, DB.users, DB.leaveRecords, DB.absenceRecords]);
                 result.basicChanged = before !== after;
                 // 云端基础数据覆盖后重新校准账号（角色修正/补齐班级账号/称呼迁移），
                 // 避免云端旧数据把 realName 回滚为旧称呼
@@ -1499,12 +1624,18 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
     }
     function handleLogout(){
         currentUser=null;
+        // 仅清除 sessionStorage 中的登录状态，保留 localStorage 中的"记住密码"凭证
         sessionStorage.removeItem('currentUser');
         document.getElementById('mainApp').style.display='none';
         document.getElementById('loginPage').style.display='flex';
-        document.getElementById('loginUsername').value='';
-        document.getElementById('loginPassword').value='';
-        document.getElementById('rememberMe').checked=false;
+        // 若已勾选"记住账号密码"，保留账号密码输入框内容（localStorage 中的凭证不清除）；
+        // 未勾选时清空输入框，避免敏感信息残留。
+        var rememberEl = document.getElementById('rememberMe');
+        if (!rememberEl || !rememberEl.checked) {
+            document.getElementById('loginUsername').value='';
+            document.getElementById('loginPassword').value='';
+        }
+        // rememberMe 复选框状态保持不变（用户主动取消勾选时，handleLogin 会清除 localStorage 凭证）
     }
 
     // ==================== 视图切换 ====================
@@ -1683,6 +1814,9 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
         var isMobileH=window.innerWidth<=768;
         var classMode=isClassAdmin();
         var classDormSet=classMode?getClassDormIds():null;
+        // 若当前选中的宿舍已被删除（不在 dormitoryList），清空选择重新定位
+        var selDorm = selectedDormitoryId ? getDormitoryById(selectedDormitoryId) : null;
+        if(selDorm && isDormitoryDeleted(selDorm.roomNumber)){ selectedDormitoryId=null; selectedFloorId=null; selDorm=null; }
         if(!selectedDormitoryId||!getDormitoryById(selectedDormitoryId)||(classMode&&!classDormSet[selectedDormitoryId])){
             // 手机端/班级账号：默认选中第一个可用楼层的第一个宿舍；桌面端保持原有默认逻辑
             var firstDorm=null;
@@ -1730,7 +1864,11 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
             var sr=records.filter(function(r){return r.studentId===s.id;});
             var ss=getTotalScore(sr);
             var st=getStudentStatus(s.id);
-            return '<tr><td data-label="姓名"><b>'+s.name+'</b></td><td data-label="班级">'+(s.className||'-')+'</td><td data-label="床号">'+(s.bedNumber||'-')+'</td><td data-label="状态"><span class="status-tag '+st.cls+'">'+st.label+'</span></td><td data-label="个人扣分" class="'+(ss>0?'highlight-red':'')+'">'+ss+'</td></tr>';
+            var ops = '';
+            if(isAdmin()){
+                ops = '<td data-label="操作"><button class="btn btn-outline btn-xs" onclick="openTransferModal('+s.id+')">调宿</button> <button class="btn btn-danger btn-xs" onclick="moveOutStudent('+s.id+')">迁出</button></td>';
+            }
+            return '<tr><td data-label="姓名"><b>'+s.name+'</b></td><td data-label="班级">'+(s.className||'-')+'</td><td data-label="床号">'+(s.bedNumber||'-')+'</td><td data-label="状态"><span class="status-tag '+st.cls+'">'+st.label+'</span></td><td data-label="个人扣分" class="'+(ss>0?'highlight-red':'')+'">'+ss+'</td>'+ops+'</tr>';
         }).join('')||'<tr><td colspan="5" style="text-align:center;color:#aaa">该宿舍暂无成员</td></tr>';
         // 移动端成员单行紧凑列表：姓名 + 彩色圆点状态（圆点与文字同色）+ 班级·床号，右侧个人扣分（0分绿色/有分红色）
         var memberCardHtml=students.map(function(s){
@@ -1738,7 +1876,11 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
             var ss=getTotalScore(sr);
             var st=getStudentStatus(s.id);
             var dotColor=statusColorMap[st.label]||'#9ca3af';
-            return '<div class="mem-row"><span class="mem-name">'+s.name+'</span><span class="mem-status" style="color:'+dotColor+'"><span class="mem-dot" style="background:'+dotColor+'"></span>'+st.label+'</span><span class="mem-sub">'+(s.className||'-')+'·床号'+(s.bedNumber||'-')+'</span><span class="mem-score'+(ss>0?' has':'')+'">'+ss+'分</span></div>';
+            var memOps = '';
+            if(isAdmin()){
+                memOps = '<span class="mem-ops"><button class="btn btn-outline btn-xs" style="padding:2px 6px;font-size:11px" onclick="openTransferModal('+s.id+')">调宿</button><button class="btn btn-danger btn-xs" style="padding:2px 6px;font-size:11px" onclick="moveOutStudent('+s.id+')">迁出</button></span>';
+            }
+            return '<div class="mem-row"><span class="mem-name">'+s.name+'</span><span class="mem-status" style="color:'+dotColor+'"><span class="mem-dot" style="background:'+dotColor+'"></span>'+st.label+'</span><span class="mem-sub">'+(s.className||'-')+'·床号'+(s.bedNumber||'-')+'</span><span class="mem-score'+(ss>0?' has':'')+'">'+ss+'分</span>'+memOps+'</div>';
         }).join('')||'<div class="empty-state" style="padding:18px">该宿舍暂无成员</div>';
         // 按日期倒序排列：当天记录显示在最顶部（同日内较新记录优先；兼容字符串ID与旧数字ID）
         var sortedRecords=records.slice().sort(function(a,b){
@@ -1756,8 +1898,8 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
             var actionHtml='<td data-label="操作">-</td>';
             if(isAdmin()) actionHtml='<td data-label="操作"><button class="btn btn-danger btn-xs" onclick="deleteRecord(\''+r.id+'\')">删除</button></td>';
             else if(isStaff) actionHtml='<td data-label="操作"><button class="btn btn-primary btn-xs" onclick="editRecord(\''+r.id+'\')">修改</button></td>';
-            return '<tr><td data-label="日期">'+r.recordDate+'</td><td data-label="对象">'+(student?student.name:'宿舍集体')+'</td><td data-label="卫生项目">'+(hyNames||'-')+'</td><td data-label="卫生扣分">'+(r.hygieneScore||0)+'</td><td data-label="纪律项目">'+(disNames||'-')+'</td><td data-label="纪律扣分">'+(r.disciplineScore||0)+'</td>'+actionHtml+'</tr>';
-        }).join(''):'<tr><td colspan="7" style="text-align:center;color:#aaa">暂无记录</td></tr>';
+            return '<tr><td data-label="日期">'+r.recordDate+'</td><td data-label="对象">'+(student?student.name:'宿舍集体')+'</td><td data-label="卫生项目">'+(hyNames||'-')+'</td><td data-label="卫生扣分">'+(r.hygieneScore||0)+'</td><td data-label="纪律项目">'+(disNames||'-')+'</td><td data-label="纪律扣分">'+(r.disciplineScore||0)+'</td><td data-label="备注">'+escapeHtmlAttr(r.remark||'-')+'</td>'+actionHtml+'</tr>';
+        }).join(''):'<tr><td colspan="8" style="text-align:center;color:#aaa">暂无记录</td></tr>';
         // 手机端顶部导航卡：楼层芯片(每行4个均匀分布) + 宿舍横滑条，与扣分登记页交互一致；桌面端不渲染（侧边栏树保留）
         var topCard='';
         if (window.innerWidth<=768) {
@@ -1794,9 +1936,10 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
             +'</div></div>';
         var statThreeMobile='<div class="stat-cards-mobile"><div class="stat-item"><div class="number">'+students.length+'</div><div class="label">👥 宿舍人数</div></div><div class="stat-item"><div class="number" style="color:#f59e0b">'+records.length+'</div><div class="label">📋 扣分记录数</div></div><div class="stat-item"><div class="number" style="color:#ff3b30">'+total+'</div><div class="label">📊 累计扣分</div></div></div>';
         // 页头仅保留标题（登记扣分入口统一收敛到功能首页/侧边栏/底部导航，住宿信息页只读）
-        var membersCardPc='<div class="card"><div class="card-header">👥 宿舍成员</div><div style="overflow-x:auto"><table><thead><tr><th>姓名</th><th>班级</th><th>床号</th><th>状态</th><th>个人扣分</th></tr></thead><tbody>'+studentHtml+'</tbody></table></div></div>';
+        var memberOpsTh = isAdmin() ? '<th>操作</th>' : '';
+        var membersCardPc='<div class="card"><div class="card-header">👥 宿舍成员</div><div style="overflow-x:auto"><table><thead><tr><th>姓名</th><th>班级</th><th>床号</th><th>状态</th><th>个人扣分</th>'+memberOpsTh+'</tr></thead><tbody>'+studentHtml+'</tbody></table></div></div>';
         var membersCardMobile='<div class="card"><div class="card-header">👥 宿舍成员</div><div class="card-body" style="padding:2px 14px">'+memberCardHtml+'</div></div>';
-        var recordsCard='<div class="card"><div class="card-header">📜 历史扣分记录 <span class="badge-tag badge-danger">'+total+'分</span><span style="font-weight:400;font-size:12px;color:var(--gray-500);margin-left:6px">按日期倒序</span></div><div style="overflow-x:auto"><table><thead><tr><th>日期</th><th>对象</th><th>卫生扣分</th><th>分值</th><th>纪律扣分</th><th>分值</th><th>操作</th></tr></thead><tbody>'+recordHtml+'</tbody></table></div></div>';
+        var recordsCard='<div class="card"><div class="card-header">📜 历史扣分记录 <span class="badge-tag badge-danger">'+total+'分</span><span style="font-weight:400;font-size:12px;color:var(--gray-500);margin-left:6px">按日期倒序</span></div><div style="overflow-x:auto"><table><thead><tr><th>日期</th><th>对象</th><th>卫生扣分</th><th>分值</th><th>纪律扣分</th><th>分值</th><th>备注</th><th>操作</th></tr></thead><tbody>'+recordHtml+'</tbody></table></div></div>';
         // 移动端顺序：楼层/宿舍芯片 → 状态汇总 → 宿舍成员（单行紧凑）→ 三个统计卡片 → 历史扣分记录
         // PC 端顺序保持不变：统计大卡（状态+三卡片）→ 历史扣分记录 → 宿舍成员表
         container.innerHTML='<div class="content-header"><h2>📋 宿舍 '+dorm.roomNumber+'（'+floor.name+'）</h2></div>'+topCard+(isMobileH?(statusCard+membersCardMobile+statThreeMobile+recordsCard):(statsCard+recordsCard+membersCardPc));
@@ -1837,6 +1980,107 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
         if(DB.deletedRecordIds.indexOf(String(id))===-1) DB.deletedRecordIds.push(String(id));
         saveDB();
         toast('已删除');
+        renderView();
+        renderTree();
+    }
+
+    // ==================== 学生迁出 / 调宿（仅管理员） ====================
+    var transferStudentId = null;
+    function moveOutStudent(studentId){
+        if(!isAdmin()){toast('无权限操作','error');return;}
+        var s = getStudentById(studentId);
+        if(!s){toast('学生不存在','error');return;}
+        var dorm = getDormitoryById(s.dormitoryId);
+        var dormLabel = dorm ? dorm.roomNumber : '未分配';
+        if(!confirm('确定将 '+s.name+' 迁出 '+dormLabel+' 吗？\n（迁出后该学生将保留在系统中，可在学生名单管理中重新分配宿舍）')) return;
+        s.dormitoryId = null;
+        s.bedNumber = '';
+        saveDB();
+        toast(s.name+' 已迁出');
+        renderView();
+        renderTree();
+    }
+    function openTransferModal(studentId){
+        if(!isAdmin()){toast('无权限操作','error');return;}
+        var s = getStudentById(studentId);
+        if(!s){toast('学生不存在','error');return;}
+        transferStudentId = studentId;
+        var curDorm = getDormitoryById(s.dormitoryId);
+        var curRoom = curDorm ? curDorm.roomNumber : '未分配';
+        // 目标宿舍：所有生效宿舍号（排除当前宿舍）
+        var allActiveDorms = (DB.dormitories||[]).filter(function(d){ return isDormitoryDeleted(d.roomNumber)===false; });
+        allActiveDorms.sort(function(a,b){ return String(a.roomNumber).localeCompare(String(b.roomNumber),'zh-Hans-CN',{numeric:true}); });
+        var dormOpts = allActiveDorms.map(function(d){
+            var selected = (curDorm && d.id===curDorm.id) ? ' selected' : '';
+            return '<option value="'+d.id+'"'+selected+'>'+d.roomNumber+'（'+getFloorById(d.floorId).name+'）</option>';
+        }).join('');
+        var bedOpts = '';
+        // 初始床位选项：当前宿舍的床位（含当前学生自身床位）
+        if(curDorm){
+            bedOpts = buildBedOptions(curDorm.id, s.id);
+        }
+        var html = '<div class="em-header"><span>🔄 调换床位/宿舍</span><button class="em-close" aria-label="关闭" onclick="closeTransferModal()">✕</button></div>'
+            + '<div class="em-body">'
+            + '<div class="form-group"><label>当前信息</label><div style="padding:8px 12px;background:var(--gray-50);border-radius:6px;font-size:13px">姓名：<b>'+escapeHtmlAttr(s.name)+'</b>　班级：'+(s.className||'-')+'　当前宿舍：'+curRoom+'　当前床号：'+(s.bedNumber||'-')+'</div></div>'
+            + '<div class="form-group"><label>目标宿舍号 *</label><select id="transferDormId" onchange="onTransferDormChange()">'+dormOpts+'</select></div>'
+            + '<div class="form-group"><label>目标床号 *</label><select id="transferBed">'+bedOpts+'</div>'
+            + '<div style="font-size:12px;color:#888">提示：已被占用的床位将显示占用者姓名且不可选择</div>'
+            + '</div>'
+            + '<div class="em-footer"><button class="btn btn-primary" onclick="saveTransfer()">💾 确认调宿</button><button class="btn btn-outline" onclick="closeTransferModal()">取消</button></div>';
+        document.getElementById('transferModalBox').innerHTML = html;
+        document.getElementById('transferModal').classList.add('show');
+    }
+    function closeTransferModal(){
+        var m=document.getElementById('transferModal');
+        if(m) m.classList.remove('show');
+        transferStudentId = null;
+    }
+    // 生成目标宿舍的床位选项：已被占用的床位标注占用者并禁用
+    function buildBedOptions(dormId, currentStudentId){
+        var beds = ['1','2','3','4','5','6','7','8'];
+        var occupants = {};
+        getStudentsByDormitory(dormId).forEach(function(st){
+            if(st.id !== currentStudentId && st.bedNumber) occupants[String(st.bedNumber)] = st.name;
+        });
+        return beds.map(function(b){
+            if(occupants[b]){
+                return '<option value="'+b+'" disabled>床位 '+b+'（已被 '+occupants[b]+' 占用）</option>';
+            }
+            return '<option value="'+b+'">床位 '+b+'</option>';
+        }).join('');
+    }
+    function onTransferDormChange(){
+        var dormId = parseInt(document.getElementById('transferDormId').value);
+        var bedSelect = document.getElementById('transferBed');
+        if(!bedSelect || !dormId) return;
+        bedSelect.innerHTML = buildBedOptions(dormId, transferStudentId);
+    }
+    function saveTransfer(){
+        if(!isAdmin()){toast('无权限操作','error');return;}
+        if(transferStudentId === null){toast('参数错误','error');return;}
+        var s = getStudentById(transferStudentId);
+        if(!s){toast('学生不存在','error');closeTransferModal();return;}
+        var targetDormId = parseInt(document.getElementById('transferDormId').value);
+        var targetBed = document.getElementById('transferBed').value;
+        var targetDorm = getDormitoryById(targetDormId);
+        if(!targetDorm){toast('目标宿舍不存在','error');return;}
+        // 校验：目标宿舍不能与当前相同
+        if(s.dormitoryId === targetDormId){
+            // 同宿舍仅换床位，允许；但若床位未变则提示
+            if(String(s.bedNumber) === String(targetBed)){
+                toast('目标宿舍与床位与当前相同','error');return;
+            }
+        }
+        // 校验：目标床位未被占用
+        var occupied = getStudentsByDormitory(targetDormId).find(function(st){
+            return st.id !== s.id && String(st.bedNumber) === String(targetBed);
+        });
+        if(occupied){toast('该床位已被 '+occupied.name+' 占用，请选择其他床位','error');return;}
+        s.dormitoryId = targetDormId;
+        s.bedNumber = targetBed;
+        saveDB();
+        toast(s.name+' 已调至 '+targetDorm.roomNumber+' 床位 '+targetBed);
+        closeTransferModal();
         renderView();
         renderTree();
     }
@@ -2215,9 +2459,10 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
         var total = getTotalScore(allRecords);
         // 楼层排名：扣分从高到低，同分按楼层原顺序（稳定排序）
         var floorStats = DB.floors.map(function(f){ var r=getRecordsByFloor(f.id); return {id:f.id,name:f.name,score:getTotalScore(r),count:r.length}; }).sort(function(a,b){return b.score-a.score;});
-        // 全校宿舍排行：扣分从高到低，同分按宿舍号升序（含 0 分宿舍，排名连续）
+        // 全校宿舍排行：扣分从高到低，同分按宿舍号升序（含 0 分宿舍，排名连续）；已删除的宿舍号不参与排行
         var dormStatsAll = [];
         DB.dormitories.forEach(function(d){
+            if(isDormitoryDeleted(d.roomNumber)) return;
             var r = getRecordsByDormitory(d.id);
             var score = getTotalScore(r);
             dormStatsAll.push({ roomNumber: d.roomNumber, name: d.roomNumber + ' (' + getFloorById(d.floorId).name + ')', className: getDormitoryClassName(d.id), score: score, count: r.length });
@@ -2339,19 +2584,41 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
     // ==================== 学生名单管理视图 ====================
     function renderStudentsView(container){
         if(!isAdmin()){container.innerHTML='<div class="empty-state">无权限</div>';return;}
-        var dormOpts=DB.dormitories.map(function(d){return '<option value="'+d.id+'">'+d.roomNumber+'（'+getFloorById(d.floorId).name+'）</option>';}).join('');
-        var studentRows=DB.students.map(function(s){
+        // 宿舍下拉仅显示生效宿舍号（已删除的不再出现）
+        var activeDorms = (DB.dormitories||[]).filter(function(d){ return isDormitoryDeleted(d.roomNumber)===false; });
+        activeDorms.sort(function(a,b){ return String(a.roomNumber).localeCompare(String(b.roomNumber),'zh-Hans-CN',{numeric:true}); });
+        var dormOpts=activeDorms.map(function(d){return '<option value="'+d.id+'">'+d.roomNumber+'（'+getFloorById(d.floorId).name+'）</option>';}).join('');
+        // 检索：班级下拉 + 姓名输入（datalist 按班级联动）
+        var classSet={}; DB.students.forEach(function(s){ if(s.className) classSet[s.className]=true; });
+        var classList=sortClassNames(Object.keys(classSet));
+        var searchClassOpts='<option value="">全部班级</option>'+classList.map(function(c){ return '<option value="'+c+'"'+(studentSearch.className===c?' selected':'')+'>'+c+'</option>'; }).join('');
+        var namePool = studentSearch.className ? DB.students.filter(function(s){ return s.className===studentSearch.className; }) : DB.students;
+        var nameSet={}; namePool.forEach(function(s){ if(s.name) nameSet[s.name]=true; });
+        var nameDatalistOpts=Object.keys(nameSet).map(function(n){ return '<option value="'+n+'"></option>'; }).join('');
+        // 按检索条件过滤学生
+        var filteredStudents = DB.students.filter(function(s){
+            if(studentSearch.className && s.className !== studentSearch.className) return false;
+            if(studentSearch.name && s.name && s.name.indexOf(studentSearch.name) === -1) return false;
+            if(studentSearch.residence==='resident' && isNonResidentStudent(s)) return false;
+            if(studentSearch.residence==='nonresident' && !isNonResidentStudent(s)) return false;
+            return true;
+        });
+        var studentRows=filteredStudents.map(function(s){
             var dorm=getDormitoryById(s.dormitoryId);
             var floor=dorm?getFloorById(dorm.floorId):null;
-            return '<tr><td data-label="选择"><input type="checkbox" class="student-checkbox" data-student-id="'+s.id+'"></td><td data-label="姓名"><b>'+s.name+'</b></td><td data-label="班级">'+(s.className||'-')+'</td><td data-label="床号">'+(s.bedNumber||'-')+'</td><td data-label="宿舍">'+(dorm?dorm.roomNumber:'-')+'</td><td data-label="楼层">'+(floor?floor.name:'-')+'</td><td data-label="操作"><button class="btn btn-danger btn-xs" onclick="deleteStudent('+s.id+')">删除</button></td></tr>';
+            var dormDisplay = dorm ? (isDormitoryDeleted(dorm.roomNumber) ? dorm.roomNumber+' [已删除]' : dorm.roomNumber) : '-';
+            var resideTag = isNonResidentStudent(s) ? '<span style="color:var(--info)">走读</span>' : '住宿';
+            return '<tr><td data-label="选择"><input type="checkbox" class="student-checkbox" data-student-id="'+s.id+'"></td><td data-label="姓名"><b>'+s.name+'</b></td><td data-label="班级">'+(s.className||'-')+'</td><td data-label="住宿状态">'+resideTag+'</td><td data-label="床号">'+(s.bedNumber||'-')+'</td><td data-label="宿舍">'+dormDisplay+'</td><td data-label="楼层">'+(floor?floor.name:'-')+'</td><td data-label="操作"><button class="btn btn-danger btn-xs" onclick="deleteStudent('+s.id+')">删除</button></td></tr>';
         }).join('');
-        container.innerHTML='<div class="content-header"><h2>👥 学生名单管理</h2></div>'
+        var isFiltered = (studentSearch.className || studentSearch.name || studentSearch.residence);
+        var listTitle = isFiltered ? ('学生列表（筛选结果 '+filteredStudents.length+' / 共 '+DB.students.length+' 人）') : ('学生列表（'+DB.students.length+'人）');
+        container.innerHTML='<div class="content-header"><h2>👥 学生名单管理</h2><button class="btn btn-outline btn-sm" onclick="openDormitoryManageModal()" style="margin-left:auto">🏠 宿舍号管理</button></div>'
             +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">'
             +'<div class="card"><div class="card-header">单个添加学生</div><div class="card-body">'
             +'<div class="form-row"><div class="form-group"><label>姓名 *</label><input type="text" id="newStuName" placeholder="学生姓名"></div>'
             +'<div class="form-group"><label>班级 *</label><input type="text" id="newStuClass" placeholder="如：高一1班" value="高一1班"></div></div>'
             +'<div class="form-row"><div class="form-group"><label>宿舍 *</label><select id="newStuDorm">'+dormOpts+'</select></div>'
-            +'<div class="form-group"><label>床号</label><input type="text" id="newStuBed" placeholder="如：1、2、3、4"></div></div>'
+            +'<div class="form-group"><label>床号</label><input type="text" id="newStuBed" placeholder="如：1-8"></div></div>'
             +'<button class="btn btn-primary" onclick="addStudent()">➕ 添加学生</button>'
             +'</div></div>'
             +'<div class="card"><div class="card-header">批量导入学生</div><div class="card-body">'
@@ -2361,15 +2628,53 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
             +'<button class="btn btn-primary" onclick="batchImportStudents()">📥 从文本导入</button></div>'
             +'</div></div>'
             +'</div>'
-            +'<div class="card"><div class="card-header">学生列表（'+DB.students.length+'人）'
+            +'<div class="card"><div class="card-header">🔍 检索学生</div><div class="card-body">'
+            +'<div class="filter-section">'
+            +'<div class="form-group"><label>班级</label><select id="searchStuClass" onchange="onSearchStuClassChange(this.value)">'+searchClassOpts+'</select></div>'
+            +'<div class="form-group"><label>姓名</label><input type="text" id="searchStuName" list="dlSearchStuName" placeholder="输入姓名（支持模糊匹配）" value="'+escapeHtmlAttr(studentSearch.name)+'"></div>'
+            +'<div class="form-group"><label>住宿状态</label><select id="searchStuResidence"><option value=""'+(studentSearch.residence===''?' selected':'')+'>全部</option><option value="resident"'+(studentSearch.residence==='resident'?' selected':'')+'>住宿</option><option value="nonresident"'+(studentSearch.residence==='nonresident'?' selected':'')+'>走读</option></select></div>'
+            +'<button class="btn btn-primary" onclick="searchStudents()">🔍 检索</button>'
+            +'<button class="btn btn-outline" onclick="resetStudentSearch()">重置</button>'
+            +'</div>'
+            +'</div></div>'
+            +'<datalist id="dlSearchStuName">'+nameDatalistOpts+'</datalist>'
+            +'<div class="card"><div class="card-header">'+listTitle
             +'<div style="display:flex;gap:8px;align-items:center">'
             +'<input type="checkbox" id="selectAllStudents" onchange="toggleAllStudents(this.checked)"> <label for="selectAllStudents" style="font-weight:400;cursor:pointer">全选</label>'
             +'<button class="btn btn-danger btn-sm" onclick="deleteSelectedStudents()">🗑️ 删除选中</button>'
             +'</div>'
-            +'</div><div style="overflow-x:auto;max-height:500px;overflow-y:auto"><table><thead><tr><th style="width:30px"></th><th>姓名</th><th>班级</th><th>床号</th><th>宿舍</th><th>楼层</th><th>操作</th></tr></thead><tbody>'+studentRows+'</tbody></table></div></div>';
+            +'</div><div style="overflow-x:auto;max-height:500px;overflow-y:auto"><table><thead><tr><th style="width:30px"></th><th>姓名</th><th>班级</th><th>住宿状态</th><th>床号</th><th>宿舍</th><th>楼层</th><th>操作</th></tr></thead><tbody>'+studentRows+'</tbody></table></div></div>';
         var checkboxes=document.querySelectorAll('.student-checkbox');
         for(var i=0;i<checkboxes.length;i++) checkboxes[i].addEventListener('change',updateSelectedCount);
         updateSelectedCount();
+    }
+    // 学生名单检索：班级变化时更新姓名 datalist（不清空已输入的姓名）
+    function onSearchStuClassChange(className){
+        studentSearch.className = className;
+        var namePool = className ? DB.students.filter(function(s){ return s.className===className; }) : DB.students;
+        var nameSet={}; namePool.forEach(function(s){ if(s.name) nameSet[s.name]=true; });
+        var dl=document.getElementById('dlSearchStuName');
+        if(dl) dl.innerHTML = Object.keys(nameSet).map(function(n){ return '<option value="'+n+'"></option>'; }).join('');
+    }
+    // 检索按钮：按班级+姓名+住宿状态过滤学生列表
+    function searchStudents(){
+        var clsEl=document.getElementById('searchStuClass');
+        var nameEl=document.getElementById('searchStuName');
+        var resEl=document.getElementById('searchStuResidence');
+        studentSearch.className = clsEl ? clsEl.value : '';
+        studentSearch.name = nameEl ? nameEl.value.trim() : '';
+        studentSearch.residence = resEl ? resEl.value : '';
+        renderStudentsView(document.getElementById('contentArea'));
+        if(studentSearch.className || studentSearch.name || studentSearch.residence){
+            toast('检索完成');
+        }
+    }
+    // 重置检索：清空条件并显示全部学生
+    function resetStudentSearch(){
+        studentSearch.className='';
+        studentSearch.name='';
+        studentSearch.residence='';
+        renderStudentsView(document.getElementById('contentArea'));
     }
     function toggleAllStudents(checked){ var checkboxes=document.querySelectorAll('.student-checkbox'); for(var i=0;i<checkboxes.length;i++) checkboxes[i].checked=checked; updateSelectedCount(); }
     function updateSelectedCount(){ var checked=document.querySelectorAll('.student-checkbox:checked'); var selectAll=document.getElementById('selectAllStudents'); if(selectAll){var total=document.querySelectorAll('.student-checkbox').length; selectAll.checked=total>0&&checked.length===total;} }
@@ -2397,12 +2702,36 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
         toast('学生已添加');
         renderStudentsView(document.getElementById('contentArea'));
     }
+    // 确保宿舍号存在（导入学生名单时自动补建）：返回 {dorm, autoAdded}，无效返回 null
+    function ensureDormitoryRoom(roomNumber){
+        roomNumber = String(roomNumber).trim();
+        if(!/^[1-8][0-9]{2}$/.test(roomNumber)) return null;
+        var existing = getDormitoryByRoomNumber(roomNumber);
+        if(existing){
+            // 已在 dormitories 中：若不在 dormitoryList（曾被删除），重新激活
+            if(DB.dormitoryList.indexOf(roomNumber) === -1){
+                DB.dormitoryList.push(roomNumber);
+                return { dorm:existing, autoAdded:true };
+            }
+            return { dorm:existing, autoAdded:false };
+        }
+        // 全新宿舍号：创建 dormitories 条目并加入 dormitoryList
+        var floorNum = parseInt(roomNumber.charAt(0));
+        var floor = DB.floors.find(function(f){ return f.sortOrder === floorNum; });
+        if(!floor) return null;
+        var newDorm = { id:DB.nextIds.dormitory++, floorId:floor.id, roomNumber:roomNumber, capacity:8 };
+        DB.dormitories.push(newDorm);
+        DB.dormitoryList.push(roomNumber);
+        return { dorm:newDorm, autoAdded:true };
+    }
     function batchImportStudents(){
         if(!isAdmin()){toast('无权限','error');return;}
         var text=document.getElementById('batchImportText').value.trim();
         if(!text){toast('请粘贴学生数据','error');return;}
         var lines=text.split('\n');
         var imported=0;
+        var autoAdded=0;
+        var nonResident=0;
         for(var i=0;i<lines.length;i++){
             var line=lines[i].trim();
             if(!line) continue;
@@ -2412,13 +2741,20 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
             var className=parts[1].trim();
             var roomNumber=parts[2].trim();
             var bedNumber=parts.length>3?parts[3].trim():'';
-            var dorm=DB.dormitories.find(function(d){return d.roomNumber===roomNumber;});
-            if(!dorm){toast('宿舍号不存在：'+roomNumber,'error');continue;}
-            DB.students.push({id:DB.nextIds.student++,dormitoryId:dorm.id,name:name,className:className,bedNumber:bedNumber});
+            // 非住宿生：宿舍号为 0 或空时，dormitoryId=null，标记为走读生
+            if(roomNumber===''||roomNumber==='0'||roomNumber.toLowerCase()==='null'){
+                DB.students.push({id:DB.nextIds.student++,dormitoryId:null,name:name,className:className,bedNumber:''});
+                imported++; nonResident++;
+                continue;
+            }
+            var res=ensureDormitoryRoom(roomNumber);
+            if(!res){toast('宿舍号无效或不存在：'+roomNumber,'error');continue;}
+            if(res.autoAdded) autoAdded++;
+            DB.students.push({id:DB.nextIds.student++,dormitoryId:res.dorm.id,name:name,className:className,bedNumber:bedNumber});
             imported++;
         }
         saveDB();
-        toast('成功导入'+imported+'名学生');
+        toast('成功导入'+imported+'名学生'+(autoAdded>0?'（自动新增'+autoAdded+'个宿舍号）':'')+(nonResident>0?'（含'+nonResident+'名走读生）':''));
         renderStudentsView(document.getElementById('contentArea'));
     }
     function handleExcelImport(file){
@@ -2431,20 +2767,29 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
                 var workbook=XLSX.read(data,{type:'array'});
                 var firstSheet=workbook.Sheets[workbook.SheetNames[0]];
                 var rows=XLSX.utils.sheet_to_json(firstSheet,{header:1});
-                var validRows=rows.filter(function(row){return row.length>=3&&row[0]&&row[1]&&row[2];});
+                var validRows=rows.filter(function(row){return row.length>=2&&row[0]&&row[1];});
                 var imported=0;
+                var autoAdded=0;
+                var nonResident=0;
                 validRows.forEach(function(row){
                     var name=String(row[0]).trim();
                     var className=String(row[1]).trim();
-                    var roomNumber=String(row[2]).trim();
+                    var roomNumber=row.length>2?String(row[2]).trim():'';
                     var bedNumber=row.length>3?String(row[3]).trim():'';
-                    var dorm=DB.dormitories.find(function(d){return d.roomNumber===roomNumber;});
-                    if(!dorm){toast('宿舍号不存在：'+roomNumber,'error');return;}
-                    DB.students.push({id:DB.nextIds.student++,dormitoryId:dorm.id,name:name,className:className,bedNumber:bedNumber});
+                    // 非住宿生：宿舍号为 0 或空时，dormitoryId=null
+                    if(roomNumber===''||roomNumber==='0'||roomNumber.toLowerCase()==='null'){
+                        DB.students.push({id:DB.nextIds.student++,dormitoryId:null,name:name,className:className,bedNumber:''});
+                        imported++; nonResident++;
+                        return;
+                    }
+                    var res=ensureDormitoryRoom(roomNumber);
+                    if(!res){toast('宿舍号无效或不存在：'+roomNumber,'error');return;}
+                    if(res.autoAdded) autoAdded++;
+                    DB.students.push({id:DB.nextIds.student++,dormitoryId:res.dorm.id,name:name,className:className,bedNumber:bedNumber});
                     imported++;
                 });
                 saveDB();
-                toast('成功从Excel导入'+imported+'名学生');
+                toast('成功从Excel导入'+imported+'名学生'+(autoAdded>0?'（自动新增'+autoAdded+'个宿舍号）':'')+(nonResident>0?'（含'+nonResident+'名走读生）':''));
                 renderStudentsView(document.getElementById('contentArea'));
             }catch(err){
                 console.error('Excel解析失败:',err);
@@ -2460,6 +2805,111 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
         saveDB();
         toast('已删除');
         renderStudentsView(document.getElementById('contentArea'));
+    }
+
+    // ==================== 宿舍号管理（仅管理员） ====================
+    // 按楼层分组返回生效宿舍号及其入住人数
+    function getDormitoryListByFloor(){
+        ensureSyncMeta();
+        var result = [];
+        DB.floors.forEach(function(f){
+            var dorms = getDormitoriesByFloor(f.id);
+            if(dorms.length === 0) return;
+            dorms.sort(function(a,b){ return String(a.roomNumber).localeCompare(String(b.roomNumber),'zh-Hans-CN',{numeric:true}); });
+            var items = dorms.map(function(d){
+                var count = getStudentsByDormitory(d.id).length;
+                return { id:d.id, roomNumber:d.roomNumber, count:count };
+            });
+            result.push({ floorId:f.id, floorName:f.name, items:items });
+        });
+        return result;
+    }
+    function openDormitoryManageModal(){
+        if(!isAdmin()){toast('无权限','error');return;}
+        renderDormitoryManage();
+        document.getElementById('dormitoryManageModal').classList.add('show');
+    }
+    function closeDormitoryManageModal(){
+        var m=document.getElementById('dormitoryManageModal');
+        if(m) m.classList.remove('show');
+    }
+    function renderDormitoryManage(){
+        var groups = getDormitoryListByFloor();
+        var groupHtml = groups.map(function(g){
+            var rows = g.items.map(function(it){
+                return '<tr><td><b>'+it.roomNumber+'</b></td><td>'+it.count+'人</td><td><button class="btn btn-danger btn-xs" onclick="deleteDormitory(\''+escapeHtmlAttr(it.roomNumber)+'\')">删除</button></td></tr>';
+            }).join('') || '<tr><td colspan="3" style="text-align:center;color:#aaa">该楼层暂无生效宿舍号</td></tr>';
+            return '<div class="card" style="margin-bottom:12px"><div class="card-header">'+g.floorName+'（'+g.items.length+'间）</div><div style="overflow-x:auto"><table><thead><tr><th>宿舍号</th><th>入住人数</th><th>操作</th></tr></thead><tbody>'+rows+'</tbody></table></div></div>';
+        }).join('') || '<div class="empty-state">暂无宿舍号数据</div>';
+        var html = '<div class="em-header"><span>🏠 宿舍号管理</span><button class="em-close" aria-label="关闭" onclick="closeDormitoryManageModal()">✕</button></div>'
+            + '<div class="em-body">'
+            + '<div class="form-group"><label>新增宿舍号</label>'
+            + '<div style="display:flex;gap:8px;align-items:center">'
+            + '<input type="text" id="newDormRoom" placeholder="如：123、725（三位数字，百位1-8）" maxlength="3" style="flex:1;padding:8px;border:1.5px solid #ddd;border-radius:6px">'
+            + '<button class="btn btn-primary" onclick="addDormitory()">➕ 添加</button>'
+            + '</div>'
+            + '<div style="font-size:12px;color:#888;margin-top:6px">系统按百位数字自动识别所属楼层（1xx=一楼 … 8xx=八楼）</div>'
+            + '</div>'
+            + groupHtml
+            + '</div>';
+        document.getElementById('dormitoryManageBox').innerHTML = html;
+    }
+    function addDormitory(){
+        if(!isAdmin()){toast('无权限','error');return;}
+        var input = document.getElementById('newDormRoom');
+        var val = input ? input.value.trim() : '';
+        if(!val){toast('请输入宿舍号','error');return;}
+        // 校验：三位数字，百位1-8
+        if(!/^[1-8][0-9]{2}$/.test(val)){
+            toast('宿舍号必须为三位数字，且首位为1-8','error');
+            return;
+        }
+        // 不允许重复
+        if(DB.dormitoryList.indexOf(val) !== -1){
+            toast('宿舍号 '+val+' 已存在','error');
+            return;
+        }
+        var floorNum = parseInt(val.charAt(0));
+        var floor = DB.floors.find(function(f){ return f.sortOrder === floorNum; });
+        if(!floor){ toast('无法识别楼层','error'); return; }
+        // 在 dormitories 中查找是否已存在该房间（历史软删除场景）
+        var existingDorm = getDormitoryByRoomNumber(val);
+        if(existingDorm){
+            // 已存在于 dormitories 但不在 dormitoryList（曾被删除），重新激活
+            if(DB.dormitoryList.indexOf(val) === -1) DB.dormitoryList.push(val);
+        } else {
+            // 全新宿舍号
+            var newId = DB.nextIds.dormitory++;
+            DB.dormitories.push({ id:newId, floorId:floor.id, roomNumber:val, capacity:8 });
+            DB.dormitoryList.push(val);
+        }
+        saveDB();
+        toast('宿舍号 '+val+' 已添加');
+        input.value = '';
+        renderDormitoryManage();
+        renderTree();
+    }
+    function deleteDormitory(roomNumber){
+        if(!isAdmin()){toast('无权限','error');return;}
+        roomNumber = String(roomNumber);
+        var dorm = getDormitoryByRoomNumber(roomNumber);
+        if(!dorm){ toast('宿舍号不存在','error'); return; }
+        var residents = getStudentsByDormitory(dorm.id);
+        if(residents.length > 0){
+            var names = residents.map(function(s){ return s.name+'('+(s.className||'')+')'; }).join('、');
+            alert('该宿舍尚有 '+residents.length+' 名学生入住，请先迁出或调宿后再删除。\n入住学生：'+names);
+            return;
+        }
+        if(!confirm('确定删除宿舍 ['+roomNumber+'] 吗？\n（历史扣分/退宿记录将保留，但该宿舍号不再出现在选择列表中）')) return;
+        // 仅从 dormitoryList 移除（控制可见性），保留 dormitories 条目以供历史记录引用
+        DB.dormitoryList = DB.dormitoryList.filter(function(r){ return r !== roomNumber; });
+        saveDB();
+        toast('宿舍号 '+roomNumber+' 已删除');
+        // 若当前选中的是被删宿舍，清空选择
+        if(selectedDormitoryId === dorm.id){ selectedDormitoryId = null; selectedFloorId = null; }
+        renderDormitoryManage();
+        renderTree();
+        renderView();
     }
 
     // ==================== 扣分项目管理视图 ====================
@@ -2557,6 +3007,33 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
         renderView();
         renderTree();
     }
+    // 删除全部请假记录
+    function deleteAllAbsenceRecords(){
+        if(!isAdmin()){toast('无权限','error');return;}
+        if(!confirm('确定要删除全部请假记录吗？此操作不可恢复！')) return;
+        DB.absenceRecords=[];
+        saveDB();
+        toast('已删除全部请假记录');
+        renderView();
+    }
+    // 删除全部停宿记录（leaveRecords 中 type==='stop'）
+    function deleteAllStopRecords(){
+        if(!isAdmin()){toast('无权限','error');return;}
+        if(!confirm('确定要删除全部停宿记录吗？此操作不可恢复！')) return;
+        DB.leaveRecords=(DB.leaveRecords||[]).filter(function(r){return r.type!=='stop';});
+        saveDB();
+        toast('已删除全部停宿记录');
+        renderView();
+    }
+    // 删除全部退宿记录（leaveRecords 中 type==='leave'）
+    function deleteAllLeaveRecords(){
+        if(!isAdmin()){toast('无权限','error');return;}
+        if(!confirm('确定要删除全部退宿记录吗？此操作不可恢复！')) return;
+        DB.leaveRecords=(DB.leaveRecords||[]).filter(function(r){return r.type!=='leave';});
+        saveDB();
+        toast('已删除全部退宿记录');
+        renderView();
+    }
 
     // ==================== 学生管理视图 ====================
     function renderLeaveManageView(container){
@@ -2576,6 +3053,9 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
         var classList=sortClassNames(Object.keys(classSet));
         var classOptions='<option value="">全部班级</option>';
         classList.forEach(function(c){ classOptions+='<option value="'+c+'">'+c+'</option>'; });
+        // 表单用班级下拉选项（含"请选择班级"提示项）
+        var classSelectOpts='<option value="">请选择班级</option>';
+        classList.forEach(function(c){ classSelectOpts+='<option value="'+c+'">'+c+'</option>'; });
         var today=new Date().toISOString().split('T')[0];
         var defaultStart=new Date(); defaultStart.setDate(defaultStart.getDate()-30);
         var defaultStartStr=defaultStart.toISOString().split('T')[0];
@@ -2588,36 +3068,37 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
                 ? '<option value="">请选择学生</option>'+classStus.map(function(s){ return '<option value="'+s.name+'">'+s.name+'</option>'; }).join('')
                 : '<option value="" disabled>本班暂无学生</option>';
         }
-        // PC 端联动下拉（datalist）：非班级账号时四字段均为"输入框+建议列表"，支持打字筛选与下拉选择；
-        // datalist 选项由 updatePcDatalists 按联动规则动态填充（渲染后调用 initPcDatalists）
+        // PC 端联动下拉：
+        // - 班级账号：班级只读锁定；姓名/宿舍/床号均为"输入框+datalist"，建议列表由 updatePcDatalists 动态填充
+        // - 管理员/生活老师：班级为 <select> 下拉（选择后联动）；姓名/宿舍/床号为"输入框+datalist"
         var classFieldLeave, classFieldStop, classFieldAbs;
         if(isClassAdmin){
             classFieldLeave='<label>班级 *</label><input type="text" id="leaveClass" value="'+classAccountClassName+'" readonly>';
             classFieldStop='<label>班级 *</label><input type="text" id="stopClass" value="'+classAccountClassName+'" readonly>';
             classFieldAbs='<label>班级 *</label><input type="text" id="absClass" value="'+classAccountClassName+'" readonly>';
         } else {
-            classFieldLeave='<label>班级 *</label><input type="text" id="leaveClass" list="dlLeaveClass" placeholder="如：高一1班" oninput="onPcClassInput(\'leave\',this.value)">';
-            classFieldStop='<label>班级 *</label><input type="text" id="stopClass" list="dlStopClass" placeholder="如：高一1班" oninput="onPcClassInput(\'stop\',this.value)">';
-            classFieldAbs='<label>班级 *</label><input type="text" id="absClass" list="dlAbsClass" placeholder="如：高一1班" oninput="onPcClassInput(\'abs\',this.value)">';
+            classFieldLeave='<label>班级 *</label><select id="leaveClass" onchange="onPcClassInput(\'leave\',this.value)">'+classSelectOpts+'</select>';
+            classFieldStop='<label>班级 *</label><select id="stopClass" onchange="onPcClassInput(\'stop\',this.value)">'+classSelectOpts+'</select>';
+            classFieldAbs='<label>班级 *</label><select id="absClass" onchange="onPcClassInput(\'abs\',this.value)">'+classSelectOpts+'</select>';
         }
-        // 姓名：保留 autoFill 自动填充，同时联动更新其余字段的建议列表（PC 端此分支 mEnhance 恒为 false）
-        var nameLeave=isClassAdmin?'<input type="text" id="leaveName" placeholder="学生姓名" oninput="autoFillLeave(this.value)">':'<input type="text" id="leaveName" list="dlLeaveName" placeholder="学生姓名" oninput="autoFillLeave(this.value);onPcNameInput(\'leave\',this.value)">';
-        var nameStop=isClassAdmin?'<input type="text" id="stopName" placeholder="学生姓名" oninput="autoFillStop(this.value)">':'<input type="text" id="stopName" list="dlStopName" placeholder="学生姓名" oninput="autoFillStop(this.value);onPcNameInput(\'stop\',this.value)">';
-        var nameAbs=isClassAdmin?'<input type="text" id="absName" placeholder="学生姓名" oninput="autoFillAbs(this.value)">':'<input type="text" id="absName" list="dlAbsName" placeholder="学生姓名" oninput="autoFillAbs(this.value);onPcNameInput(\'abs\',this.value)">';
-        // 宿舍/床号：输入变化时同步清空下游字段并刷新建议列表
-        var dormLeave=isClassAdmin?'<input type="text" id="leaveDorm" placeholder="如：101" oninput="autoFillLeaveByDorm(this.value)">':'<input type="text" id="leaveDorm" list="dlLeaveDorm" placeholder="如：101" oninput="autoFillLeaveByDorm(this.value);onPcDormInput(\'leave\',this.value)">';
-        var bedLeave=isClassAdmin?'<input type="text" id="leaveBed" placeholder="如：1" oninput="autoFillLeaveByBed(this.value)">':'<input type="text" id="leaveBed" list="dlLeaveBed" placeholder="如：1" oninput="autoFillLeaveByBed(this.value);onPcBedInput(\'leave\',this.value)">';
-        var dormStop=isClassAdmin?'<input type="text" id="stopDorm" placeholder="如：101" oninput="autoFillStopByDorm(this.value)">':'<input type="text" id="stopDorm" list="dlStopDorm" placeholder="如：101" oninput="autoFillStopByDorm(this.value);onPcDormInput(\'stop\',this.value)">';
-        var bedStop=isClassAdmin?'<input type="text" id="stopBed" placeholder="如：1" oninput="autoFillStopByBed(this.value)">':'<input type="text" id="stopBed" list="dlStopBed" placeholder="如：1" oninput="autoFillStopByBed(this.value);onPcBedInput(\'stop\',this.value)">';
-        var dormAbs=isClassAdmin?'<input type="text" id="absDorm" placeholder="如：101" oninput="autoFillAbsByDorm(this.value)">':'<input type="text" id="absDorm" list="dlAbsDorm" placeholder="如：101" oninput="autoFillAbsByDorm(this.value);onPcDormInput(\'abs\',this.value)">';
-        var bedAbs=isClassAdmin?'<input type="text" id="absBed" placeholder="如：1" oninput="autoFillAbsByBed(this.value)">':'<input type="text" id="absBed" list="dlAbsBed" placeholder="如：1" oninput="autoFillAbsByBed(this.value);onPcBedInput(\'abs\',this.value)">';
+        // 姓名：班级账号也使用 datalist（显示本班学生），选择后自动填充宿舍/床号；其他选项始终保留
+        var nameLeave='<input type="text" id="leaveName" list="dlLeaveName" placeholder="学生姓名" oninput="autoFillLeave(this.value);onPcNameInput(\'leave\',this.value)">';
+        var nameStop='<input type="text" id="stopName" list="dlStopName" placeholder="学生姓名" oninput="autoFillStop(this.value);onPcNameInput(\'stop\',this.value)">';
+        var nameAbs='<input type="text" id="absName" list="dlAbsName" placeholder="学生姓名" oninput="autoFillAbs(this.value);onPcNameInput(\'abs\',this.value)">';
+        // 宿舍/床号：班级账号也使用 datalist，输入变化时同步清空下游字段并刷新建议列表
+        var dormLeave='<input type="text" id="leaveDorm" list="dlLeaveDorm" placeholder="如：101" oninput="autoFillLeaveByDorm(this.value);onPcDormInput(\'leave\',this.value)">';
+        var bedLeave='<input type="text" id="leaveBed" list="dlLeaveBed" placeholder="如：1" oninput="autoFillLeaveByBed(this.value);onPcBedInput(\'leave\',this.value)">';
+        var dormStop='<input type="text" id="stopDorm" list="dlStopDorm" placeholder="如：101" oninput="autoFillStopByDorm(this.value);onPcDormInput(\'stop\',this.value)">';
+        var bedStop='<input type="text" id="stopBed" list="dlStopBed" placeholder="如：1" oninput="autoFillStopByBed(this.value);onPcBedInput(\'stop\',this.value)">';
+        var dormAbs='<input type="text" id="absDorm" list="dlAbsDorm" placeholder="如：101" oninput="autoFillAbsByDorm(this.value);onPcDormInput(\'abs\',this.value)">';
+        var bedAbs='<input type="text" id="absBed" list="dlAbsBed" placeholder="如：1" oninput="autoFillAbsByBed(this.value);onPcBedInput(\'abs\',this.value)">';
         container.innerHTML='<div class="content-header"><h2>🏠 学生管理</h2></div>'
             + (isClassAdmin ? '' : '<div class="card"><div class="card-header">筛选条件</div><div class="card-body"><div class="filter-section">'
             + '<div class="form-group"><label>班级</label><select id="leaveFilterClass">'+classOptions+'</select></div>'
             + '<div class="form-group"><label>姓名</label><input type="text" id="leaveFilterName" placeholder="输入姓名关键字" style="width:150px;"></div>'
             + '<button class="btn btn-primary" onclick="applyLeaveFilter()">🔍 查询</button>'
             + '</div></div></div>')
-            + '<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">'
+            + '<div style="display:grid;grid-template-columns:1fr;gap:16px">'
             + '<div class="card"><div class="card-header">📝 请假登记（即刻生效，到期自动销假）</div><div class="card-body">'
             + '<div class="form-row"><div class="form-group">'
             + classFieldAbs
@@ -2644,7 +3125,6 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
             + '<div class="form-group"><label>停宿原因 *</label><input type="text" id="stopReason" placeholder="原因"></div>'
             + '<button class="btn btn-primary" onclick="addLeaveRecord(\'stop\')">📝 登记停宿</button>'
             + '</div></div>'
-            + '</div>'
             + '<div class="card"><div class="card-header">退宿管理</div><div class="card-body">'
             + '<div class="form-row"><div class="form-group">'
             + classFieldLeave
@@ -2656,19 +3136,19 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
             + '<div class="form-group"><label>退宿原因 *</label><input type="text" id="leaveReason" placeholder="原因"></div></div>'
             + '<button class="btn btn-primary" onclick="addLeaveRecord(\'leave\')">📝 登记退宿</button>'
             + '</div></div>'
+            + '</div>'
             + '<div class="fold-block" id="recFold-absence"><div class="fold-header" onclick="toggleRecFold(\'absence\')">📋 请假记录<span class="fold-sub" id="recCount-absence"></span><span class="fold-arrow">▶</span></div><div class="fold-body"><div id="absenceRecordsList"></div></div></div>'
             + '<div class="fold-block" id="recFold-stop"><div class="fold-header" onclick="toggleRecFold(\'stop\')">🛏 停宿记录<span class="fold-sub" id="recCount-stop"></span><span class="fold-arrow">▶</span></div><div class="fold-body"><div id="stopRecordsList"></div></div></div>'
             + '<div class="fold-block" id="recFold-leave"><div class="fold-header" onclick="toggleRecFold(\'leave\')">🚪 退宿记录<span class="fold-sub" id="recCount-leave"></span><span class="fold-arrow">▶</span></div><div class="fold-body"><div id="leaveRecordsList"></div></div></div>'
-            + (isClassAdmin ? '' :
-                  '<datalist id="dlLeaveClass"></datalist><datalist id="dlLeaveName"></datalist><datalist id="dlLeaveDorm"></datalist><datalist id="dlLeaveBed"></datalist>'
-                + '<datalist id="dlStopClass"></datalist><datalist id="dlStopName"></datalist><datalist id="dlStopDorm"></datalist><datalist id="dlStopBed"></datalist>'
-                + '<datalist id="dlAbsClass"></datalist><datalist id="dlAbsName"></datalist><datalist id="dlAbsDorm"></datalist><datalist id="dlAbsBed"></datalist>');
+            + '<datalist id="dlLeaveName"></datalist><datalist id="dlLeaveDorm"></datalist><datalist id="dlLeaveBed"></datalist>'
+            + '<datalist id="dlStopName"></datalist><datalist id="dlStopDorm"></datalist><datalist id="dlStopBed"></datalist>'
+            + '<datalist id="dlAbsName"></datalist><datalist id="dlAbsDorm"></datalist><datalist id="dlAbsBed"></datalist>';
         document.getElementById('stopStartDate').addEventListener('change', updateStopPeriod);
         document.getElementById('stopEndDate').addEventListener('change', updateStopPeriod);
         updateStopPeriod();
         applyLeaveFilter();
         renderAbsenceRecords();
-        if(!isClassAdmin) initPcDatalists(); // 初始化 PC 端联动建议列表
+        initPcDatalists(); // 初始化 PC 端联动建议列表（班级账号也需填充姓名/宿舍/床号建议）
         // 恢复记录列表折叠开合状态
         Object.keys(foldState).forEach(function(id){ var el=document.getElementById(id); if(el&&foldState[id]) el.classList.add('open'); });
         initDatePickers(document); // 初始化退宿/停宿/请假日期选择器
@@ -2696,7 +3176,7 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
         var nameOpts;
         if(isClassAdmin){
             var classStus=DB.students.filter(function(s){ return s.className===classAccountClassName; });
-            nameOpts=classStus.length?'<option value="">请选择学生</option>'+classStus.map(function(s){ return '<option value="'+s.name+'">'+s.name+'</option>'; }).join(''):'<option value="" disabled>本班暂无学生</option>';
+            nameOpts=classStus.length?'<option value="">请选择学生</option>'+classStus.map(function(s){ return '<option value="'+s.name+'">'+s.name+(isNonResidentStudent(s)?'（走读）':'')+'</option>'; }).join(''):'<option value="" disabled>本班暂无学生</option>';
         } else {
             nameOpts='<option value="">请先选择班级</option>';
         }
@@ -2705,15 +3185,15 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
         var nameSelAbs='<label>姓名 *</label><select id="absName" onchange="autoFillAbs(this.value)">'+nameOpts+'</select>';
         var leaveBody='<div class="form-row"><div class="form-group">'+classFieldLeave+'</div>'
             +'<div class="form-group">'+nameSelLeave+'</div></div>'
-            +'<div class="form-row"><div class="form-group"><label>宿舍号 *</label><input type="text" id="leaveDorm" placeholder="如：101" oninput="autoFillLeaveByDorm(this.value)"></div>'
-            +'<div class="form-group"><label>床号 *</label><input type="text" id="leaveBed" placeholder="如：1" oninput="autoFillLeaveByBed(this.value)"></div></div>'
+            +'<div class="form-row"><div class="form-group"><label>宿舍号 *</label><select id="leaveDorm" onchange="onAccDormChange(\'leave\',this.value)">'+dormSelectOptions('','')+'</select></div>'
+            +'<div class="form-group"><label>床号 *</label><select id="leaveBed" onchange="onAccBedChange(\'leave\',this.value)">'+bedSelectOptions(null,'')+'</select></div></div>'
             +'<div class="form-row"><div class="form-group"><label>退宿时间 *</label><input type="text" class="date-picker" id="leaveDate" value="'+today+'"></div>'
             +'<div class="form-group"><label>退宿原因 *</label><input type="text" id="leaveReason" placeholder="原因"></div></div>'
             +'<button class="btn btn-primary" onclick="addLeaveRecord(\'leave\')">📝 登记退宿</button>';
         var stopBody='<div class="form-row"><div class="form-group">'+classFieldStop+'</div>'
             +'<div class="form-group">'+nameSelStop+'</div></div>'
-            +'<div class="form-row"><div class="form-group"><label>宿舍号 *</label><input type="text" id="stopDorm" placeholder="如：101" oninput="autoFillStopByDorm(this.value)"></div>'
-            +'<div class="form-group"><label>床号 *</label><input type="text" id="stopBed" placeholder="如：1" oninput="autoFillStopByBed(this.value)"></div></div>'
+            +'<div class="form-row"><div class="form-group"><label>宿舍号 *</label><select id="stopDorm" onchange="onAccDormChange(\'stop\',this.value)">'+dormSelectOptions('','')+'</select></div>'
+            +'<div class="form-group"><label>床号 *</label><select id="stopBed" onchange="onAccBedChange(\'stop\',this.value)">'+bedSelectOptions(null,'')+'</select></div></div>'
             +'<div class="form-row"><div class="form-group"><label>停宿开始日期 *</label><input type="text" class="date-picker" id="stopStartDate" value="'+today+'"></div>'
             +'<div class="form-group"><label>停宿结束日期 *</label><input type="text" class="date-picker" id="stopEndDate" value="'+today+'"></div></div>'
             +'<div class="form-group"><label>停宿时间段（自动生成）</label><input type="text" id="stopPeriod" readonly placeholder="选择日期后自动生成"></div>'
@@ -2721,8 +3201,8 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
             +'<button class="btn btn-primary" onclick="addLeaveRecord(\'stop\')">📝 登记停宿</button>';
         var absenceBody='<div class="form-row"><div class="form-group">'+classFieldAbs+'</div>'
             +'<div class="form-group">'+nameSelAbs+'</div></div>'
-            +'<div class="form-row"><div class="form-group"><label>宿舍号 *</label><input type="text" id="absDorm" placeholder="如：101" oninput="autoFillAbsByDorm(this.value)"></div>'
-            +'<div class="form-group"><label>床号 *</label><input type="text" id="absBed" placeholder="如：1" oninput="autoFillAbsByBed(this.value)"></div></div>'
+            +'<div class="form-row"><div class="form-group"><label>宿舍号 *</label><select id="absDorm" onchange="onAccDormChange(\'abs\',this.value)">'+dormSelectOptions('','')+'</select></div>'
+            +'<div class="form-group"><label>床号 *</label><select id="absBed" onchange="onAccBedChange(\'abs\',this.value)">'+bedSelectOptions(null,'')+'</select></div></div>'
             +'<div class="form-row"><div class="form-group"><label>请假类型 *</label><select id="absType" onchange="updateAbsReasonLabel()"><option value="personal">事假</option><option value="sick">病假</option><option value="other">其他</option></select></div>'
             +'<div class="form-group"><label id="absReasonLabel">事假说明（选填）</label><input type="text" id="absReason" placeholder="选填，可不填"></div></div>'
             +'<div class="form-row"><div class="form-group"><label>开始日期 *</label><input type="text" class="date-picker" id="absStartDate" value="'+today+'"></div>'
@@ -2802,12 +3282,69 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
             el.textContent='请假中: '+(DB.absenceRecords||[]).filter(function(r){return r.endDate&&r.endDate>=today&&(!c3||r.className===c3);}).length+'人';
         }
     }
-    // 生活老师：切换班级后重建对应姓名下拉选项
+    // 生活老师：切换班级后重建对应姓名下拉 + 宿舍号下拉选项
     function onAccClassChange(className, nameSelectId){
         var sel=document.getElementById(nameSelectId);
-        if(!sel) return;
-        var stus=className?DB.students.filter(function(s){return s.className===className;}):[];
-        sel.innerHTML='<option value="">'+(className?'请选择学生':'请先选择班级')+'</option>'+stus.map(function(s){return '<option value="'+s.name+'">'+s.name+'</option>';}).join('');
+        if(sel){
+            var stus=className?DB.students.filter(function(s){return s.className===className;}):[];
+            sel.innerHTML='<option value="">'+(className?'请选择学生':'请先选择班级')+'</option>'+stus.map(function(s){return '<option value="'+s.name+'">'+s.name+(isNonResidentStudent(s)?'（走读）':'')+'</option>';}).join('');
+        }
+        // 联动宿舍号下拉：仅显示该班级学生入住的宿舍；取消班级则恢复全部宿舍
+        var prefix = nameSelectId.replace('Name',''); // leave/stop/abs
+        var dormSel = document.getElementById(prefix + 'Dorm');
+        if(dormSel){
+            dormSel.innerHTML = dormSelectOptions(className, dormSel.value);
+        }
+        // 清空床号下拉（宿舍未选时显示全部1-8）
+        var bedSel = document.getElementById(prefix + 'Bed');
+        if(bedSel){
+            bedSel.innerHTML = bedSelectOptions(null, '');
+        }
+    }
+    // 移动端：选择宿舍号后联动姓名（仅该宿舍学生）+ 床号（可用床位）
+    function onAccDormChange(prefix, roomNumber){
+        var nameSel = document.getElementById(prefix + 'Name');
+        var bedSel = document.getElementById(prefix + 'Bed');
+        var classEl = document.getElementById(prefix + 'Class');
+        var className = classEl ? classEl.value.trim() : '';
+        // 姓名下拉：显示该宿舍学生（若有班级则限定本班）
+        if(nameSel){
+            var dorm = roomNumber ? getDormitoryByRoomNumber(roomNumber) : null;
+            var stus = dorm ? getStudentsByDormitory(dorm.id) : [];
+            if(className) stus = stus.filter(function(s){ return s.className === className; });
+            // 保留当前班级的全部学生（不消失），但高亮该宿舍学生
+            var allStus = className ? DB.students.filter(function(s){return s.className===className;}) : [];
+            if(roomNumber){
+                nameSel.innerHTML = '<option value="">请选择学生</option>' + allStus.map(function(s){
+                    var inDorm = stus.some(function(x){ return x.id === s.id; });
+                    return '<option value="'+s.name+'">'+s.name+(inDorm?'（'+roomNumber+'）':'')+'</option>';
+                }).join('');
+            } else {
+                nameSel.innerHTML = '<option value="">'+(className?'请选择学生':'请先选择班级')+'</option>' + allStus.map(function(s){return '<option value="'+s.name+'">'+s.name+'</option>';}).join('');
+            }
+        }
+        // 床号下拉：仅显示该宿舍可用床位
+        if(bedSel){
+            var dorm = roomNumber ? getDormitoryByRoomNumber(roomNumber) : null;
+            bedSel.innerHTML = bedSelectOptions(dorm ? dorm.id : null, bedSel.value);
+        }
+    }
+    // 移动端：选择床号后联动姓名（该床位学生）
+    function onAccBedChange(prefix, bedNumber){
+        var dormEl = document.getElementById(prefix + 'Dorm');
+        var nameSel = document.getElementById(prefix + 'Name');
+        var classEl = document.getElementById(prefix + 'Class');
+        var className = classEl ? classEl.value.trim() : '';
+        var roomNumber = dormEl ? dormEl.value : '';
+        if(!roomNumber || !bedNumber || !nameSel) return;
+        var dorm = getDormitoryByRoomNumber(roomNumber);
+        if(!dorm) return;
+        var dormStus = getStudentsByDormitory(dorm.id);
+        if(className) dormStus = dormStus.filter(function(s){ return s.className === className; });
+        var student = dormStus.find(function(s){ return String(s.bedNumber) === String(bedNumber); });
+        if(student){
+            nameSel.value = student.name;
+        }
     }
     // ==================== PC 端学生管理：datalist 联动建议列表 ====================
     // 三模块（leave/stop/abs）× 四字段（班级/姓名/宿舍/床号）的建议选项动态更新；
@@ -2826,37 +3363,37 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
         var m=PC_DL[p];
         if(!m) return;
         var clsEl=document.getElementById(m.classInput);
-        if(!clsEl||clsEl.readOnly) return; // 班级账号：字段只读，不启用联动列表
+        if(!clsEl) return;
         var clsVal=clsEl.value.trim();
         var nameEl=document.getElementById(m.nameInput);
         var dormEl=document.getElementById(m.dormInput);
         var nameVal=nameEl?nameEl.value.trim():'';
         var dormVal=dormEl?dormEl.value.trim():'';
-        // 班级：全部班级（数字升序）
-        var clsSet={}; DB.students.forEach(function(s){ if(s.className) clsSet[s.className]=true; });
-        __pcFillDl(m.cls, sortClassNames(Object.keys(clsSet)));
-        // 姓名：按班级过滤；再按宿舍过滤；两者皆空→全部学生（同名去重）
+        // 班级建议列表（班级 datalist 已移除：班级账号为只读，管理员/生活老师为 select 下拉）
+        // 姓名：按班级过滤（班级已选时显示该班全部学生，不因选中宿舍/姓名而收窄）；
+        // 班级未选时，若选了宿舍则显示该宿舍学生，否则全部学生
         var pool=DB.students;
-        if(clsVal) pool=pool.filter(function(s){ return s.className===clsVal; });
-        if(dormVal){
+        if(clsVal){
+            pool=pool.filter(function(s){ return s.className===clsVal; });
+        } else if(dormVal){
             var d=DB.dormitories.find(function(x){ return x.roomNumber===dormVal; });
-            pool=d?getStudentsByDormitory(d.id).filter(function(s){ return !clsVal||s.className===clsVal; }):[];
+            pool=d?getStudentsByDormitory(d.id):[];
         }
         var nameSet={}; pool.forEach(function(s){ if(s.name) nameSet[s.name]=true; });
         __pcFillDl(m.name, Object.keys(nameSet));
-        // 宿舍号：班级→该班学生入住宿舍去重；否则全部宿舍
+        // 宿舍号：班级→该班学生入住宿舍去重；否则全部宿舍（仅生效宿舍号）。不按姓名过滤，保持完整。
         var dormSet={};
         if(clsVal){
             DB.students.forEach(function(s){
                 if(s.className!==clsVal) return;
                 var d=getDormitoryById(s.dormitoryId);
-                if(d) dormSet[d.roomNumber]=true;
+                if(d && !isDormitoryDeleted(d.roomNumber)) dormSet[d.roomNumber]=true;
             });
         } else {
-            DB.dormitories.forEach(function(d){ dormSet[d.roomNumber]=true; });
+            DB.dormitories.forEach(function(d){ if(!isDormitoryDeleted(d.roomNumber)) dormSet[d.roomNumber]=true; });
         }
         __pcFillDl(m.dorm, Object.keys(dormSet).sort());
-        // 床号：宿舍→该宿舍（限班级）床号；姓名→该生床号；均无→1-4
+        // 床号：宿舍→该宿舍（限班级）床号；无宿舍→1-8。不按姓名过滤，保持完整。
         var beds=[];
         if(dormVal){
             var d2=DB.dormitories.find(function(x){ return x.roomNumber===dormVal; });
@@ -2867,11 +3404,8 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
                 });
                 beds=Object.keys(bs).sort(function(a,b){ return parseInt(a)-parseInt(b); });
             }
-        } else if(nameVal){
-            var st=pool.find(function(s){ return s.name===nameVal; });
-            if(st&&st.bedNumber) beds=[st.bedNumber];
         }
-        if(!beds.length) beds=['1','2','3','4'];
+        if(!beds.length) beds=['1','2','3','4','5','6','7','8'];
         __pcFillDl(m.bed, beds);
     }
     function initPcDatalists(){ ['leave','stop','abs'].forEach(function(p){ updatePcDatalists(p); }); }
@@ -2926,8 +3460,15 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
         if(match){
             document.getElementById('leaveClass').value=match.className;
             var dorm=getDormitoryById(match.dormitoryId);
-            document.getElementById('leaveDorm').value=dorm?dorm.roomNumber:'';
-            document.getElementById('leaveBed').value=match.bedNumber||'';
+            var roomNum=dorm?dorm.roomNumber:'';
+            var bedNum=match.bedNumber||'';
+            // 移动端 select：刷新选项后再设值，确保选中项存在
+            var dormSel=document.getElementById('leaveDorm');
+            var bedSel=document.getElementById('leaveBed');
+            if(dormSel && dormSel.tagName==='SELECT') dormSel.innerHTML=dormSelectOptions(match.className, roomNum);
+            if(bedSel && bedSel.tagName==='SELECT') bedSel.innerHTML=bedSelectOptions(dorm?dorm.id:null, bedNum);
+            document.getElementById('leaveDorm').value=roomNum;
+            document.getElementById('leaveBed').value=bedNum;
         }
     }
     function autoFillLeaveByDorm(roomNumber){
@@ -2967,8 +3508,14 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
         if(match){
             document.getElementById('stopClass').value=match.className;
             var dorm=getDormitoryById(match.dormitoryId);
-            document.getElementById('stopDorm').value=dorm?dorm.roomNumber:'';
-            document.getElementById('stopBed').value=match.bedNumber||'';
+            var roomNum=dorm?dorm.roomNumber:'';
+            var bedNum=match.bedNumber||'';
+            var dormSel=document.getElementById('stopDorm');
+            var bedSel=document.getElementById('stopBed');
+            if(dormSel && dormSel.tagName==='SELECT') dormSel.innerHTML=dormSelectOptions(match.className, roomNum);
+            if(bedSel && bedSel.tagName==='SELECT') bedSel.innerHTML=bedSelectOptions(dorm?dorm.id:null, bedNum);
+            document.getElementById('stopDorm').value=roomNum;
+            document.getElementById('stopBed').value=bedNum;
         }
     }
     function autoFillStopByDorm(roomNumber){
@@ -3013,8 +3560,14 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
         if(match){
             document.getElementById('absClass').value=match.className;
             var dorm=getDormitoryById(match.dormitoryId);
-            document.getElementById('absDorm').value=dorm?dorm.roomNumber:'';
-            document.getElementById('absBed').value=match.bedNumber||'';
+            var roomNum=dorm?dorm.roomNumber:'';
+            var bedNum=match.bedNumber||'';
+            var dormSel=document.getElementById('absDorm');
+            var bedSel=document.getElementById('absBed');
+            if(dormSel && dormSel.tagName==='SELECT') dormSel.innerHTML=dormSelectOptions(match.className, roomNum);
+            if(bedSel && bedSel.tagName==='SELECT') bedSel.innerHTML=bedSelectOptions(dorm?dorm.id:null, bedNum);
+            document.getElementById('absDorm').value=roomNum;
+            document.getElementById('absBed').value=bedNum;
         }
     }
     function autoFillAbsByDorm(roomNumber){
@@ -3080,7 +3633,7 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
         var leaveHtml=leaveRecords.length>0
             ? '<div style="overflow-x:auto"><table><thead><tr><th>班级</th><th>姓名</th><th>宿舍号</th><th>床号</th><th>退宿时间</th><th>退宿原因</th><th>状态</th>'+(isAdm?'<th>操作</th>':'')+'</tr></thead><tbody>'
                 + leaveRecords.map(function(r){
-                    return '<tr><td data-label="班级">'+r.className+'</td><td data-label="姓名">'+r.name+'</td><td data-label="宿舍号">'+r.dormitory+'</td><td data-label="床号">'+r.bed+'</td><td data-label="日期">'+r.date+'</td><td data-label="原因">'+r.reason+'</td><td data-label="状态">'+getLeaveRecordStatusBadge(r)+'</td>'+adminOps(r)+'</tr>';
+                    return '<tr><td data-label="班级">'+r.className+'</td><td data-label="姓名">'+r.name+'</td><td data-label="宿舍号">'+getDormSnapshotDisplay(r.dormitory)+'</td><td data-label="床号">'+r.bed+'</td><td data-label="日期">'+r.date+'</td><td data-label="原因">'+r.reason+'</td><td data-label="状态">'+getLeaveRecordStatusBadge(r)+'</td>'+adminOps(r)+'</tr>';
                 }).join('')
                 + '</tbody></table></div>'
             : '<div class="empty-state">暂无退宿记录</div>';
@@ -3091,7 +3644,7 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
         var stopHtml=stopRecords.length>0
             ? '<div style="overflow-x:auto"><table><thead><tr><th>班级</th><th>姓名</th><th>宿舍号</th><th>床号</th><th>停宿时间段</th><th>停宿原因</th><th>状态</th>'+(isAdm?'<th>操作</th>':'')+'</tr></thead><tbody>'
                 + stopRecords.map(function(r){
-                    return '<tr><td data-label="班级">'+r.className+'</td><td data-label="姓名">'+r.name+'</td><td data-label="宿舍号">'+r.dormitory+'</td><td data-label="床号">'+r.bed+'</td><td data-label="日期">'+r.date+'</td><td data-label="原因">'+r.reason+'</td><td data-label="状态">'+getLeaveRecordStatusBadge(r)+'</td>'+adminOps(r)+'</tr>';
+                    return '<tr><td data-label="班级">'+r.className+'</td><td data-label="姓名">'+r.name+'</td><td data-label="宿舍号">'+getDormSnapshotDisplay(r.dormitory)+'</td><td data-label="床号">'+r.bed+'</td><td data-label="日期">'+r.date+'</td><td data-label="原因">'+r.reason+'</td><td data-label="状态">'+getLeaveRecordStatusBadge(r)+'</td>'+adminOps(r)+'</tr>';
                 }).join('')
                 + '</tbody></table></div>'
             : '<div class="empty-state">暂无停宿记录</div>';
@@ -3143,10 +3696,14 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
             startDate=document.getElementById('stopStartDate').value;
             endDate=document.getElementById('stopEndDate').value;
         }
-        if(!className||!name||!dormitory||!bed||!date||!reason){toast('请填写完整信息','error');return;}
+        // 非住宿生（走读生）允许宿舍号/床号为空
+        var matchedStu=DB.students.find(function(s){return s.className===className&&s.name===name;});
+        var isNonRes=matchedStu&&isNonResidentStudent(matchedStu);
+        if(!className||!name||!date||!reason){toast('请填写完整信息','error');return;}
+        if(!isNonRes&&(!dormitory||!bed)){toast('请填写完整信息','error');return;}
         // 管理员登记直接生效（approved）；班级/生活老师登记需审核（pending）
         var status=isAdmin()?'approved':'pending';
-        var stu=matchStudentBySnapshot(className,name,dormitory,bed);
+        var stu=isNonRes?matchedStu:matchStudentBySnapshot(className,name,dormitory,bed);
         var newRec={
             id:generateRecordId(), type:type, className:className, name:name,
             dormitory:dormitory, bed:bed, date:date, reason:reason,
@@ -3256,9 +3813,13 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
         var reason=document.getElementById('absReason').value.trim();
         var startDate=document.getElementById('absStartDate').value;
         var endDate=document.getElementById('absEndDate').value;
-        if(!className||!name||!dormitory||!bed||!startDate||!endDate){toast('请填写完整信息','error');return;} // 说明为选填，不校验
+        // 非住宿生（走读生）允许宿舍号/床号为空
+        var matchedStu=DB.students.find(function(s){return s.className===className&&s.name===name;});
+        var isNonRes=matchedStu&&isNonResidentStudent(matchedStu);
+        if(!className||!name||!startDate||!endDate){toast('请填写完整信息','error');return;} // 说明为选填，不校验
+        if(!isNonRes&&(!dormitory||!bed)){toast('请填写完整信息','error');return;}
         if(endDate<startDate){toast('结束日期不能早于开始日期','error');return;}
-        var stu=matchStudentBySnapshot(className,name,dormitory,bed);
+        var stu=isNonRes?matchedStu:matchStudentBySnapshot(className,name,dormitory,bed);
         var newRec={
             id:DB.nextIds.absence++, studentId:stu?stu.id:null,
             className:className, name:name, dormitory:dormitory, bed:bed,
@@ -3299,9 +3860,11 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
         var typeMap={personal:'事假',sick:'病假',other:'其他'};
         var isAdm=isAdmin();
         var html=records.length>0
-            ? '<div style="overflow-x:auto"><table><thead><tr><th>班级</th><th>姓名</th><th>宿舍号</th><th>床号</th><th>请假类型</th><th>说明</th><th>开始日期</th><th>结束日期</th><th>状态</th>'+(isAdm?'<th>操作</th>':'')+'</tr></thead><tbody>'
+            ? '<div style="overflow-x:auto"><table><thead><tr><th>班级</th><th>姓名</th><th>住宿状态</th><th>宿舍号</th><th>床号</th><th>请假类型</th><th>说明</th><th>开始日期</th><th>结束日期</th><th>状态</th>'+(isAdm?'<th>操作</th>':'')+'</tr></thead><tbody>'
                 + records.map(function(r){
-                    return '<tr><td data-label="班级">'+r.className+'</td><td data-label="姓名">'+r.name+'</td><td data-label="宿舍号">'+r.dormitory+'</td><td data-label="床号">'+r.bed+'</td><td data-label="类型">'+(typeMap[r.type]||r.type)+'</td><td data-label="说明">'+(r.reason||'-')+'</td><td data-label="开始">'+r.startDate+'</td><td data-label="结束">'+r.endDate+'</td><td data-label="状态">'+getAbsenceStatusBadge(r)+'</td>'+(isAdm?'<td data-label="操作"><button class="btn btn-danger btn-xs" onclick="deleteAbsenceRecord(\''+r.id+'\')">删除</button></td>':'')+'</tr>';
+                    var stu = r.studentId ? getStudentById(r.studentId) : DB.students.find(function(s){return s.className===r.className&&s.name===r.name;});
+                    var resideTag = isNonResidentStudent(stu) ? '<span style="color:var(--info)">走读</span>' : '住宿';
+                    return '<tr><td data-label="班级">'+r.className+'</td><td data-label="姓名">'+r.name+'</td><td data-label="住宿状态">'+resideTag+'</td><td data-label="宿舍号">'+getDormSnapshotDisplay(r.dormitory)+'</td><td data-label="床号">'+r.bed+'</td><td data-label="类型">'+(typeMap[r.type]||r.type)+'</td><td data-label="说明">'+(r.reason||'-')+'</td><td data-label="开始">'+r.startDate+'</td><td data-label="结束">'+r.endDate+'</td><td data-label="状态">'+getAbsenceStatusBadge(r)+'</td>'+(isAdm?'<td data-label="操作"><button class="btn btn-danger btn-xs" onclick="deleteAbsenceRecord(\''+r.id+'\')">删除</button></td>':'')+'</tr>';
                 }).join('')
                 + '</tbody></table></div>'
             : '<div class="empty-state">暂无请假记录</div>';
@@ -3336,12 +3899,12 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
             var dormSet = {};
             classStudents.forEach(function(s) {
                 var dorm = getDormitoryById(s.dormitoryId);
-                if (dorm) dormSet[dorm.roomNumber] = true;
+                if (dorm && !isDormitoryDeleted(dorm.roomNumber)) dormSet[dorm.roomNumber] = true;
             });
             Object.keys(dormSet).sort().forEach(function(r) { dormOptions += '<option value="'+r+'">'+r+'</option>'; });
         } else {
             var allDormSet = {};
-            DB.dormitories.forEach(function(d) { allDormSet[d.roomNumber] = true; });
+            DB.dormitories.forEach(function(d) { if(!isDormitoryDeleted(d.roomNumber)) allDormSet[d.roomNumber] = true; });
             Object.keys(allDormSet).sort().forEach(function(r) { dormOptions += '<option value="'+r+'">'+r+'</option>'; });
         }
 
@@ -3355,14 +3918,16 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
             + '<div class="form-group"><label>数据类型</label><select id="exportDataType" onchange="onExportDataTypeChange()"><option value="deduction">扣分记录</option><option value="leave">退宿记录</option><option value="stop">停宿记录</option><option value="absence">请假记录</option></select></div>'
             + '<div class="form-group"><label>开始日期</label><input type="text" class="date-picker" id="exportStartDate" value="'+defaultStartStr+'"></div>'
             + '<div class="form-group"><label>结束日期</label><input type="text" class="date-picker" id="exportEndDate" value="'+today+'"></div>'
-            + '<div class="form-group"><label>班级</label><select id="exportClass" onchange="updateExportFilterOptions()" '+(isClassAdmin?'disabled':'')+'>'+classOptions+'</select>'
-            + (isClassAdmin ? '' : '<input type="text" id="exportClassManual" placeholder="或手动输入" style="margin-top:4px;" oninput="updateExportFilterOptions()">') + '</div>'
-            + '<div class="form-group" id="grpExportStudent"><label>学生</label><select id="exportStudent"></select>'
-            + (isClassAdmin ? '' : '<input type="text" id="exportStudentManual" placeholder="或手动输入姓名" style="margin-top:4px;" oninput="autoFillFromName()">') + '</div>'
-            + '<div class="form-group" id="grpExportDorm"><label>宿舍号</label><select id="exportDorm" onchange="updateExportFilterOptions()">'+dormOptions+'</select>'
-            + (isClassAdmin ? '' : '<input type="text" id="exportDormManual" placeholder="或手动输入" style="margin-top:4px;" oninput="autoFillFromDorm()">') + '</div>'
-            + '<div class="form-group" id="grpExportBed"><label>床号</label><select id="exportBed" onchange="updateStudentOptionsOnly()"></select>'
-            + (isClassAdmin ? '' : '<input type="text" id="exportBedManual" placeholder="或手动输入" style="margin-top:4px;" oninput="autoFillFromBed()">') + '</div>'
+            + '<div class="form-group"><label>班级</label><input type="text" id="exportClass" list="dlExportClass" placeholder="选择或输入班级" value="'+(isClassAdmin?classAccountClassName:'')+'" '+(isClassAdmin?'readonly':'')+' oninput="onExportClassInput()"></div>'
+            + '<datalist id="dlExportClass"></datalist>'
+            + '<div class="form-group" id="grpExportStudent"><label>学生</label><input type="text" id="exportStudent" list="dlExportStudent" placeholder="选择或输入学生姓名" oninput="onExportStudentInput()"></div>'
+            + '<datalist id="dlExportStudent"></datalist>'
+            + '<div class="form-group" id="grpExportAbsenceName" style="display:none"><label>学生姓名</label><input type="text" id="exportAbsenceName" list="dlExportAbsenceName" placeholder="选择或输入学生姓名" oninput="onExportAbsenceNameInput()"></div>'
+            + '<datalist id="dlExportAbsenceName"></datalist>'
+            + '<div class="form-group" id="grpExportDorm"><label>宿舍号</label><input type="text" id="exportDorm" list="dlExportDorm" placeholder="选择或输入宿舍号" oninput="onExportDormInput()"></div>'
+            + '<datalist id="dlExportDorm"></datalist>'
+            + '<div class="form-group" id="grpExportBed"><label>床号</label><input type="text" id="exportBed" list="dlExportBed" placeholder="选择或输入床号" oninput="onExportBedInput()"></div>'
+            + '<datalist id="dlExportBed"></datalist>'
             + '<button class="btn btn-primary" onclick="queryFilteredData()">🔍 查询筛选数据</button>'
             + '<button class="btn btn-outline" onclick="exportFilteredDataNew()">📥 导出筛选数据</button>'
             + '</div></div></div>';
@@ -3371,7 +3936,12 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
             // 扣分记录专属操作卡片：切换到退宿/停宿类型时自动隐藏（onExportDataTypeChange）
             html += '<div id="deductionOnlyCards">'
                 + '<div class="card"><div class="card-header">导出全部数据</div><div class="card-body"><button class="btn btn-primary" onclick="exportCSV()">📥 导出全部CSV</button></div></div>'
-                + '<div class="card"><div class="card-header">危险操作</div><div class="card-body"><button class="btn btn-danger" onclick="deleteAllRecords()">🗑️ 删除全部扣分记录</button><p style="color:var(--danger);margin-top:8px;font-size:12px">此操作将永久删除所有扣分记录，不可恢复！</p></div></div>'
+                + '<div class="card"><div class="card-header">危险操作</div><div class="card-body">'
+                + '<button class="btn btn-danger" onclick="deleteAllRecords()">🗑️ 删除全部扣分记录</button>'
+                + '<button class="btn btn-danger" style="margin-left:8px" onclick="deleteAllAbsenceRecords()">🗑️ 删除全部请假记录</button>'
+                + '<button class="btn btn-danger" style="margin-left:8px" onclick="deleteAllStopRecords()">🗑️ 删除全部停宿记录</button>'
+                + '<button class="btn btn-danger" style="margin-left:8px" onclick="deleteAllLeaveRecords()">🗑️ 删除全部退宿记录</button>'
+                + '<p style="color:var(--danger);margin-top:8px;font-size:12px">此操作将永久删除对应类型的全部记录，不可恢复！</p></div></div>'
                 + '</div>';
         }
 
@@ -3379,46 +3949,70 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
         container.innerHTML = html;
 
         // 初始化联动
-        updateExportFilterOptions();
+        updateExportDatalists();
         initDatePickers(document); // 初始化导出筛选日期选择器
     }
 
-    // 切换数据类型：扣分专属操作卡片仅在扣分类型下显示，并清空旧查询结果；
-    // 请假记录仅需 班级/姓名/日期 范围，隐藏宿舍号/床号/学生条件
+    // 切换数据类型：
+    // - 扣分记录：显示 班级/学生/宿舍号/床号
+    // - 退宿/停宿记录：显示 班级/宿舍号/床号（隐藏学生姓名）
+    // - 请假记录：显示 班级/学生姓名（隐藏学生/宿舍号/床号）
     function onExportDataTypeChange(){
         var typeEl=document.getElementById('exportDataType');
         var type=typeEl?typeEl.value:'deduction';
         var cards=document.getElementById('deductionOnlyCards');
         if(cards) cards.style.display=(type==='deduction'?'':'none');
+        var isLeaveOrStop=(type==='leave'||type==='stop');
         var isAbsence=(type==='absence');
-        ['grpExportDorm','grpExportBed','grpExportStudent'].forEach(function(id){
+        // 学生筛选：扣分显示，退宿/停宿隐藏，请假隐藏（用专用学生姓名）
+        var studentGrp=document.getElementById('grpExportStudent');
+        if(studentGrp) studentGrp.style.display=(type==='deduction')?'':'none';
+        // 宿舍号/床号：扣分/退宿/停宿显示，请假隐藏
+        ['grpExportDorm','grpExportBed'].forEach(function(id){
             var el=document.getElementById(id);
             if(el) el.style.display=isAbsence?'none':'';
         });
+        // 请假专用学生姓名：仅请假显示
+        var absNameGrp=document.getElementById('grpExportAbsenceName');
+        if(absNameGrp) absNameGrp.style.display=isAbsence?'':'none';
+        if(isAbsence){ updateExportAbsenceNameList(); }
+        else { updateExportDatalists(); }
         var resultArea=document.getElementById('queryResultArea');
         if(resultArea) resultArea.innerHTML='';
     }
+    // 请假记录姓名 datalist：按选中班级过滤，切换班级时默认选中第一个学生
+    function updateExportAbsenceNameList(){
+        var clsEl=document.getElementById('exportClass');
+        var className=clsEl?clsEl.value.trim():'';
+        if(currentUser&&currentUser.role==='CLASS_ADMIN') className=currentUser.className;
+        var dl=document.getElementById('dlExportAbsenceName');
+        var nameEl=document.getElementById('exportAbsenceName');
+        if(!dl) return;
+        var pool=className?DB.students.filter(function(s){return s.className===className;}):DB.students;
+        var nameSet={}; pool.forEach(function(s){ if(s.name) nameSet[s.name]=true; });
+        var names=Object.keys(nameSet);
+        dl.innerHTML=names.map(function(n){return '<option value="'+n+'"></option>';}).join('');
+        // 切换班级后，默认填入该班级第一个学生
+        if(nameEl && names.length>0 && (!nameEl.value.trim() || !nameSet[nameEl.value.trim()])){
+            nameEl.value=names[0];
+        }
+    }
 
-    // 统一读取数据管理页筛选条件（扣分/退宿/停宿通用）；班级账号强制锁定本班
+    // 统一读取数据管理页筛选条件；班级账号强制锁定本班
     function getExportFilterValues(){
         var startDate=document.getElementById('exportStartDate').value;
         var endDate=document.getElementById('exportEndDate').value;
-        var classNameSelect=document.getElementById('exportClass').value;
-        var classNameManual=document.getElementById('exportClassManual')?document.getElementById('exportClassManual').value.trim():'';
-        var className=classNameManual||classNameSelect;
+        var className=document.getElementById('exportClass')?document.getElementById('exportClass').value.trim():'';
         if(currentUser&&currentUser.role==='CLASS_ADMIN') className=currentUser.className;
-        var dormSelect=document.getElementById('exportDorm').value;
-        var dormManual=document.getElementById('exportDormManual')?document.getElementById('exportDormManual').value.trim():'';
-        var dormRoom=dormManual||dormSelect;
-        var bedSelect=document.getElementById('exportBed').value;
-        var bedManual=document.getElementById('exportBedManual')?document.getElementById('exportBedManual').value.trim():'';
-        var bed=bedManual||bedSelect;
-        var studentSelect=document.getElementById('exportStudent').value;
-        var studentManual=document.getElementById('exportStudentManual')?document.getElementById('exportStudentManual').value.trim():'';
-        var studentName=studentManual||studentSelect;
+        var dormRoom=document.getElementById('exportDorm')?document.getElementById('exportDorm').value.trim():'';
+        var bed=document.getElementById('exportBed')?document.getElementById('exportBed').value.trim():'';
+        var studentName=document.getElementById('exportStudent')?document.getElementById('exportStudent').value.trim():'';
+        // 请假记录专用姓名筛选
+        var absenceNameEl=document.getElementById('exportAbsenceName');
+        var absenceName=absenceNameEl?absenceNameEl.value.trim():'';
         var typeEl=document.getElementById('exportDataType');
         var dataType=typeEl?typeEl.value:'deduction';
-        return {startDate:startDate,endDate:endDate,className:className,dormRoom:dormRoom,bed:bed,studentName:studentName,dataType:dataType};
+        return {startDate:startDate,endDate:endDate,className:className,dormRoom:dormRoom,bed:bed,studentName:studentName,absenceName:absenceName,dataType:dataType};
     }
 
     // 退宿/停宿记录筛选：记录中的 班级/宿舍号/床号/姓名 为登记时从学生数据同步的快照，
@@ -3449,181 +4043,112 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
             var dStart=r.startDate||'', dEnd=r.endDate||dStart;
             if(dStart&&dEnd&&(dEnd<f.startDate||dStart>f.endDate)) return false;
             if(f.className&&r.className!==f.className) return false;
-            if(f.studentName&&r.name!==f.studentName) return false;
+            // 请假记录使用专用姓名筛选字段（absenceName）
+            var nameFilter=f.absenceName||f.studentName;
+            if(nameFilter&&r.name!==nameFilter) return false;
             return true;
         });
         records.sort(function(a,b){ return (a.startDate||'')<(b.startDate||'')?-1:1; });
         return records;
     }
 
-    // 班级联动宿舍号和学生下拉框 (重构版)
-    function updateExportFilterOptions() {
-        var classManual = document.getElementById('exportClassManual') ? document.getElementById('exportClassManual').value.trim() : '';
-        var classSelect = document.getElementById('exportClass').value;
-        var className = classManual || classSelect;
-        if (currentUser && currentUser.role === 'CLASS_ADMIN') {
-            className = currentUser.className; // 强制锁定班级
-        }
+    // 统一填充数据管理页所有 datalist（班级/学生/宿舍号/床号）
+    // 核心原则：选中值后选项列表保持完整，仅班级切换时重新加载班级数据
+    function updateExportDatalists() {
+        var className = document.getElementById('exportClass') ? document.getElementById('exportClass').value.trim() : '';
+        if (currentUser && currentUser.role === 'CLASS_ADMIN') className = currentUser.className;
+        var dormRoom = document.getElementById('exportDorm') ? document.getElementById('exportDorm').value.trim() : '';
 
-        var dormManual = document.getElementById('exportDormManual') ? document.getElementById('exportDormManual').value.trim() : '';
-        var dormSelect = document.getElementById('exportDorm').value;
-        var dormRoom = dormManual || dormSelect;
+        // 班级 datalist：全部班级
+        var classSet={}; DB.students.forEach(function(s){ if(s.className) classSet[s.className]=true; });
+        var classList=sortClassNames(Object.keys(classSet));
+        var dlClass=document.getElementById('dlExportClass');
+        if(dlClass) dlClass.innerHTML=classList.map(function(c){return '<option value="'+c+'"></option>';}).join('');
 
-        var dormSelectEl = document.getElementById('exportDorm');
-        var bedSelectEl = document.getElementById('exportBed');
-        var studentSelectEl = document.getElementById('exportStudent');
-        if (!dormSelectEl || !bedSelectEl || !studentSelectEl) return;
-
-        var currentDorm = dormSelectEl.value;
-        var currentBed = bedSelectEl.value;
-        var currentStudent = studentSelectEl.value;
-
-        // 生成宿舍号选项
-        var dormOptions = '<option value="">全部宿舍</option>';
-        if (className) {
-            var classStudents = DB.students.filter(function(s) { return s.className === className; });
-            var dormSet = {};
-            classStudents.forEach(function(s) {
-                var dorm = getDormitoryById(s.dormitoryId);
-                if (dorm) dormSet[dorm.roomNumber] = true;
-            });
-            var dormRooms = Object.keys(dormSet).sort();
-            dormRooms.forEach(function(r) {
-                dormOptions += '<option value="'+r+'">'+r+'</option>';
+        // 宿舍号 datalist：班级→该班学生入住宿舍；否则全部生效宿舍
+        var dormSet={};
+        if(className){
+            DB.students.forEach(function(s){
+                if(s.className!==className) return;
+                var d=getDormitoryById(s.dormitoryId);
+                if(d && !isDormitoryDeleted(d.roomNumber)) dormSet[d.roomNumber]=true;
             });
         } else {
-            var allDormSet = {};
-            DB.dormitories.forEach(function(d) { allDormSet[d.roomNumber] = true; });
-            var allDormRooms = Object.keys(allDormSet).sort();
-            allDormRooms.forEach(function(r) {
-                dormOptions += '<option value="'+r+'">'+r+'</option>';
-            });
+            DB.dormitories.forEach(function(d){ if(!isDormitoryDeleted(d.roomNumber)) dormSet[d.roomNumber]=true; });
         }
-        dormSelectEl.innerHTML = dormOptions;
+        var dlDorm=document.getElementById('dlExportDorm');
+        if(dlDorm) dlDorm.innerHTML=Object.keys(dormSet).sort().map(function(r){return '<option value="'+r+'"></option>';}).join('');
 
-        // 生成床号选项（根据宿舍号）
-        var bedOptions = '<option value="">全部床号</option>';
-        if (dormRoom) {
-            var dormObj = DB.dormitories.find(function(d) { return d.roomNumber === dormRoom; });
-            if (dormObj) {
-                var bedSet = {};
-                var roomStudents = getStudentsByDormitory(dormObj.id);
-                roomStudents.forEach(function(s) {
-                    if (s.bedNumber) bedSet[s.bedNumber] = true;
+        // 床号 datalist：宿舍→该宿舍床号；否则1-8
+        var beds=[];
+        if(dormRoom){
+            var dormObj=DB.dormitories.find(function(d){return d.roomNumber===dormRoom;});
+            if(dormObj){
+                var bs={};
+                getStudentsByDormitory(dormObj.id).forEach(function(s){
+                    if((!className||s.className===className)&&s.bedNumber) bs[s.bedNumber]=true;
                 });
-                var beds = Object.keys(bedSet).sort(function(a,b){ return parseInt(a)-parseInt(b); });
-                beds.forEach(function(b) {
-                    bedOptions += '<option value="'+b+'">'+b+'</option>';
-                });
-            }
-        } else {
-            for (var b=1; b<=4; b++) bedOptions += '<option value="'+b+'">'+b+'</option>';
-        }
-        bedSelectEl.innerHTML = bedOptions;
-
-        // 生成学生选项（根据班级和宿舍号）
-        var studentOptions = '<option value="">全部学生</option>';
-        var filteredStudents = DB.students.filter(function(s) {
-            if (className && s.className !== className) return false;
-            if (dormRoom) {
-                var dorm = getDormitoryById(s.dormitoryId);
-                if (!dorm || dorm.roomNumber !== dormRoom) return false;
-            }
-            return true;
-        });
-        filteredStudents.forEach(function(s) {
-            studentOptions += '<option value="'+s.name+'">'+s.name+'（'+s.className+'）</option>';
-        });
-        studentSelectEl.innerHTML = studentOptions;
-
-        if (currentDorm && Array.prototype.some.call(dormSelectEl.options, function(opt){ return opt.value === currentDorm; })) {
-            dormSelectEl.value = currentDorm;
-        }
-        if (currentBed && Array.prototype.some.call(bedSelectEl.options, function(opt){ return opt.value === currentBed; })) {
-            bedSelectEl.value = currentBed;
-        }
-        if (currentStudent && Array.prototype.some.call(studentSelectEl.options, function(opt){ return opt.value === currentStudent; })) {
-            studentSelectEl.value = currentStudent;
-        }
-
-        // 如果床号已选，尝试自动匹配学生
-        if (currentBed && dormRoom) {
-            var dormObj = DB.dormitories.find(function(d) { return d.roomNumber === dormRoom; });
-            if (dormObj) {
-                var matchedStudent = DB.students.find(function(s) {
-                    return s.dormitoryId === dormObj.id && s.bedNumber === currentBed;
-                });
-                if (matchedStudent) {
-                    studentSelectEl.value = matchedStudent.name;
-                }
+                beds=Object.keys(bs).sort(function(a,b){return parseInt(a)-parseInt(b);});
             }
         }
+        if(!beds.length) beds=['1','2','3','4','5','6','7','8'];
+        var dlBed=document.getElementById('dlExportBed');
+        if(dlBed) dlBed.innerHTML=beds.map(function(b){return '<option value="'+b+'"></option>';}).join('');
+
+        // 学生 datalist：班级→该班学生；宿舍→该宿舍学生；否则全部
+        var pool=DB.students;
+        if(className) pool=pool.filter(function(s){return s.className===className;});
+        else if(dormRoom){
+            var d=DB.dormitories.find(function(x){return x.roomNumber===dormRoom;});
+            pool=d?getStudentsByDormitory(d.id):[];
+        }
+        var nameSet={}; pool.forEach(function(s){if(s.name) nameSet[s.name]=true;});
+        var dlStudent=document.getElementById('dlExportStudent');
+        if(dlStudent) dlStudent.innerHTML=Object.keys(nameSet).map(function(n){return '<option value="'+n+'"></option>';}).join('');
+
+        // 同步请假姓名 datalist
+        updateExportAbsenceNameList();
     }
 
-    // 床号变化时更新学生
-    function updateStudentOptionsOnly() {
-        var dormManual = document.getElementById('exportDormManual') ? document.getElementById('exportDormManual').value.trim() : '';
-        var dormSelect = document.getElementById('exportDorm').value;
-        var dormRoom = dormManual || dormSelect;
-        var bedManual = document.getElementById('exportBedManual') ? document.getElementById('exportBedManual').value.trim() : '';
-        var bedSelect = document.getElementById('exportBed').value;
-        var bed = bedManual || bedSelect;
-
-        var studentSelectEl = document.getElementById('exportStudent');
-        if (!studentSelectEl || !dormRoom || !bed) return;
-
-        var dormObj = DB.dormitories.find(function(d) { return d.roomNumber === dormRoom; });
-        if (dormObj) {
-            var matchedStudent = DB.students.find(function(s) {
-                return s.dormitoryId === dormObj.id && s.bedNumber === bed;
-            });
-            if (matchedStudent) {
-                studentSelectEl.value = matchedStudent.name;
-                var studentManual = document.getElementById('exportStudentManual');
-                if (studentManual) studentManual.value = matchedStudent.name;
-            }
-        }
+    // 班级变化：清空学生/宿舍/床号，刷新所有 datalist
+    function onExportClassInput(){
+        var stuEl=document.getElementById('exportStudent'); if(stuEl) stuEl.value='';
+        var dormEl=document.getElementById('exportDorm'); if(dormEl) dormEl.value='';
+        var bedEl=document.getElementById('exportBed'); if(bedEl) bedEl.value='';
+        updateExportDatalists();
     }
 
-    function autoFillFromName(){
-        var name = document.getElementById('exportStudentManual').value.trim();
-        if(!name) return;
-        var student = DB.students.find(function(s){return s.name===name;});
+    // 学生变化：自动填充宿舍号和床号，刷新 datalist（选项保持完整）
+    function onExportStudentInput(){
+        var name=document.getElementById('exportStudent')?document.getElementById('exportStudent').value.trim():'';
+        if(!name){ return; }
+        var student=DB.students.find(function(s){return s.name===name;});
         if(student){
-            document.getElementById('exportClassManual').value = student.className || '';
-            var dorm = getDormitoryById(student.dormitoryId);
-            document.getElementById('exportDormManual').value = dorm ? dorm.roomNumber : '';
-            document.getElementById('exportBedManual').value = student.bedNumber || '';
-            updateExportFilterOptions();
+            var classEl=document.getElementById('exportClass');
+            if(classEl && !classEl.readOnly) classEl.value=student.className||'';
+            var dorm=getDormitoryById(student.dormitoryId);
+            var dormEl=document.getElementById('exportDorm');
+            if(dormEl) dormEl.value=dorm?dorm.roomNumber:'';
+            var bedEl=document.getElementById('exportBed');
+            if(bedEl) bedEl.value=student.bedNumber||'';
         }
+        updateExportDatalists();
     }
-    function autoFillFromDorm(){
-        var roomNumber = document.getElementById('exportDormManual').value.trim();
-        if(!roomNumber) return;
-        var dorm = DB.dormitories.find(function(d){return d.roomNumber===roomNumber;});
-        if(dorm){
-            var students = getStudentsByDormitory(dorm.id);
-            if(students.length>0){
-                document.getElementById('exportClassManual').value = students[0].className || '';
-                document.getElementById('exportStudentManual').value = students[0].name || '';
-                updateExportFilterOptions();
-            }
-        }
+
+    // 宿舍号变化：刷新学生/床号 datalist（学生列表匹配该宿舍）
+    function onExportDormInput(){
+        var bedEl=document.getElementById('exportBed'); if(bedEl) bedEl.value='';
+        updateExportDatalists();
     }
-    function autoFillFromBed(){
-        var roomNumber = document.getElementById('exportDormManual').value.trim();
-        var bed = document.getElementById('exportBedManual').value.trim();
-        if(!roomNumber || !bed) return;
-        var dorm = DB.dormitories.find(function(d){return d.roomNumber===roomNumber;});
-        if(dorm){
-            var student = DB.students.find(function(s){return s.dormitoryId===dorm.id && s.bedNumber===bed;});
-            if(student){
-                document.getElementById('exportStudentManual').value = student.name;
-                document.getElementById('exportClassManual').value = student.className;
-                updateExportFilterOptions();
-            }
-        }
-        updateStudentOptionsOnly();
+
+    // 床号变化：刷新 datalist
+    function onExportBedInput(){
+        updateExportDatalists();
+    }
+
+    // 请假记录姓名输入（无特殊联动，仅确保 datalist 完整）
+    function onExportAbsenceNameInput(){
+        // 姓名列表始终显示该班级全部学生，无需额外处理
     }
 
     // 查询筛选数据函数
@@ -3647,7 +4172,7 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
             }
             var leaveRows=leaveRecords.map(function(r){
                 return '<tr><td data-label="'+dateLabel+'">'+r.date+'</td>'
-                    + '<td data-label="宿舍号">'+r.dormitory+'</td>'
+                    + '<td data-label="宿舍号">'+getDormSnapshotDisplay(r.dormitory)+'</td>'
                     + '<td data-label="床号">'+r.bed+'</td>'
                     + '<td data-label="班级">'+r.className+'</td>'
                     + '<td data-label="姓名">'+r.name+'</td>'
@@ -3735,7 +4260,7 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
             var studentNameVal = student ? student.name : '宿舍集体';
             return '<tr>'
                 + '<td data-label="日期">' + r.recordDate + '</td>'
-                + '<td data-label="宿舍号">' + (dorm ? dorm.roomNumber : '') + '</td>'
+                + '<td data-label="宿舍号">' + getDormDisplayNameById(r.dormitoryId) + '</td>'
                 + '<td data-label="床号">' + bedNumber + '</td>'
                 + '<td data-label="班级">' + classNameVal + '</td>'
                 + '<td data-label="学生">' + studentNameVal + '</td>'
@@ -3743,13 +4268,14 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
                 + '<td data-label="卫生扣分">' + (r.hygieneScore || 0) + '</td>'
                 + '<td data-label="纪律项目">' + (disNames || '-') + '</td>'
                 + '<td data-label="纪律扣分">' + (r.disciplineScore || 0) + '</td>'
+                + '<td data-label="备注">' + escapeHtmlAttr(r.remark || '-') + '</td>'
                 + '</tr>';
         }).join('');
 
         resultArea.innerHTML = '<div class="card">'
             + '<div class="card-header">查询结果（' + records.length + '条记录）</div>'
             + '<div style="overflow-x:auto;"><table>'
-            + '<thead><tr><th>日期</th><th>宿舍号</th><th>床号</th><th>班级</th><th>学生</th><th>卫生加扣分</th><th>卫生分值</th><th>纪律加扣分</th><th>纪律分值</th></tr></thead>'
+            + '<thead><tr><th>日期</th><th>宿舍号</th><th>床号</th><th>班级</th><th>学生</th><th>卫生加扣分</th><th>卫生分值</th><th>纪律加扣分</th><th>纪律分值</th><th>备注</th></tr></thead>'
             + '<tbody>' + tableRows + '</tbody>'
             + '</table></div></div>';
     }
@@ -3767,7 +4293,7 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
             var isLeave=f.dataType==='leave';
             var lCsv='\uFEFF班级,姓名,宿舍号,床号,'+(isLeave?'退宿时间,退宿原因':'停宿时间段,停宿原因')+'\n';
             lr.forEach(function(r){
-                lCsv+=r.className+','+r.name+','+r.dormitory+','+r.bed+','+r.date+','+r.reason+'\n';
+                lCsv+=r.className+','+r.name+','+getDormSnapshotDisplay(r.dormitory)+','+r.bed+','+r.date+','+r.reason+'\n';
             });
             var lBlob=new Blob([lCsv],{type:'text/csv;charset=utf-8;'});
             var lLink=document.createElement('a');
@@ -3820,7 +4346,7 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
             var bedA=getBedNumberForSort(a); var bedB=getBedNumberForSort(b);
             return bedA-bedB;
         });
-        var csv='\uFEFF日期,宿舍号,床号,班级,学生,卫生加扣分,扣分值,纪律加扣分,扣分值\n';
+        var csv='\uFEFF日期,宿舍号,床号,班级,学生,卫生加扣分,扣分值,纪律加扣分,扣分值,备注\n';
         records.forEach(function(r){
             var dorm=getDormitoryById(r.dormitoryId);
             var student=r.studentId?getStudentById(r.studentId):null;
@@ -3829,7 +4355,7 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
             var bedNumber=student?(student.bedNumber||'-'):'-';
             var classNameVal=getClassNameForRecord(r);
             var studentNameVal=student?student.name:'宿舍集体';
-            csv+=r.recordDate+','+(dorm?dorm.roomNumber:'')+','+bedNumber+','+classNameVal+','+studentNameVal+','+(hyNames||'-')+','+(r.hygieneScore||0)+','+(disNames||'-')+','+(r.disciplineScore||0)+'\n';
+            csv+=r.recordDate+','+getDormDisplayNameById(r.dormitoryId)+','+bedNumber+','+classNameVal+','+studentNameVal+','+(hyNames||'-')+','+(r.hygieneScore||0)+','+(disNames||'-')+','+(r.disciplineScore||0)+','+escapeHtmlAttr(r.remark||'').replace(/,/g,'，')+'\n';
         });
         var fileName;
         if(startDate===endDate && !className && !dormRoom && !bed && !studentName){
@@ -3870,7 +4396,7 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
             var bedA=getBedNumberForSort(a); var bedB=getBedNumberForSort(b);
             return bedA-bedB;
         });
-        var csv='\uFEFF日期,宿舍号,床号,班级,学生,卫生加扣分,扣分值,纪律加扣分,扣分值\n';
+        var csv='\uFEFF日期,宿舍号,床号,班级,学生,卫生加扣分,扣分值,纪律加扣分,扣分值,备注\n';
         records.forEach(function(r){
             var dorm=getDormitoryById(r.dormitoryId);
             var student=r.studentId?getStudentById(r.studentId):null;
@@ -3879,7 +4405,7 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
             var bedNumber=student?(student.bedNumber||'-'):'-';
             var classNameVal=getClassNameForRecord(r);
             var studentNameVal=student?student.name:'宿舍集体';
-            csv+=r.recordDate+','+(dorm?dorm.roomNumber:'')+','+bedNumber+','+classNameVal+','+studentNameVal+','+(hyNames||'-')+','+(r.hygieneScore||0)+','+(disNames||'-')+','+(r.disciplineScore||0)+'\n';
+            csv+=r.recordDate+','+getDormDisplayNameById(r.dormitoryId)+','+bedNumber+','+classNameVal+','+studentNameVal+','+(hyNames||'-')+','+(r.hygieneScore||0)+','+(disNames||'-')+','+(r.disciplineScore||0)+','+escapeHtmlAttr(r.remark||'').replace(/,/g,'，')+'\n';
         });
         var blob=new Blob([csv],{type:'text/csv;charset=utf-8;'});
         var link=document.createElement('a');
