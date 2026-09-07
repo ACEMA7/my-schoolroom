@@ -4,9 +4,13 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <meta name="theme-color" content="#4f6ef7">
+    <!-- PWA 配置 -->
+    <link rel="manifest" href="manifest.json">
+    <meta name="apple-mobile-web-app-title" content="宿舍管理">
+    <link rel="apple-touch-icon" href="icon-192.png">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="default">
-    <title>宿舍扣分管理系统</title>
+    <title>宿舍管理系统</title>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/lz-string@1.5.0/libs/lz-string.min.js"></script>
@@ -431,6 +435,20 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
             }
             .chip-dorms::-webkit-scrollbar{display:none}
             .chip-dorms .chip{flex:0 0 auto;padding:9px 14px;font-size:13px}
+            /* 统计报表楼层芯片：每行4个固定网格（复用 chip-floors 的成熟 wrap 模式），共8个标签两行全部可见 */
+            .chip-floors-scroll{display:flex;flex-wrap:wrap;gap:8px;padding:4px 0 6px}
+            .chip-floors-scroll .chip{flex:0 0 calc(25% - 6px);padding:11px 2px;font-size:14px;text-align:center}
+            /* 楼层扣分情况：每个宿舍一张卡片，内部5列垂直堆叠（标签在上、值在下） */
+            .dorm-row-mobile{display:flex;align-items:stretch;gap:0;padding:12px 6px;background:#f8f9fc;border-radius:10px;margin-bottom:8px;border:1px solid #e5e7eb}
+            .dorm-row-mobile .rank-item{flex:1;min-width:0;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:2px 4px;border-right:1px dashed #e5e7eb}
+            .dorm-row-mobile .rank-item:last-child{border-right:none}
+            .dorm-row-mobile .rank-label{font-size:10px;color:#9ca3af;margin-bottom:3px;white-space:nowrap}
+            .dorm-row-mobile .rank-value{font-size:15px;font-weight:700;color:#1f2937;text-align:center;line-height:1.2;white-space:nowrap}
+            .dorm-row-mobile .rank-value.has{color:#ff3b30}
+            .dorm-row-mobile .rank-item.rank-idx-1 .rank-value{color:#4f6ef7}
+            .dorm-row-mobile .rank-item.rank-idx-1.top .rank-value{color:#f59e0b}
+            .dorm-row-mobile .rank-item.rank-idx-4 .rank-value{color:#4f6ef7}
+            .dorm-row-mobile .rank-item.rank-idx-4 .rank-value.has{color:#ff3b30}
             .chip-targets{display:flex;flex-wrap:wrap;gap:8px}
             .chip-targets .chip{flex:0 0 calc(33.333% - 6px);padding:11px 2px;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 
@@ -497,11 +515,11 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
             .stat-cards{grid-template-columns:1fr 1fr;gap:10px}
             .stat-card{padding:14px 10px}
             .stat-card .number{font-size:22px}
-            /* 住宿信息页：三个统计卡片一行展示（宿舍人数/扣分记录数/累计扣分） */
-            .stat-cards-3{grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:16px}
-            .stat-cards-3 .stat-card{padding:12px 4px}
-            .stat-cards-3 .stat-card .number{font-size:20px}
-            .stat-cards-3 .stat-card .label{font-size:11px}
+            /* 住宿信息页：三个统计卡片一行三列展示（宿舍人数/扣分记录数/累计扣分），完全独立的类避免与其他 stat-cards 冲突 */
+            .stat-cards-mobile{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin:12px 0}
+            .stat-cards-mobile .stat-item{background:#f8f9fc;border-radius:10px;padding:10px 4px;text-align:center;border:1px solid #e5e7eb}
+            .stat-cards-mobile .stat-item .number{font-size:22px;font-weight:700;color:#4f6ef7;line-height:1.2}
+            .stat-cards-mobile .stat-item .label{font-size:11px;color:#6b7280;margin-top:2px;white-space:nowrap}
 
             /* 扣分项改为半宽大触控芯片 */
             .checkbox-group{gap:8px;padding:0;border:none;min-height:0}
@@ -537,7 +555,7 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
     <div id="loginPage" style="display:none;">
         <div class="login-box">
             <div class="logo">🏠</div>
-            <h1>宿舍扣分管理系统</h1>
+            <h1>宿舍管理系统</h1>
             <p class="subtitle">德育处管理平台</p>
             <input type="text" id="loginUsername" placeholder="请输入用户名" autocomplete="username" autocapitalize="off" autocorrect="off">
             <input type="password" id="loginPassword" placeholder="请输入密码" autocomplete="current-password">
@@ -553,7 +571,7 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
             <div class="header-left">
                 <button class="mobile-back-btn" id="mobileBackBtn" aria-label="返回" onclick="goBack()">←</button>
                 <button class="sidebar-toggle" id="sidebarToggle" aria-label="打开菜单" onclick="toggleSidebar()">☰</button>
-                <span class="header-logo">🏠 宿舍扣分管理</span>
+                <span class="header-logo">🏠 宿舍管理</span>
                 <span class="header-badge" id="roleBadge"></span>
             </div>
             <div class="header-right">
@@ -1770,11 +1788,11 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
             +'<div style="display:flex;flex-wrap:wrap;gap:8px 18px;padding:10px 14px;background:var(--gray-50);border-radius:6px;margin-bottom:14px">'+statusRowHtml+'</div>'
             +'<div class="stat-cards" style="margin-bottom:0">'+statThreeInner+'</div>'
             +'</div></div>';
-        // 移动端：状态汇总单独成卡（三张统计卡下移到成员列表之后、历史记录之前）
+        // 移动端：状态汇总单独成卡（三张统计卡下移到成员列表之后、历史记录之前），使用独立 .stat-cards-mobile 类避免与其他 stat-cards 冲突
         var statusCard='<div class="card"><div class="card-header">📊 宿舍信息统计</div><div class="card-body">'
             +'<div style="display:flex;flex-wrap:wrap;gap:8px 18px;padding:10px 14px;background:var(--gray-50);border-radius:6px">'+statusRowHtml+'</div>'
             +'</div></div>';
-        var statThreeMobile='<div class="stat-cards stat-cards-3">'+statThreeInner+'</div>';
+        var statThreeMobile='<div class="stat-cards-mobile"><div class="stat-item"><div class="number">'+students.length+'</div><div class="label">👥 宿舍人数</div></div><div class="stat-item"><div class="number" style="color:#f59e0b">'+records.length+'</div><div class="label">📋 扣分记录数</div></div><div class="stat-item"><div class="number" style="color:#ff3b30">'+total+'</div><div class="label">📊 累计扣分</div></div></div>';
         // 页头仅保留标题（登记扣分入口统一收敛到功能首页/侧边栏/底部导航，住宿信息页只读）
         var membersCardPc='<div class="card"><div class="card-header">👥 宿舍成员</div><div style="overflow-x:auto"><table><thead><tr><th>姓名</th><th>班级</th><th>床号</th><th>状态</th><th>个人扣分</th></tr></thead><tbody>'+studentHtml+'</tbody></table></div></div>';
         var membersCardMobile='<div class="card"><div class="card-header">👥 宿舍成员</div><div class="card-body" style="padding:2px 14px">'+memberCardHtml+'</div></div>';
@@ -2218,6 +2236,23 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
             var btn = dormStatsAll.length>20
                 ? '<div style="text-align:center;padding:10px 14px 14px"><button class="btn btn-primary btn-sm" onclick="toggleStatsDormAll()">'+(statsDormExpandAll?'收起':'展开查看全部（共'+dormStatsAll.length+'个宿舍）')+'</button></div>'
                 : '';
+            var isMobileS = window.innerWidth<=768;
+            if(isMobileS){
+                // 移动端：卡片式布局，复用楼层扣分情况已验证的 dorm-row-mobile / rank-item 样式
+                var mobileCards = list.map(function(item, idx){
+                    var rank = idx+1;
+                    var topCls = rank<=3 ? ' top' : '';
+                    var scoreHas = item.score>0 ? ' has' : '';
+                    return '<div class="dorm-row-mobile">'
+                        + '<div class="rank-item rank-idx-1'+topCls+'"><span class="rank-label">排名</span><span class="rank-value">#'+rank+'</span></div>'
+                        + '<div class="rank-item rank-idx-2"><span class="rank-label">宿舍</span><span class="rank-value">'+item.roomNumber+'</span></div>'
+                        + '<div class="rank-item rank-idx-3"><span class="rank-label">班级</span><span class="rank-value">'+(item.className||'—')+'</span></div>'
+                        + '<div class="rank-item rank-idx-4"><span class="rank-label">扣分</span><span class="rank-value'+scoreHas+'">'+item.score+'分</span></div>'
+                        + '<div class="rank-item rank-idx-5"><span class="rank-label">记录数</span><span class="rank-value">'+item.count+'条</span></div>'
+                        + '</div>';
+                }).join('') || '<div class="empty-state" style="padding:24px">暂无数据</div>';
+                return '<div style="padding:2px 0">'+mobileCards+'</div>'+btn;
+            }
             return '<div style="overflow-x:auto"><table><thead><tr><th>排名</th><th>宿舍</th><th>班级</th><th>扣分</th><th>记录数</th></tr></thead><tbody>'+dormRowsHtml(list)+'</tbody></table></div>'+btn;
         }
         statsCache.dormSectionHtml = dormSectionHtml;
@@ -2229,13 +2264,25 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
                 var r = getRecordsByDormitory(d.id);
                 return { roomNumber: d.roomNumber, className: getDormitoryClassName(d.id), score: getTotalScore(r), count: r.length };
             });
+            // 扣分从低到高排序（扣分少在前），同分按宿舍号升序
             dormList.sort(function(a,b){ if(a.score !== b.score) return a.score - b.score; return a.roomNumber.localeCompare(b.roomNumber,'zh-Hans-CN',{numeric:true}); });
-            var rowsHtml = dormList.map(function(item, idx){ return '<tr><td data-label="排名">'+(idx+1)+'</td><td data-label="宿舍">'+item.roomNumber+'</td><td data-label="班级">'+item.className+'</td><td data-label="扣分">'+item.score+'</td><td data-label="记录数">'+item.count+'</td></tr>'; }).join('');
+            var rowsHtml = dormList.map(function(item, idx){
+                var rank = idx+1;
+                var topCls = rank<=3 ? ' top' : '';
+                var scoreHas = item.score>0 ? ' has' : '';
+                return '<div class="dorm-row-mobile">'
+                    + '<div class="rank-item rank-idx-1'+topCls+'"><span class="rank-label">排名</span><span class="rank-value">#'+rank+'</span></div>'
+                    + '<div class="rank-item rank-idx-2"><span class="rank-label">宿舍</span><span class="rank-value">'+item.roomNumber+'</span></div>'
+                    + '<div class="rank-item rank-idx-3"><span class="rank-label">班级</span><span class="rank-value">'+(item.className||'—')+'</span></div>'
+                    + '<div class="rank-item rank-idx-4"><span class="rank-label">扣分</span><span class="rank-value'+scoreHas+'">'+item.score+'分</span></div>'
+                    + '<div class="rank-item rank-idx-5"><span class="rank-label">记录数</span><span class="rank-value">'+item.count+'条</span></div>'
+                    + '</div>';
+            }).join('') || '<div class="empty-state" style="padding:24px">该楼层暂无宿舍</div>';
             var floorChips = DB.floors.map(function(f2){
                 return '<div class="chip'+(f2.id===statsFloorPickId?' active':'')+'" onclick="selectStatsFloor('+f2.id+')">'+f2.name+'</div>';
             }).join('');
-            return '<div style="padding:12px 14px 0"><div class="chip-floors">'+floorChips+'</div></div>'
-                + '<div style="overflow-x:auto;padding-top:10px"><table><thead><tr><th>排名</th><th>宿舍</th><th>班级</th><th>扣分</th><th>记录数</th></tr></thead><tbody>'+(rowsHtml||'<tr><td colspan="5" style="text-align:center;color:#aaa">暂无数据</td></tr>')+'</tbody></table></div>';
+            return '<div style="padding:8px 2px 4px"><div class="chip-floors-scroll">'+floorChips+'</div></div>'
+                + '<div style="padding:10px 0 4px">'+rowsHtml+'</div>';
         }
         statsCache.floorDetailHtml = floorDetailHtml;
         // 各楼层独立详情卡（PC 端保留原有样式）
@@ -3786,14 +3833,14 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
         });
         var fileName;
         if(startDate===endDate && !className && !dormRoom && !bed && !studentName){
-            fileName = startDate+'宿舍扣分情况登记表';
+            fileName = startDate+'宿舍管理情况登记表';
         } else if(className && !studentName && !dormRoom && !bed){
-            fileName = className+'宿舍扣分情况登记表';
+            fileName = className+'宿舍管理情况登记表';
         } else if(studentName){
-            fileName = studentName+'宿舍扣分情况登记表';
+            fileName = studentName+'宿舍管理情况登记表';
         } else {
             var weekNum = getWeekNumber(startDate);
-            fileName = '第'+weekNum+'周宿舍扣分情况登记表';
+            fileName = '第'+weekNum+'周宿舍管理情况登记表';
         }
         var blob=new Blob([csv],{type:'text/csv;charset=utf-8;'});
         var link=document.createElement('a');
@@ -3857,6 +3904,30 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
             if(!currentUser) document.getElementById('loginPage').style.display='flex';
         });
     });
+
+    // ==================== PWA: Service Worker 注册 ====================
+    // 独立代码块，不嵌套在应用 DOMContentLoaded 中，避免影响初始化
+    if ('serviceWorker' in navigator) {
+        window.addEventListener('load', function() {
+            navigator.serviceWorker.register('./sw.js')
+                .then(function(reg) {
+                    console.log('✅ Service Worker 注册成功', reg.scope);
+                    // 版本更新时自动激活新 SW
+                    if (reg.waiting) reg.waiting.postMessage({type:'SKIP_WAITING'});
+                    reg.addEventListener('updatefound', function() {
+                        var installing = reg.installing;
+                        installing.addEventListener('statechange', function() {
+                            if (installing.state === 'installed' && navigator.serviceWorker.controller) {
+                                installing.postMessage({type:'SKIP_WAITING'});
+                            }
+                        });
+                    });
+                })
+                .catch(function(err) {
+                    console.warn('⚠️ Service Worker 注册失败（仅影响离线能力）:', err.message);
+                });
+        });
+    }
     </script>
 </body>
 </html>
