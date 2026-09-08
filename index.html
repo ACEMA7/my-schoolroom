@@ -1158,6 +1158,8 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
         if(!Array.isArray(DB.deletedRecordIds)) DB.deletedRecordIds=[];
         if(!Array.isArray(DB.dirtyRecordIds)) DB.dirtyRecordIds=[];
         if(typeof DB.lastSyncTime!=='number') DB.lastSyncTime=0;
+        // 数据版本号（epoch）：管理员"重置云端数据"时递增；本机为 0 表示从未同步过
+        if(typeof DB.syncEpoch!=='number') DB.syncEpoch=0;
         // V3 按行存储：按类型分组的脏标记和删除标记
         if(!DB.dirtyByType) DB.dirtyByType = {};
         if(!DB.deletedByType) DB.deletedByType = {};
@@ -1308,8 +1310,8 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
         var meta = V3_RECORD_TYPES.find(function(m){ return m.type === type; });
         if(!meta || !DB) return [];
         if(meta.specialMeta){
-            // meta 类型：固定返回一条 {id:'main', data:{...}}
-            return [{ id: 'main', dormitoryList: DB.dormitoryList || [], nextIds: DB.nextIds || {} }];
+            // meta 类型：固定返回一条 {id:'main', data:{...}}，epoch 为数据版本号
+            return [{ id: 'main', dormitoryList: DB.dormitoryList || [], nextIds: DB.nextIds || {}, epoch: DB.syncEpoch || 0 }];
         }
         if(meta.specialItems){
             // deductionItems: 扁平化 hygiene + discipline 为独立记录
@@ -1510,7 +1512,7 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
         var rid = String(recordId);
         if(meta.specialMeta){
             // meta 类型：固定 id 为 'main'
-            if(rid === 'main') return { id: 'main', dormitoryList: DB.dormitoryList || [], nextIds: DB.nextIds || {} };
+            if(rid === 'main') return { id: 'main', dormitoryList: DB.dormitoryList || [], nextIds: DB.nextIds || {}, epoch: DB.syncEpoch || 0 };
             return null;
         }
         if(meta.specialItems){
@@ -1589,6 +1591,69 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
                     else live[rid] = r;
                 });
                 return { live: live, tomb: tomb, total: typeRows.length };
+            }
+            // ===== 数据版本号（epoch）检测：决定"正常合并"还是"整体重置重建" =====
+            var cloudMetaSplit = splitRows('meta');
+            var cloudMetaLive = cloudMetaSplit.live['main'];
+            var cloudEpoch = (cloudMetaLive && cloudMetaLive.data && typeof cloudMetaLive.data.epoch === 'number') ? cloudMetaLive.data.epoch : 0;
+            var localEpoch = DB.syncEpoch || 0;
+            // 情形A：云端整表为空
+            if(rows.length === 0 && localEpoch > 0){
+                // 本机曾同步过、云端却被整体清空 → 大概率是管理员正在执行"重置云端数据"，
+                // 处于"已清空、尚未回传"的短暂窗口。本次不改动本地、不标脏补种，防止旧数据回灌。
+                console.warn('[V3] 云端为空但本机已同步过（epoch='+localEpoch+'），判定为重置窗口，跳过本次拉取，不改动本地、不补种');
+                return { aborted:true, total:0, added:0, updated:0, removed:0, rescued:0, basicChanged:false };
+            }
+            // 情形B：云端带 epoch 且与本机不同（含本机从未同步 epoch=0、以及管理员重置后所有旧设备）
+            if(cloudEpoch > 0 && cloudEpoch !== localEpoch){
+                console.warn('[V3] 检测到数据版本变化（本机 epoch='+localEpoch+' → 云端 epoch='+cloudEpoch+'），整体丢弃本地并以下发数据为准重建');
+                hardResetFromCloud(byType, cloudEpoch);
+                DB.lastSyncTime = Date.now();
+                ensureCorrectUsers();
+                if(currentUser && currentUser.id != null){
+                    var refreshed = DB.users.find(function(x){ return String(x.id) === String(currentUser.id); });
+                    if(refreshed) currentUser = refreshed;
+                }
+                if(selectedDormitoryId && !getDormitoryById(selectedDormitoryId)){ selectedDormitoryId=null; selectedFloorId=null; }
+                result.basicChanged = true;
+                result.reset = true;
+                console.log('[V3] 整体重建完成（epoch='+cloudEpoch+'）：共 '+result.total+' 行下发数据');
+                return result;
+            }
+            // 整体重置：丢弃本地全部数据，完全以云端活行重建（墓碑不恢复）
+            function hardResetFromCloud(grouped, epoch){
+                var resetCount = 0;
+                // meta：dormitoryList + nextIds
+                var mLive = grouped['meta'] ? grouped['meta'].find(function(r){ return !r.deleted; }) : null;
+                if(mLive && mLive.data){
+                    if(Array.isArray(mLive.data.dormitoryList)) DB.dormitoryList = mLive.data.dormitoryList;
+                    if(mLive.data.nextIds) DB.nextIds = mLive.data.nextIds;
+                }
+                // 数组类型：floor / dormitory / student / user + 三类业务记录
+                ['floor','dormitory','student','user','deduction_record','leave_record','absence_record'].forEach(function(type){
+                    var tMeta = V3_RECORD_TYPES.find(function(m){ return m.type === type; });
+                    if(!tMeta) return;
+                    var liveRows = (grouped[type] || []).filter(function(r){ return !r.deleted; }).map(function(r){ return r.data; });
+                    DB[tMeta.dbPath[0]] = liveRows;
+                    resetCount += liveRows.length;
+                });
+                // deduction_item：按 _subType 归回 hygiene / discipline
+                DB.deductionItems = { hygiene: [], discipline: [] };
+                (grouped['deduction_item'] || []).forEach(function(r){
+                    if(r.deleted) return;
+                    var st = (r.data && r.data._subType) || ((r.data && r.data.defaultScore <= 0.5) ? 'hygiene' : 'discipline');
+                    var clean = {};
+                    Object.keys(r.data || {}).forEach(function(k){ if(k !== '_subType') clean[k] = r.data[k]; });
+                    if(st === 'discipline') DB.deductionItems.discipline.push(clean);
+                    else DB.deductionItems.hygiene.push(clean);
+                });
+                // 重建后与云端完全一致：清空全部脏/删标记，写入新 epoch
+                V3_RECORD_TYPES.forEach(function(m){
+                    DB.dirtyByType[m.type] = {};
+                    DB.deletedByType[m.type] = {};
+                });
+                DB.syncEpoch = epoch;
+                console.log('[V3] 重建明细：共 '+resetCount+' 条数组记录 + '+DB.deductionItems.hygiene.length+' 卫生项 + '+DB.deductionItems.discipline.length+' 纪律项');
             }
             // meta 类型（单行：dormitoryList + nextIds）
             function mergeMetaType(){
@@ -2278,8 +2343,19 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
             var removed=pulled?pulled.removed:0;
             var rescued=pulled?pulled.rescued:0;
             var basicChanged=pulled?pulled.basicChanged:false;
+            var isReset=pulled?pulled.reset:false;
+            var isAborted=pulled?pulled.aborted:false;
+            // 重置窗口：云端被清空但正在回传，本次不改动本地，稍候再同步
+            if(isAborted){
+                if(btn){} // 按钮已复位
+                toast('云端正在重置中，本次未改动本地数据，请稍后再点一次同步', 'error');
+                syncWithRetry();
+                return;
+            }
+            // 版本重置：本机已整体以下发数据为准重建，刷新全部界面
+            if(isReset){ renderTree(); renderView(); }
             // 拉取到新数据时刷新当前视图与树形菜单（无论上传成败，拉取结果都要呈现）
-            if(added>0||updated>0||removed>0||rescued>0||basicChanged){ renderTree(); renderView(); }
+            if(added>0||updated>0||removed>0||rescued>0||basicChanged||isReset){ renderTree(); renderView(); }
             if(pushed === false){
                 // 上传失败：明确提示，绝不误报“同步完成”；脏标记保留，加入重试队列
                 updateSyncStatus('unsynced');
@@ -2298,6 +2374,7 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
                 return;
             }
             var parts=[];
+            if(isReset) parts.push('检测到数据重置，本机已以下发数据为准整体更新');
             if(added>0) parts.push('拉取新增 '+added+' 条');
             if(updated>0) parts.push('更新 '+updated+' 条');
             if(removed>0) parts.push('删除 '+removed+' 条');
@@ -2313,6 +2390,62 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
             var msg=(e&&e.message)?e.message:'网络异常';
             toast('同步失败（'+msg+'），已加入重试队列','error');
             syncWithRetry();
+        });
+    }
+
+    // ==================== 重置云端数据（数据版本号 epoch） ====================
+    // 场景：学期初/数据混乱时，以本机当前数据为唯一基准重新建立云端。
+    // 流程：清空 sync_store 全部行 → 本机 epoch 递增并把所有数据标脏 → 全量回传。
+    // 其它设备下次同步检测到 epoch 变化，会整体丢弃本地、以下发数据为准重建，旧数据永不回灌。
+    function resetCloudData(){
+        if(!isAdmin()){ toast('无权限，仅管理员可重置','error'); return; }
+        if(!syncEnabled || !supabaseClient){ toast('云端同步未启用','error'); return; }
+        if(typeof navigator!=='undefined' && navigator.onLine===false){ toast('当前网络不可用，请联网后再重置','error'); return; }
+        var stuCount = (DB.students||[]).length;
+        if(!confirm('【重置云端数据 · 危险操作】\n\n' +
+                    '将清空云端的全部数据，并以本机当前显示的数据为准重新建立。\n' +
+                    '本机现有：学生 '+stuCount+' 名、宿舍 '+(DB.dormitories||[]).length+' 间、账号 '+(DB.users||[]).length+' 个。\n\n' +
+                    '其它设备下次点同步时，会整体丢弃本地数据、统一下载这套数据，以前不要的数据不会再同步回来。\n\n' +
+                    '请务必先确认本机页面上显示的就是要保留的正确数据！\n\n是否继续？')) return;
+        if(!confirm('第二次确认：\n\n1) 云端现有数据将被永久清除，不可恢复；\n2) 请确保其它设备此刻不要点同步（重置约需十几秒）；\n3) 建议在本机先刷新页面并核对数据无误。\n\n确定现在执行重置？')) return;
+        if(resetCloudData._busy) return;
+        resetCloudData._busy = true;
+        var btn = document.getElementById('btnResetCloud');
+        if(btn){ btn.disabled = true; btn.textContent = '⏳ 重置中…'; }
+        toast('正在清空云端数据，请稍候…');
+        var epoch = Date.now();
+        // 1) 清空云端全部行（.neq('id',0) 提供 delete 必需的过滤条件，实际命中全部行）
+        supabaseClient.from('sync_store').delete().neq('id', 0).then(function(delRes){
+            if(delRes.error) throw delRes.error;
+            console.log('[重置] 云端全部行已清空，准备回传本机数据，新 epoch=' + epoch);
+            // 2) 本机进入新版本：重置旧的删除标记（新数据集中无需墓碑），全量标脏
+            DB.syncEpoch = epoch;
+            V3_RECORD_TYPES.forEach(function(m){
+                DB.dirtyByType[m.type] = {};
+                DB.deletedByType[m.type] = {};
+            });
+            v3MarkAllLocalDirty();
+            saveDBToLocal();
+            // 3) 全量回传（meta 行携带新 epoch）
+            return syncToCloudV3();
+        }).then(function(pushed){
+            resetCloudData._busy = false;
+            if(btn){ btn.disabled = false; btn.textContent = '🔁 重置云端数据（以下发为准）'; }
+            if(pushed === false){
+                updateSyncStatus('unsynced');
+                toast('云端已清空但数据回传失败：请检查网络后点一次 🔄 同步，本机数据会自动补传完成重置', 'error');
+                syncWithRetry();
+                return;
+            }
+            updateSyncStatus('synced');
+            toast('云端已重置完成：以本机数据为准重新建立。其它设备点一次同步即统一下载（旧数据不会再回来）');
+            renderTree(); renderView();
+        }).catch(function(err){
+            resetCloudData._busy = false;
+            if(btn){ btn.disabled = false; btn.textContent = '🔁 重置云端数据（以下发为准）'; }
+            console.error('[重置] 失败:', err);
+            updateSyncStatus('unsynced');
+            toast('重置失败：' + ((err && err.message) ? err.message : err) + '（若云端已清空，点一次 🔄 同步即可补传）', 'error');
         });
     }
 
@@ -3566,6 +3699,10 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
         var dormitoryId=parseInt(document.getElementById('newStuDorm').value);
         var bedNumber=document.getElementById('newStuBed').value.trim();
         if(!name||!className||!dormitoryId){toast('请填写完整信息','error');return;}
+        if(studentAlreadyExists(name, className, dormitoryId, bedNumber)){
+            toast('该学生已存在（同名+同班+同宿舍+同床号），未重复添加','error');
+            return;
+        }
         var newStuId = DB.nextIds.student++;
         DB.students.push({id:newStuId,dormitoryId:dormitoryId,name:name,className:className,bedNumber:bedNumber});
         // V3 按行存储：新学生标记脏记录
@@ -3573,6 +3710,16 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
         saveDB();
         toast('学生已添加');
         renderStudentsView(document.getElementById('contentArea'));
+    }
+    // 学生去重判断：同名+同班+同宿舍(或同为走读)+同床号视为已存在，重复导入时跳过，防止名单越导越多
+    function studentAlreadyExists(name, className, dormitoryId, bedNumber){
+        return (DB.students||[]).some(function(s){
+            if(s.name!==name || s.className!==className) return false;
+            var bothNon = (s.dormitoryId==null && dormitoryId==null);
+            var sameDorm = bothNon || (s.dormitoryId!=null && dormitoryId!=null && s.dormitoryId===dormitoryId);
+            if(!sameDorm) return false;
+            return (s.bedNumber||'') === (bedNumber||'');
+        });
     }
     // 确保宿舍号存在（导入学生名单时自动补建）：返回 {dorm, autoAdded}，无效返回 null
     function ensureDormitoryRoom(roomNumber){
@@ -3607,6 +3754,7 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
         if(!text){toast('请粘贴学生数据','error');return;}
         var lines=text.split('\n');
         var imported=0;
+        var skipped=0;
         var autoAdded=0;
         var nonResident=0;
         for(var i=0;i<lines.length;i++){
@@ -3620,12 +3768,16 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
             var bedNumber=parts.length>3?parts[3].trim():'';
             // 非住宿生：宿舍号为 0 或空时，dormitoryId=null，标记为走读生
             if(roomNumber===''||roomNumber==='0'||roomNumber.toLowerCase()==='null'){
+                if(studentAlreadyExists(name, className, null, '')){ skipped++; continue; }
                 var nonStuId = DB.nextIds.student++;
                 DB.students.push({id:nonStuId,dormitoryId:null,name:name,className:className,bedNumber:''});
                 v3MarkDirty('student', nonStuId);
                 imported++; nonResident++;
                 continue;
             }
+            // 去重：宿舍已存在且同名同班同床 → 跳过（避免重复导入翻倍；不为重复学生新建宿舍）
+            var existDorm = getDormitoryByRoomNumber(roomNumber);
+            if(existDorm && studentAlreadyExists(name, className, existDorm.id, bedNumber)){ skipped++; continue; }
             var res=ensureDormitoryRoom(roomNumber);
             if(!res){toast('宿舍号无效或不存在：'+roomNumber,'error');continue;}
             if(res.autoAdded) autoAdded++;
@@ -3635,7 +3787,7 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
             imported++;
         }
         saveDB();
-        toast('成功导入'+imported+'名学生'+(autoAdded>0?'（自动新增'+autoAdded+'个宿舍号）':'')+(nonResident>0?'（含'+nonResident+'名走读生）':''));
+        toast('成功导入'+imported+'名学生'+(skipped>0?'（跳过重复'+skipped+'名）':'')+(autoAdded>0?'（自动新增'+autoAdded+'个宿舍号）':'')+(nonResident>0?'（含'+nonResident+'名走读生）':''));
         renderStudentsView(document.getElementById('contentArea'));
     }
     function handleExcelImport(file){
@@ -3650,6 +3802,7 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
                 var rows=XLSX.utils.sheet_to_json(firstSheet,{header:1});
                 var validRows=rows.filter(function(row){return row.length>=2&&row[0]&&row[1];});
                 var imported=0;
+                var skipped=0;
                 var autoAdded=0;
                 var nonResident=0;
                 validRows.forEach(function(row){
@@ -3659,12 +3812,16 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
                     var bedNumber=row.length>3?String(row[3]).trim():'';
                     // 非住宿生：宿舍号为 0 或空时，dormitoryId=null
                     if(roomNumber===''||roomNumber==='0'||roomNumber.toLowerCase()==='null'){
+                        if(studentAlreadyExists(name, className, null, '')){ skipped++; return; }
                         var exNonStu = DB.nextIds.student++;
                         DB.students.push({id:exNonStu,dormitoryId:null,name:name,className:className,bedNumber:''});
                         v3MarkDirty('student', exNonStu);
                         imported++; nonResident++;
                         return;
                     }
+                    // 去重：宿舍已存在且同名同班同床 → 跳过（避免重复导入翻倍）
+                    var exDorm = getDormitoryByRoomNumber(roomNumber);
+                    if(exDorm && studentAlreadyExists(name, className, exDorm.id, bedNumber)){ skipped++; return; }
                     var res=ensureDormitoryRoom(roomNumber);
                     if(!res){toast('宿舍号无效或不存在：'+roomNumber,'error');return;}
                     if(res.autoAdded) autoAdded++;
@@ -3674,7 +3831,7 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
                     imported++;
                 });
                 saveDB();
-                toast('成功从Excel导入'+imported+'名学生'+(autoAdded>0?'（自动新增'+autoAdded+'个宿舍号）':'')+(nonResident>0?'（含'+nonResident+'名走读生）':''));
+                toast('成功从Excel导入'+imported+'名学生'+(skipped>0?'（跳过重复'+skipped+'名）':'')+(autoAdded>0?'（自动新增'+autoAdded+'个宿舍号）':'')+(nonResident>0?'（含'+nonResident+'名走读生）':''));
                 renderStudentsView(document.getElementById('contentArea'));
             }catch(err){
                 console.error('Excel解析失败:',err);
@@ -4864,6 +5021,10 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
                 + '<button class="btn btn-danger" style="margin-left:8px" onclick="deleteAllStopRecords()">🗑️ 删除全部停宿记录</button>'
                 + '<button class="btn btn-danger" style="margin-left:8px" onclick="deleteAllLeaveRecords()">🗑️ 删除全部退宿记录</button>'
                 + '<p style="color:var(--danger);margin-top:8px;font-size:0.8571rem">此操作将永久删除对应类型的全部记录，不可恢复！</p></div></div>'
+                + '<div class="card"><div class="card-header">☁️ 云端数据重置（新学期/数据清理）</div><div class="card-body">'
+                + '<p style="margin:0 0 8px;color:var(--text-light);font-size:0.9rem">先在本机把数据整理到正确状态（删除不要的学生、导入新名单），再点此按钮：云端将被清空并以本机数据为准重新建立；其它设备点一次同步即统一下载，旧数据不会再同步回来。</p>'
+                + '<button class="btn btn-danger" id="btnResetCloud" onclick="resetCloudData()">🔁 重置云端数据（以下发为准）</button>'
+                + '<p style="color:var(--danger);margin-top:8px;font-size:0.8571rem">此操作会永久清空云端全部数据！执行时请让其它设备暂时不要点同步。</p></div></div>'
                 + '</div>';
         }
 
