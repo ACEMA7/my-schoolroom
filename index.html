@@ -946,21 +946,23 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
             if (DB.users[i].username === 'admin') { DB.users[i].role = 'ADMIN'; DB.users[i].realName = '管理人员'; adminExists = true; }
             if (DB.users[i].username === 'staff') { DB.users[i].role = 'STAFF'; DB.users[i].realName = '生活老师'; staffExists = true; }
         }
-        if (!adminExists) DB.users.push({ id: DB.nextIds.user++, username: 'admin', password: 'admin123', realName: '管理人员', role: 'ADMIN' });
-        if (!staffExists) DB.users.push({ id: DB.nextIds.user++, username: 'staff', password: 'staff123', realName: '生活老师', role: 'STAFF' });
+        if (!adminExists) { var u1={ id: DB.nextIds.user++, username: 'admin', password: 'admin123', realName: '管理人员', role: 'ADMIN' }; DB.users.push(u1); v3MarkDirty('user', u1.id); }
+        if (!staffExists) { var u2={ id: DB.nextIds.user++, username: 'staff', password: 'staff123', realName: '生活老师', role: 'STAFF' }; DB.users.push(u2); v3MarkDirty('user', u2.id); }
 
         // 补充31个班级账号（如果缺失）
         for (var i = 1; i <= 31; i++) {
             var className = '三' + i;
             if (!DB.users.some(function(u) { return u.username === className; })) {
-                DB.users.push({
+                var u3 = {
                     id: DB.nextIds.user++,
                     username: className,
                     password: '123456',
                     realName: className + '班班主任',
                     role: 'CLASS_ADMIN',
                     className: className
-                });
+                };
+                DB.users.push(u3);
+                v3MarkDirty('user', u3.id);
             }
         }
 
@@ -970,6 +972,7 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
             if (u.role === 'CLASS_ADMIN' && u.realName && u.realName.indexOf('班主任') === -1 &&
                 (u.realName.indexOf('管理员') !== -1 || u.realName.indexOf('管理人员') !== -1)) {
                 u.realName = (u.className || u.username || '') + '班班主任';
+                v3MarkDirty('user', u.id); // 称呼修正需上传，否则拉取时会被云端旧值覆盖
             }
         }
 
@@ -1523,22 +1526,11 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
         var arr = DB[meta.dbPath[0]] || [];
         return arr.find(function(x){ return String(x[meta.idField]) === rid; }) || null;
     }
-    // V3 行主键生成：固定前缀(13位) + 毫秒窗口(9位) + 同批次序列号(6位)
-    // 旧方案 1000000+Date.now()%1e7+random(1000)：同批大量行并行插入时同毫秒撞随机数概率极高，
-    // 导致主键冲突整批失败。新方案序列号在同一毫秒内支持百万行严格唯一（单次同步全量行也安全），
-    // 极端跨设备"同毫秒+同序列"冲突概率约零且由上传重试自愈
-    var _v3RowSeq = 0;
-    function v3NewRowId(){
-        _v3RowSeq = (_v3RowSeq + 1) % 1000000;
-        // 上限 1e13 + 999999999*1e6 + 999999 ≈ 1.0009e15 < Number.MAX_SAFE_INTEGER，JSON 序列化无损
-        return 10000000000000 + (Date.now() % 1000000000) * 1000000 + _v3RowSeq;
-    }
     // 构造 sync_store upsert 行
+    // 注意：不含 id 字段——id 由数据库 BIGINT 序列（sync_store_id_seq）自动生成，
+    // 冲突时按 UNIQUE(record_type,record_id) 整行更新，无需也不能手动指定主键
     function v3BuildUpsertRow(recordType, recordId, data, isDeleted, updatedAt){
-        // 显式分配大 id，绕开数据库自增序列被旧数据卡死的问题
-        var bigId = v3NewRowId();
         return {
-            id: bigId,
             record_type: recordType,
             record_id: String(recordId),
             data: isDeleted ? {} : data,
@@ -1548,18 +1540,37 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
         };
     }
 
+    // 分页全量拉取：Supabase 单次查询默认最多返回 1000 行，
+    // 按 id 升序用 range 翻页，直到某页不足 1000 行为止，确保超大数据量完整拉取
+    function fetchAllRows(){
+        if(!supabaseClient) return Promise.resolve([]);
+        var PAGE = 1000;
+        var all = [];
+        function fetchPage(start){
+            return supabaseClient.from('sync_store')
+                .select('record_type,record_id,data,deleted,updated_at,device_id')
+                .order('id', { ascending: true })
+                .range(start, start + PAGE - 1)
+                .then(function(res){
+                    if(res.error){
+                        console.error('[V3] 分页拉取失败（offset='+start+'）:', res.error.message);
+                        throw res.error;
+                    }
+                    var rows = res.data || [];
+                    all = all.concat(rows);
+                    if(rows.length < PAGE) return all;
+                    return fetchPage(start + PAGE);
+                });
+        }
+        return fetchPage(0);
+    }
+
     // V3：按类型拉取重组
     function loadFromCloudV3(){
         if (!syncEnabled || !supabaseClient) return Promise.resolve(null);
         ensureSyncMeta();
-        // 全量拉取（含 deleted=true 墓碑行）：墓碑行用于区分"云端该类型从未上传过"
-        // 与"云端该类型数据全部已被删除"——前者需用本地数据补种上传，后者必须以云端为准清空本地
-        return supabaseClient.from('sync_store').select('record_type,record_id,data,deleted,updated_at,device_id').then(function(res){
-            if(res.error){
-                console.error('[V3] 拉取失败:', res.error.message);
-                return null;
-            }
-            var rows = res.data || [];
+        // 分页全量拉取（含 deleted=true 墓碑行），超 1000 行也能完整取回
+        return fetchAllRows().then(function(rows){
             console.log('[V3] 拉取到 ' + rows.length + ' 条行（含墓碑）');
             // 按 type 分组
             var byType = {};
@@ -1567,115 +1578,177 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
                 if(!byType[r.record_type]) byType[r.record_type] = [];
                 byType[r.record_type].push(r);
             });
-            var result = { added:0, updated:0, removed:0, basicChanged:false, total:rows.length };
-            // 先处理基础数据类型（云端覆盖本地）
-            V3_BASIC_TYPES.forEach(function(type){
+            var result = { added:0, updated:0, removed:0, rescued:0, basicChanged:false, total:rows.length };
+            // 把某类型的云端行拆成 活行 map（record_id → row）与 墓碑 set（record_id → true）
+            function splitRows(type){
                 var typeRows = byType[type] || [];
-                // 仅未删除的有效行参与覆盖
-                var cloudRows = typeRows.filter(function(r){ return r && !r.deleted; });
-                var meta = V3_RECORD_TYPES.find(function(m){ return m.type === type; });
-                if(!meta) return;
-                var before = v3Snapshot(type);
-                if(type === 'meta'){
-                    // meta 类型：提取 dormitoryList 和 nextIds
-                    var liveMeta = cloudRows.length > 0 ? cloudRows[0] : null;
-                    if(liveMeta && liveMeta.data){
-                        var md = liveMeta.data;
-                        if(md.dormitoryList) DB.dormitoryList = md.dormitoryList;
-                        if(md.nextIds) DB.nextIds = Object.assign(DB.nextIds || {}, md.nextIds);
-                    } else if(typeRows.length === 0){
-                        // 云端缺失 meta 行：保留本地，标记脏后上传补种
+                var live = {}, tomb = {};
+                typeRows.forEach(function(r){
+                    var rid = String(r.record_id);
+                    if(r.deleted) tomb[rid] = r;
+                    else live[rid] = r;
+                });
+                return { live: live, tomb: tomb, total: typeRows.length };
+            }
+            // meta 类型（单行：dormitoryList + nextIds）
+            function mergeMetaType(){
+                var split = splitRows('meta');
+                var before = v3Snapshot('meta');
+                var liveRow = split.live['main'];
+                if(liveRow && liveRow.data){
+                    var md = liveRow.data;
+                    // dormitoryList 以云端权威列表为准（管理员增删宿舍号需同步到所有设备）；
+                    // 兜底：若云端列表异常为空而本地有数据，保留本地并标脏补种，杜绝宿舍号被清空
+                    if(Array.isArray(md.dormitoryList) && md.dormitoryList.length > 0){
+                        DB.dormitoryList = md.dormitoryList;
+                    } else if(Array.isArray(DB.dormitoryList) && DB.dormitoryList.length > 0){
                         v3MarkDirty('meta', 'main');
+                        result.rescued++;
                     }
-                } else if(type === 'deduction_item'){
-                    if(typeRows.length === 0){
-                        // 云端完全缺失该类型：保留本地数据并标记脏上传补种
-                        // （旧逻辑无条件清空会导致扣分项目丢失）
-                        v3MarkTypeDirty(type);
-                    } else {
-                        // 重置 deductionItems 为空对象，用云端有效行重建
-                        DB.deductionItems = { hygiene: [], discipline: [] };
-                        cloudRows.forEach(function(r){
-                            if(r.data && r.data._subType){
-                                v3RestoreDeductionItem(r);
-                            } else {
-                                // 旧格式没有 _subType，猜一下类型
-                                var guess = (r.data && r.data.defaultScore <= 0.5) ? 'hygiene' : 'discipline';
-                                DB.deductionItems[guess].push(r.data);
-                            }
+                    // nextIds 逐键取最大值，防止多设备并发新建记录时 id 回退冲突
+                    if(md.nextIds){
+                        Object.keys(md.nextIds).forEach(function(k){
+                            DB.nextIds[k] = Math.max(DB.nextIds[k] || 0, md.nextIds[k] || 0);
                         });
                     }
-                } else if(typeRows.length === 0){
-                    // 云端完全缺失该类型（如其他设备迁移中断/旧 bug 已把云端清空）：
-                    // 保留本地数据，标记脏后上传补种，其他设备拉取即可自动恢复
-                    // （旧逻辑无条件置空会清空楼层/宿舍/学生等基础数据，且此后永远无法再上传）
-                    var seeded = v3MarkTypeDirty(type);
-                    if(seeded > 0) console.log('[V3] 云端缺失 ' + type + ' 数据，保留本地 ' + seeded + ' 条并等待补种上传');
-                } else {
-                    // 普通数组类型：以云端有效行为准覆盖
-                    DB[meta.dbPath[0]] = cloudRows.map(function(r){ return r.data; });
+                } else if(split.total === 0){
+                    // 云端完全没有 meta 行：保留本地，标脏补种
+                    v3MarkDirty('meta', 'main');
+                    result.rescued++;
                 }
-                var after = v3Snapshot(type);
-                if(before !== after) result.basicChanged = true;
-            });
-            // 再处理业务记录类型（按 updated_at 合并）
-            V3_MUTABLE_TYPES.forEach(function(type){
-                var cloudRows = (byType[type] || []).filter(function(r){ return r && !r.deleted; });
-                var meta = V3_RECORD_TYPES.find(function(m){ return m.type === type; });
-                if(!meta) return;
-                var cloudMap = {};
-                cloudRows.forEach(function(r){ cloudMap[r.record_id] = r; });
+                if(v3Snapshot('meta') !== before) result.basicChanged = true;
+            }
+            // deduction_item（{hygiene:[], discipline:[]} 扁平结构）
+            function mergeItemsType(){
+                var type = 'deduction_item';
+                var split = splitRows(type);
+                var before = v3Snapshot(type);
                 var dirtySet = (DB.dirtyByType && DB.dirtyByType[type]) || {};
                 var deletedSet = (DB.deletedByType && DB.deletedByType[type]) || {};
-                // 本地按 record_id 建索引
-                var localArr = DB[meta.dbPath[0]] || [];
+                if(split.total === 0){
+                    // 云端完全缺失该类型：保留本地，全量标脏补种
+                    var n = v3MarkTypeDirty(type);
+                    if(n > 0){ result.rescued += n; console.log('[V3] 云端缺失 deduction_item，保留本地 ' + n + ' 项并补种上传'); }
+                    if(v3Snapshot(type) !== before) result.basicChanged = true;
+                    return;
+                }
+                ['hygiene','discipline'].forEach(function(sub){
+                    var localArr = (DB.deductionItems && DB.deductionItems[sub]) || [];
+                    // 1) 遍历本地项目：云端活行→按云端更新（本地脏除外）；墓碑→删除；无痕迹→标脏保留
+                    var kept = [];
+                    localArr.forEach(function(item){
+                        var rid = String(item.id);
+                        if(split.live[rid]){
+                            if(!dirtySet[rid]){
+                                var cloudData = split.live[rid].data || {};
+                                // 剔除辅助字段 _subType 后再比较，避免内容一致却每次虚计“更新”
+                                var cloudClean = {};
+                                Object.keys(cloudData).forEach(function(k){ if(k !== '_subType') cloudClean[k] = cloudData[k]; });
+                                if(JSON.stringify(item) !== JSON.stringify(cloudClean)){
+                                    Object.keys(item).forEach(function(k){ delete item[k]; });
+                                    Object.keys(cloudClean).forEach(function(k){ item[k] = cloudClean[k]; });
+                                    result.updated++;
+                                }
+                            }
+                            kept.push(item);
+                        } else if(split.tomb[rid] && !dirtySet[rid]){
+                            result.removed++; // 云端明确删除（墓碑），执行移除
+                        } else {
+                            // 云端无任何痕迹：疑似遗漏，标脏保留补种
+                            if(!dirtySet[rid] && !deletedSet[rid]){ v3MarkDirty(type, item.id); result.rescued++; }
+                            kept.push(item);
+                        }
+                    });
+                    // 2) 云端活行中本地没有的 → 新增
+                    Object.keys(split.live).forEach(function(rid){
+                        var exists = kept.some(function(x){ return String(x.id) === rid; });
+                        if(exists || deletedSet[rid]) return;
+                        var r = split.live[rid];
+                        var st = (r.data && r.data._subType) || ((r.data && r.data.defaultScore <= 0.5) ? 'hygiene' : 'discipline');
+                        if(st !== sub) return;
+                        var clean = {};
+                        Object.keys(r.data || {}).forEach(function(k){ if(k !== '_subType') clean[k] = r.data[k]; });
+                        kept.push(clean);
+                        result.added++;
+                    });
+                    DB.deductionItems[sub] = kept;
+                });
+                if(v3Snapshot(type) !== before) result.basicChanged = true;
+            }
+            // 普通数组类型（floor/dormitory/student/user + 三类业务记录）统一合并
+            // 策略（本地优先 + 标脏补传，坚决杜绝误删）：
+            //   云端活行、本地无 → 新增接收（本地已标删除的不回灌）
+            //   云端活行、本地有 → 本地脏保留本地；否则按 updated_at 取新
+            //   云端墓碑行       → 明确删除信号，执行本地删除（本地有未上传修改时除外）
+            //   云端无任何痕迹   → 可能分页遗漏/网络延迟/从未上传成功：标脏保留，下次同步补种
+            function mergeArrayType(type){
+                var meta = V3_RECORD_TYPES.find(function(m){ return m.type === type; });
+                if(!meta) return;
+                var split = splitRows(type);
+                var before = v3Snapshot(type);
+                var dirtySet = (DB.dirtyByType && DB.dirtyByType[type]) || {};
+                var deletedSet = (DB.deletedByType && DB.deletedByType[type]) || {};
+                var arr = DB[meta.dbPath[0]] || [];
                 var localMap = {};
-                localArr.forEach(function(r){ if(r && r.id!=null) localMap[String(r.id)] = r; });
-                // 1) 云端有而本地没有 → 新增
-                Object.keys(cloudMap).forEach(function(rid){
+                arr.forEach(function(r){ if(r && r.id != null) localMap[String(r.id)] = r; });
+                // 1) 云端活行、本地无 → 新增
+                Object.keys(split.live).forEach(function(rid){
                     if(!localMap[rid] && !deletedSet[rid]){
-                        localArr.push(cloudMap[rid].data);
-                        localMap[rid] = cloudMap[rid].data;
+                        arr.push(split.live[rid].data);
+                        localMap[rid] = split.live[rid].data;
                         result.added++;
                     }
                 });
-                // 2) 同 id 合并：本地非脏 → 以云端 updated_at 较新的为准
-                Object.keys(cloudMap).forEach(function(rid){
-                    if(!localMap[rid]) return;
-                    if(dirtySet[rid] || deletedSet[rid]) return; // 本地脏或已删，保留本地
+                // 2) 同 id：本地非脏时按 updated_at 取新
+                Object.keys(split.live).forEach(function(rid){
                     var local = localMap[rid];
-                    var cloud = cloudMap[rid].data;
+                    if(!local || dirtySet[rid]) return;
+                    var cloud = split.live[rid].data || {};
                     var localTime = local.lastModified || local.createdAt || 0;
-                    var cloudTime = (cloudMap[rid].updated_at) ? new Date(cloudMap[rid].updated_at).getTime() : (cloud.lastModified || cloud.createdAt || 0);
+                    var cloudTime = split.live[rid].updated_at ? new Date(split.live[rid].updated_at).getTime() : (cloud.lastModified || cloud.createdAt || 0);
                     if(cloudTime >= localTime && JSON.stringify(local) !== JSON.stringify(cloud)){
-                        // 云端更新，保留本地 createdAt 等不应被覆盖的字段
                         Object.keys(local).forEach(function(k){ delete local[k]; });
                         Object.keys(cloud).forEach(function(k){ local[k] = cloud[k]; });
                         result.updated++;
                     }
                 });
-                // 3) 本地有而云端没有 → 本地脏保留；非脏视为被删除，清理
-                var cloudIdSet = {};
-                Object.keys(cloudMap).forEach(function(k){ cloudIdSet[k] = true; });
-                var newLocalArr = localArr.filter(function(r){
+                // 3) 遍历本地：墓碑→删除；无云端痕迹→标脏保留
+                var keptArr = [];
+                arr.forEach(function(r){
                     var rid = String(r.id);
-                    if(cloudIdSet[rid]) return true;
-                    if(dirtySet[rid] || deletedSet[rid]) return true; // 本地脏/已删标记 → 保留
-                    return false; // 云端没有且本地不脏 → 被其他设备删除了
+                    if(split.tomb[rid] && !dirtySet[rid]){
+                        result.removed++;
+                        return;
+                    }
+                    if(!split.live[rid] && !split.tomb[rid] && !dirtySet[rid] && !deletedSet[rid]){
+                        v3MarkDirty(type, r.id);
+                        result.rescued++;
+                    }
+                    keptArr.push(r);
                 });
-                result.removed += (localArr.length - newLocalArr.length);
-                DB[meta.dbPath[0]] = newLocalArr;
+                DB[meta.dbPath[0]] = keptArr;
+                if(v3Snapshot(type) !== before) result.basicChanged = true;
+            }
+            // 基础数据与业务记录统一走本地优先合并
+            V3_BASIC_TYPES.forEach(function(type){
+                if(type === 'meta') mergeMetaType();
+                else if(type === 'deduction_item') mergeItemsType();
+                else mergeArrayType(type);
             });
+            V3_MUTABLE_TYPES.forEach(function(type){ mergeArrayType(type); });
             DB.lastSyncTime = Date.now();
-            // 基础数据覆盖后重新校准账号
+            // 合并后重新校准账号
             ensureCorrectUsers();
             if(currentUser && currentUser.id != null){
                 var refreshed = DB.users.find(function(x){ return String(x.id) === String(currentUser.id); });
                 if(refreshed) currentUser = refreshed;
             }
             if(selectedDormitoryId && !getDormitoryById(selectedDormitoryId)){ selectedDormitoryId=null; selectedFloorId=null; }
-            console.log('[V3] 拉取完成：新增 '+result.added+'，更新 '+result.updated+'，清理 '+result.removed+'，基础数据变化='+result.basicChanged+'，云端共 '+result.total+' 行');
+            console.log('[V3] 拉取完成：新增 '+result.added+'，更新 '+result.updated+'，删除 '+result.removed+'，补种标脏 '+result.rescued+'，基础数据变化='+result.basicChanged+'，云端共 '+result.total+' 行');
             return result;
+        }, function(err){
+            console.error('[V3] 拉取失败:', (err && err.message) ? err.message : err);
+            return null;
         });
     }
     // 辅助：取某类型数组的 JSON 快照（用于比较是否变化）
@@ -2200,25 +2273,38 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
             manualSync._busy=false;
             if(btn){btn.textContent='🔄';btn.disabled=false;}
             var pulled=results[0], pushed=results[1];
-            if(pulled===null && pushed===false){
-                updateSyncStatus('unsynced');
-                toast('同步失败，已加入重试队列稍后自动上传','error');
-                syncWithRetry();
-                return;
-            }
             var added=pulled?pulled.added:0;
             var updated=pulled?pulled.updated:0;
             var removed=pulled?pulled.removed:0;
+            var rescued=pulled?pulled.rescued:0;
             var basicChanged=pulled?pulled.basicChanged:false;
+            // 拉取到新数据时刷新当前视图与树形菜单（无论上传成败，拉取结果都要呈现）
+            if(added>0||updated>0||removed>0||rescued>0||basicChanged){ renderTree(); renderView(); }
+            if(pushed === false){
+                // 上传失败：明确提示，绝不误报“同步完成”；脏标记保留，加入重试队列
+                updateSyncStatus('unsynced');
+                var pullParts=[];
+                if(added>0) pullParts.push('拉取新增 '+added+' 条');
+                if(updated>0) pullParts.push('更新 '+updated+' 条');
+                var pullMsg = pullParts.length>0 ? '（云端数据已拉取：'+pullParts.join('，')+'）' : '';
+                toast('上传失败，请检查网络后重试'+pullMsg, 'error');
+                syncWithRetry();
+                return;
+            }
+            if(pulled === null){
+                updateSyncStatus('unsynced');
+                toast('拉取失败，请检查网络后重试（本地数据已保留）', 'error');
+                syncWithRetry();
+                return;
+            }
             var parts=[];
             if(added>0) parts.push('拉取新增 '+added+' 条');
             if(updated>0) parts.push('更新 '+updated+' 条');
-            if(removed>0) parts.push('清理 '+removed+' 条');
+            if(removed>0) parts.push('删除 '+removed+' 条');
+            if(rescued>0) parts.push('补种 '+rescued+' 条');
             if(basicChanged) parts.push('基础数据已同步');
             updateSyncStatus('synced');
             toast(parts.length>0?('同步完成：'+parts.join('，')):'同步完成，数据已是最新');
-            // 拉取到新数据时刷新当前视图与树形菜单
-            if(added>0||updated>0||removed>0||basicChanged){ renderTree(); renderView(); }
         }).catch(function(e){
             manualSync._busy=false;
             if(btn){btn.textContent='🔄';btn.disabled=false;}
