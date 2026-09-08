@@ -1351,7 +1351,6 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
         });
     }
 
-    // V3：按行上传同步
     function syncToCloudV3(){
         if (!syncEnabled || !supabaseClient || !DB) return Promise.resolve(false);
         ensureSyncMeta();
@@ -1380,15 +1379,25 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
             DB.lastSyncTime = Date.now();
             return Promise.resolve(true);
         }
-        // 分批 upsert（Supabase 批量上限）
+        // 先删后插：逐行 DELETE (record_type,record_id) 再 INSERT 新数据
+        // 绕开 PostgREST upsert 和自增序列问题
+        function uploadOne(row){
+            // 1. 先删除同 (record_type, record_id) 的旧行
+            return supabaseClient.from('sync_store')
+                .delete()
+                .eq('record_type', row.record_type)
+                .eq('record_id', row.record_id)
+                .then(function(){
+                    // 2. 再插入新行（显式大 id，绕开序列）
+                    return supabaseClient.from('sync_store').insert([row]);
+                });
+        }
         function doBatch(startIdx){
             if(startIdx >= rows.length) return Promise.resolve(true);
             var chunk = rows.slice(startIdx, startIdx + V3_UPSERT_CHUNK);
-            return supabaseClient.from('sync_store').upsert(chunk, { onConflict: 'record_type,record_id' }).then(function(res){
-                if(res.error){
-                    console.error('[V3] 上传批次失败:', res.error.message);
-                    return false;
-                }
+            return Promise.all(chunk.map(uploadOne)).then(function(results){
+                var fail = results.find(function(r){ return r.error; });
+                if(fail){ console.error('[V3] 上传批次失败:', fail.error.message); return false; }
                 return doBatch(startIdx + V3_UPSERT_CHUNK);
             });
         }
@@ -1430,11 +1439,13 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
     }
     // 构造 sync_store upsert 行
     function v3BuildUpsertRow(recordType, recordId, data, isDeleted, updatedAt){
-        // data 可能包含辅助字段如 _subType，上传时原样保留
+        // 显式分配大 id（从百万级开始），绕开数据库自增序列被旧数据卡死的问题
+        var bigId = 1000000 + Date.now() % 10000000 + Math.floor(Math.random() * 1000);
         return {
+            id: bigId,
             record_type: recordType,
             record_id: String(recordId),
-            data: isDeleted ? null : data,
+            data: isDeleted ? {} : data,
             deleted: !!isDeleted,
             updated_at: updatedAt,
             device_id: DEVICE_ID
@@ -1569,11 +1580,11 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
         // 先查询是否有旧格式数据（id=1，data 非 null）
         return supabaseClient.from('sync_store').select('id,data').eq('id',1).maybeSingle().then(function(res){
             if(res.error){ console.error('[迁移] 查询旧数据失败:', res.error.message); return false; }
-            if(!res.data || res.data.data == null){ console.log('[迁移] 云端无旧格式数据，跳过'); return true; }
+            if(!res.data || res.data.data == null){ console.log('[迁移] 云端无旧格式数据，跳过'); return false; }
             var decoded = decodeCloudData(res.data.data);
             if(!decoded || typeof decoded !== 'object'){
                 console.log('[迁移] 旧数据无法解析，跳过');
-                return true;
+                return false;
             }
             // 构建完整的 DB 对象（从旧数据提取）
             var full = {
@@ -1618,12 +1629,20 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
                     allRows.push(v3BuildUpsertRow(bizMap[arrKey], rec.id, rec, false, nowIso));
                 });
             });
-            if(allRows.length === 0){ console.log('[迁移] 旧数据无有效记录，跳过'); return true; }
+            if(allRows.length === 0){ console.log('[迁移] 旧数据无有效记录，跳过'); return false; }
             console.log('[迁移] 准备迁移 ' + allRows.length + ' 条记录...');
-            // 分批 upsert
+            // 先删后插
+            function uploadOne(row){
+                return supabaseClient.from('sync_store')
+                    .delete()
+                    .eq('record_type', row.record_type)
+                    .eq('record_id', row.record_id)
+                    .then(function(){
+                        return supabaseClient.from('sync_store').insert([row]);
+                    });
+            }
             function doBatch(startIdx){
                 if(startIdx >= allRows.length){
-                    // 全部插入完成，删除旧格式行 id=1
                     return supabaseClient.from('sync_store').delete().eq('id',1).then(function(r2){
                         if(r2.error) console.warn('[迁移] 清理旧行失败（可忽略）:', r2.error.message);
                         else console.log('[迁移] 旧格式行已删除');
@@ -1631,8 +1650,9 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
                     });
                 }
                 var chunk = allRows.slice(startIdx, startIdx + V3_UPSERT_CHUNK);
-                return supabaseClient.from('sync_store').upsert(chunk, { onConflict: 'record_type,record_id' }).then(function(r){
-                    if(r.error){ console.error('[迁移] 批次失败:', r.error.message); return false; }
+                return Promise.all(chunk.map(uploadOne)).then(function(results){
+                    var fail = results.find(function(r){ return r.error; });
+                    if(fail){ console.error('[迁移] 批次失败:', fail.error.message); return false; }
                     return doBatch(startIdx + V3_UPSERT_CHUNK);
                 });
             }
@@ -2001,18 +2021,19 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
                     if(ver === 3){
                         // 表结构已升级，尝试迁移旧格式数据
                         console.log('[V3] 表结构已是按行存储，尝试迁移旧格式数据...');
-                        return migrateOldFormatToRows().then(function(){
-                            console.log('[V3] 旧格式迁移完成或无数据可迁，继续正常同步流程');
+                        return migrateOldFormatToRows().then(function(migrated){
+                            if(migrated){
+                                console.log('[V3] 旧格式迁移完成，跳过本地脏标记');
+                            } else {
+                                // 没有旧数据可迁（云端原本就是空的）：把本地所有记录标记为脏
+                                v3MarkAllLocalDirty();
+                            }
+                            return null;
                         });
                     }
                     console.log('[V3] 表结构未升级，使用 V2 同步（请手动执行 ALTER TABLE SQL）');
                     return null;
                 }).then(function(){
-                    // V3 首次升级后：把本地所有已有记录标记为脏，触发全量上传
-                    // （因为旧 V2 同步的记录没有 V3 脏标记，syncToCloudV3 不会上传它们）
-                    if(_detectedSchemaVersion === 3){
-                        v3MarkAllLocalDirty();
-                    }
                     return loadFromCloud();
                 }).then(function(pullResult) {
                     if (pullResult) {
