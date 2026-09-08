@@ -1155,6 +1155,13 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
         if(!Array.isArray(DB.deletedRecordIds)) DB.deletedRecordIds=[];
         if(!Array.isArray(DB.dirtyRecordIds)) DB.dirtyRecordIds=[];
         if(typeof DB.lastSyncTime!=='number') DB.lastSyncTime=0;
+        // V3 按行存储：按类型分组的脏标记和删除标记
+        if(!DB.dirtyByType) DB.dirtyByType = {};
+        if(!DB.deletedByType) DB.deletedByType = {};
+        V3_RECORD_TYPES.forEach(function(m){
+            if(!DB.dirtyByType[m.type]) DB.dirtyByType[m.type] = {};
+            if(!DB.deletedByType[m.type]) DB.deletedByType[m.type] = {};
+        });
         if(!Array.isArray(DB.absenceRecords)) DB.absenceRecords=[];
         if(!DB.nextIds) DB.nextIds={};
         if(typeof DB.nextIds.absence!=='number') DB.nextIds.absence=1;
@@ -1208,6 +1215,432 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
     // 记录ID全局唯一（方案B）：时间戳(base36) + 设备标识 + 随机后缀，杜绝多设备 nextIds 冲突
     function generateRecordId(){
         return Date.now().toString(36)+'-'+DEVICE_ID+'-'+Math.random().toString(36).slice(2,6);
+    }
+
+    // ==================== V3 按行存储架构：常量与辅助 ====================
+    // 业务记录类型 → DB 中对应数组的映射。
+    // 注意 deductionItems 是 {hygiene:[], discipline:[]} 对象，需要特殊处理。
+    var V3_RECORD_TYPES = [
+        { type: 'meta',            dbPath: ['meta'],              idField: 'id',    isArray: false, specialMeta: true },
+        { type: 'floor',            dbPath: ['floors'],           idField: 'id',    isArray: true  },
+        { type: 'dormitory',        dbPath: ['dormitories'],      idField: 'id',    isArray: true  },
+        { type: 'student',          dbPath: ['students'],         idField: 'id',    isArray: true  },
+        { type: 'user',             dbPath: ['users'],            idField: 'id',    isArray: true  },
+        { type: 'deduction_item',   dbPath: ['deductionItems'],   idField: 'id',    isArray: false, specialItems: true },
+        { type: 'deduction_record', dbPath: ['deductionRecords'], idField: 'id',    isArray: true  },
+        { type: 'leave_record',     dbPath: ['leaveRecords'],     idField: 'id',    isArray: true  },
+        { type: 'absence_record',   dbPath: ['absenceRecords'],   idField: 'id',    isArray: true  }
+    ];
+    // 基础数据类型（管理员统一维护，云端为权威）——拉取时云端覆盖本地
+    var V3_BASIC_TYPES = ['meta', 'floor', 'dormitory', 'student', 'user', 'deduction_item'];
+    // 业务记录类型（多设备并发写入，按 updated_at 合并）
+    var V3_MUTABLE_TYPES = ['deduction_record', 'leave_record', 'absence_record'];
+    // Supabase upsert 批量上限（保守值，实际约 500）
+    var V3_UPSERT_CHUNK = 200;
+    // 表结构版本：2 = 旧版整库压缩，3 = 新版按行存储
+    var V3_SCHEMA_VERSION = 3;
+    // 运行时检测到的表结构版本，initializeData 中设置
+    var _detectedSchemaVersion = 2;
+
+    // 从 DB 获取某类型的记录数组（处理 deductionItems 的嵌套结构）
+    function v3GetRecordsByType(type){
+        var meta = V3_RECORD_TYPES.find(function(m){ return m.type === type; });
+        if(!meta || !DB) return [];
+        if(meta.specialMeta){
+            // meta 类型：固定返回一条 {id:'main', data:{...}}
+            return [{ id: 'main', dormitoryList: DB.dormitoryList || [], nextIds: DB.nextIds || {} }];
+        }
+        if(meta.specialItems){
+            // deductionItems: 扁平化 hygiene + discipline 为独立记录
+            var arr = [];
+            var hy = (DB.deductionItems&&DB.deductionItems.hygiene)||[];
+            var dis = (DB.deductionItems&&DB.deductionItems.discipline)||[];
+            hy.forEach(function(x){ arr.push({ _subType:'hygiene', data:x }); });
+            dis.forEach(function(x){ arr.push({ _subType:'discipline', data:x }); });
+            return arr;
+        }
+        return (DB[meta.dbPath[0]]) || [];
+    }
+    // 将一条云端 deduction_item 记录还原到 DB.deductionItems
+    function v3RestoreDeductionItem(cloudRow){
+        var st = (cloudRow.data && cloudRow.data._subType) || cloudRow._subType;
+        if(!DB.deductionItems) DB.deductionItems = { hygiene: [], discipline: [] };
+        var target = DB.deductionItems[st] || (st==='discipline' ? DB.deductionItems.discipline : DB.deductionItems.hygiene);
+        var itemData = cloudRow.data || cloudRow;
+        // 移除辅助字段
+        var clean = {};
+        Object.keys(itemData).forEach(function(k){ if(k !== '_subType') clean[k] = itemData[k]; });
+        // 检查是否已存在（同 id）
+        var idx = target.findIndex(function(x){ return String(x.id) === String(clean.id); });
+        if(idx >= 0) target[idx] = clean;
+        else target.push(clean);
+    }
+
+    // 脏标记：按 type 分组存储 DB.dirtyByType[type] = { recordId: true, ... }
+    // 删除标记：按 type 分组存储 DB.deletedByType[type] = { recordId: true, ... }
+    function v3MarkDirty(type, recordId){
+        if(!DB) return;
+        if(!DB.dirtyByType) DB.dirtyByType = {};
+        if(!DB.dirtyByType[type]) DB.dirtyByType[type] = {};
+        DB.dirtyByType[type][String(recordId)] = true;
+    }
+    function v3MarkDeleted(type, recordId){
+        if(!DB) return;
+        if(!DB.deletedByType) DB.deletedByType = {};
+        if(!DB.deletedByType[type]) DB.deletedByType[type] = {};
+        DB.deletedByType[type][String(recordId)] = true;
+        // 已删除的记录同时从 dirty 标记中移除（避免删除标记和脏标记冲突）
+        if(DB.dirtyByType && DB.dirtyByType[type]){
+            delete DB.dirtyByType[type][String(recordId)];
+        }
+    }
+    function v3IsDirty(type, recordId){
+        return DB && DB.dirtyByType && DB.dirtyByType[type] && DB.dirtyByType[type][String(recordId)];
+    }
+    function v3IsDeleted(type, recordId){
+        return DB && DB.deletedByType && DB.deletedByType[type] && DB.deletedByType[type][String(recordId)];
+    }
+    // V3 首次升级后：把本地所有已有记录标记为脏，触发全量上传
+    // （因为旧 V2 架构下的记录没有 V3 脏标记，syncToCloudV3 不会上传它们）
+    function v3MarkAllLocalDirty(){
+        if(!DB) return;
+        ensureSyncMeta();
+        var count = 0;
+        V3_RECORD_TYPES.forEach(function(meta){
+            if(meta.specialMeta){
+                // meta 类型：固定 id='main'
+                v3MarkDirty('meta', 'main');
+                count++;
+                return;
+            }
+            if(meta.specialItems){
+                // deductionItems：扁平化 hygiene + discipline
+                var hy = (DB.deductionItems&&DB.deductionItems.hygiene)||[];
+                var dis = (DB.deductionItems&&DB.deductionItems.discipline)||[];
+                hy.forEach(function(x){ if(x && x.id!=null){ v3MarkDirty('deduction_item', x.id); count++; } });
+                dis.forEach(function(x){ if(x && x.id!=null){ v3MarkDirty('deduction_item', x.id); count++; } });
+                return;
+            }
+            // 普通数组类型
+            var arr = DB[meta.dbPath[0]] || [];
+            arr.forEach(function(x){ if(x && x[meta.idField]!=null){ v3MarkDirty(meta.type, x[meta.idField]); count++; } });
+        });
+        if(count > 0){
+            console.log('[V3] 首次升级：已将本地 '+count+' 条记录标记为脏，等待全量上传');
+        }
+    }
+
+    // 检测 sync_store 表是否已升级为 V3 按行存储结构（有 record_type 等列）
+    function detectV3Schema(){
+        if(!supabaseClient) return Promise.resolve(2);
+        if(_detectedSchemaVersion === 3) return Promise.resolve(3);
+        // 用 try-catch 查询新字段，成功则 V3，失败则 V2
+        return supabaseClient.from('sync_store').select('id,record_type,record_id').limit(1).then(function(res){
+            if(res.error){
+                // 列不存在或其他错误 → 旧结构
+                console.log('[V3] 检测到旧表结构，使用 V2 同步：', res.error.message);
+                _detectedSchemaVersion = 2;
+                return 2;
+            }
+            console.log('[V3] 检测到 V3 按行存储表结构');
+            _detectedSchemaVersion = 3;
+            return 3;
+        }).catch(function(){
+            _detectedSchemaVersion = 2;
+            return 2;
+        });
+    }
+
+    // V3：按行上传同步
+    function syncToCloudV3(){
+        if (!syncEnabled || !supabaseClient || !DB) return Promise.resolve(false);
+        ensureSyncMeta();
+        var rows = [];
+        var nowIso = new Date().toISOString();
+        var didAnything = false;
+        // 遍历所有记录类型，收集脏记录和删除标记
+        V3_RECORD_TYPES.forEach(function(meta){
+            var dirtySet = (DB.dirtyByType && DB.dirtyByType[meta.type]) || {};
+            var deletedSet = (DB.deletedByType && DB.deletedByType[meta.type]) || {};
+            // 1) 脏记录：从 DB 读取当前数据，构造 upsert 行
+            Object.keys(dirtySet).forEach(function(rid){
+                var rec = v3GetRecordById(meta.type, rid);
+                if(!rec) return; // 记录不存在了（可能已被删除），交给 deleted 处理
+                didAnything = true;
+                rows.push(v3BuildUpsertRow(meta.type, rid, rec, false, nowIso));
+            });
+            // 2) 删除标记：只对已存在的云端记录设置 deleted=true
+            Object.keys(deletedSet).forEach(function(rid){
+                didAnything = true;
+                rows.push(v3BuildUpsertRow(meta.type, rid, null, true, nowIso));
+            });
+        });
+        if(!didAnything){
+            console.log('[V3] 无脏记录需要上传');
+            DB.lastSyncTime = Date.now();
+            return Promise.resolve(true);
+        }
+        // 分批 upsert（Supabase 批量上限）
+        function doBatch(startIdx){
+            if(startIdx >= rows.length) return Promise.resolve(true);
+            var chunk = rows.slice(startIdx, startIdx + V3_UPSERT_CHUNK);
+            return supabaseClient.from('sync_store').upsert(chunk, { onConflict: 'record_type,record_id' }).then(function(res){
+                if(res.error){
+                    console.error('[V3] 上传批次失败:', res.error.message);
+                    return false;
+                }
+                return doBatch(startIdx + V3_UPSERT_CHUNK);
+            });
+        }
+        return doBatch(0).then(function(ok){
+            if(!ok) return false;
+            // 上传成功：清除脏标记和删除标记
+            V3_RECORD_TYPES.forEach(function(meta){
+                if(DB.dirtyByType && DB.dirtyByType[meta.type]) DB.dirtyByType[meta.type] = {};
+                if(DB.deletedByType && DB.deletedByType[meta.type]) DB.deletedByType[meta.type] = {};
+            });
+            DB.lastSyncTime = Date.now();
+            saveDBToLocal();
+            console.log('[V3] 上传成功，共 ' + rows.length + ' 行');
+            return true;
+        });
+    }
+    // 从 DB 获取指定类型的记录（支持 deductionItems 特殊处理）
+    function v3GetRecordById(type, recordId){
+        var meta = V3_RECORD_TYPES.find(function(m){ return m.type === type; });
+        if(!meta || !DB) return null;
+        var rid = String(recordId);
+        if(meta.specialMeta){
+            // meta 类型：固定 id 为 'main'
+            if(rid === 'main') return { id: 'main', dormitoryList: DB.dormitoryList || [], nextIds: DB.nextIds || {} };
+            return null;
+        }
+        if(meta.specialItems){
+            // deductionItems：先搜 hygiene 再搜 discipline，附带 _subType
+            var hy = (DB.deductionItems&&DB.deductionItems.hygiene)||[];
+            var dis = (DB.deductionItems&&DB.deductionItems.discipline)||[];
+            var found = hy.find(function(x){ return String(x.id) === rid; });
+            if(found) return Object.assign({}, found, { _subType: 'hygiene' });
+            found = dis.find(function(x){ return String(x.id) === rid; });
+            if(found) return Object.assign({}, found, { _subType: 'discipline' });
+            return null;
+        }
+        var arr = DB[meta.dbPath[0]] || [];
+        return arr.find(function(x){ return String(x[meta.idField]) === rid; }) || null;
+    }
+    // 构造 sync_store upsert 行
+    function v3BuildUpsertRow(recordType, recordId, data, isDeleted, updatedAt){
+        // data 可能包含辅助字段如 _subType，上传时原样保留
+        return {
+            record_type: recordType,
+            record_id: String(recordId),
+            data: isDeleted ? null : data,
+            deleted: !!isDeleted,
+            updated_at: updatedAt,
+            device_id: DEVICE_ID
+        };
+    }
+
+    // V3：按类型拉取重组
+    function loadFromCloudV3(){
+        if (!syncEnabled || !supabaseClient) return Promise.resolve(null);
+        ensureSyncMeta();
+        // 全量拉取（deleted=false）的行，按类型分组
+        return supabaseClient.from('sync_store').select('record_type,record_id,data,deleted,updated_at,device_id').eq('deleted', false).then(function(res){
+            if(res.error){
+                console.error('[V3] 拉取失败:', res.error.message);
+                return null;
+            }
+            var rows = res.data || [];
+            console.log('[V3] 拉取到 ' + rows.length + ' 条有效行');
+            // 按 type 分组
+            var byType = {};
+            rows.forEach(function(r){
+                if(!byType[r.record_type]) byType[r.record_type] = [];
+                byType[r.record_type].push(r);
+            });
+            var result = { added:0, updated:0, removed:0, basicChanged:false, total:rows.length };
+            // 先处理基础数据类型（云端覆盖本地）
+            V3_BASIC_TYPES.forEach(function(type){
+                var cloudRows = byType[type] || [];
+                var meta = V3_RECORD_TYPES.find(function(m){ return m.type === type; });
+                if(!meta) return;
+                var before = v3Snapshot(type);
+                if(type === 'meta'){
+                    // meta 类型：提取 dormitoryList 和 nextIds
+                    if(cloudRows.length > 0 && cloudRows[0].data){
+                        var md = cloudRows[0].data;
+                        if(md.dormitoryList) DB.dormitoryList = md.dormitoryList;
+                        if(md.nextIds) DB.nextIds = Object.assign(DB.nextIds || {}, md.nextIds);
+                    }
+                } else if(type === 'deduction_item'){
+                    // 重置 deductionItems 为空对象，用云端重建
+                    DB.deductionItems = { hygiene: [], discipline: [] };
+                    cloudRows.forEach(function(r){
+                        if(r.data && r.data._subType){
+                            v3RestoreDeductionItem(r);
+                        } else {
+                            // 旧格式没有 _subType，猜一下类型
+                            var guess = (r.data && r.data.defaultScore <= 0.5) ? 'hygiene' : 'discipline';
+                            DB.deductionItems[guess].push(r.data);
+                        }
+                    });
+                } else {
+                    // 普通数组类型
+                    DB[meta.dbPath[0]] = cloudRows.map(function(r){ return r.data; });
+                }
+                var after = v3Snapshot(type);
+                if(before !== after) result.basicChanged = true;
+            });
+            // 再处理业务记录类型（按 updated_at 合并）
+            V3_MUTABLE_TYPES.forEach(function(type){
+                var cloudRows = byType[type] || [];
+                var meta = V3_RECORD_TYPES.find(function(m){ return m.type === type; });
+                if(!meta) return;
+                var cloudMap = {};
+                cloudRows.forEach(function(r){ cloudMap[r.record_id] = r; });
+                var dirtySet = (DB.dirtyByType && DB.dirtyByType[type]) || {};
+                var deletedSet = (DB.deletedByType && DB.deletedByType[type]) || {};
+                // 本地按 record_id 建索引
+                var localArr = DB[meta.dbPath[0]] || [];
+                var localMap = {};
+                localArr.forEach(function(r){ if(r && r.id!=null) localMap[String(r.id)] = r; });
+                // 1) 云端有而本地没有 → 新增
+                Object.keys(cloudMap).forEach(function(rid){
+                    if(!localMap[rid] && !deletedSet[rid]){
+                        localArr.push(cloudMap[rid].data);
+                        localMap[rid] = cloudMap[rid].data;
+                        result.added++;
+                    }
+                });
+                // 2) 同 id 合并：本地非脏 → 以云端 updated_at 较新的为准
+                Object.keys(cloudMap).forEach(function(rid){
+                    if(!localMap[rid]) return;
+                    if(dirtySet[rid] || deletedSet[rid]) return; // 本地脏或已删，保留本地
+                    var local = localMap[rid];
+                    var cloud = cloudMap[rid].data;
+                    var localTime = local.lastModified || local.createdAt || 0;
+                    var cloudTime = (cloudMap[rid].updated_at) ? new Date(cloudMap[rid].updated_at).getTime() : (cloud.lastModified || cloud.createdAt || 0);
+                    if(cloudTime >= localTime && JSON.stringify(local) !== JSON.stringify(cloud)){
+                        // 云端更新，保留本地 createdAt 等不应被覆盖的字段
+                        Object.keys(local).forEach(function(k){ delete local[k]; });
+                        Object.keys(cloud).forEach(function(k){ local[k] = cloud[k]; });
+                        result.updated++;
+                    }
+                });
+                // 3) 本地有而云端没有 → 本地脏保留；非脏视为被删除，清理
+                var cloudIdSet = {};
+                Object.keys(cloudMap).forEach(function(k){ cloudIdSet[k] = true; });
+                var newLocalArr = localArr.filter(function(r){
+                    var rid = String(r.id);
+                    if(cloudIdSet[rid]) return true;
+                    if(dirtySet[rid] || deletedSet[rid]) return true; // 本地脏/已删标记 → 保留
+                    return false; // 云端没有且本地不脏 → 被其他设备删除了
+                });
+                result.removed += (localArr.length - newLocalArr.length);
+                DB[meta.dbPath[0]] = newLocalArr;
+            });
+            DB.lastSyncTime = Date.now();
+            // 基础数据覆盖后重新校准账号
+            ensureCorrectUsers();
+            if(currentUser && currentUser.id != null){
+                var refreshed = DB.users.find(function(x){ return String(x.id) === String(currentUser.id); });
+                if(refreshed) currentUser = refreshed;
+            }
+            if(selectedDormitoryId && !getDormitoryById(selectedDormitoryId)){ selectedDormitoryId=null; selectedFloorId=null; }
+            console.log('[V3] 拉取完成：新增 '+result.added+'，更新 '+result.updated+'，清理 '+result.removed+'，基础数据变化='+result.basicChanged+'，云端共 '+result.total+' 行');
+            return result;
+        });
+    }
+    // 辅助：取某类型数组的 JSON 快照（用于比较是否变化）
+    function v3Snapshot(type){
+        try {
+            var meta = V3_RECORD_TYPES.find(function(m){ return m.type === type; });
+            if(!meta) return '';
+            if(type === 'meta') return JSON.stringify({ dormitoryList: DB.dormitoryList || [], nextIds: DB.nextIds || {} });
+            if(type === 'deduction_item') return JSON.stringify(DB.deductionItems || {});
+            return JSON.stringify(DB[meta.dbPath[0]] || []);
+        } catch(e){ return ''; }
+    }
+
+    // 将旧格式（sync_store 中 id=1 的压缩/整库行）迁移为 V3 按行格式
+    function migrateOldFormatToRows(){
+        if(!supabaseClient) return Promise.resolve(false);
+        // 先查询是否有旧格式数据（id=1，data 非 null）
+        return supabaseClient.from('sync_store').select('id,data').eq('id',1).maybeSingle().then(function(res){
+            if(res.error){ console.error('[迁移] 查询旧数据失败:', res.error.message); return false; }
+            if(!res.data || res.data.data == null){ console.log('[迁移] 云端无旧格式数据，跳过'); return true; }
+            var decoded = decodeCloudData(res.data.data);
+            if(!decoded || typeof decoded !== 'object'){
+                console.log('[迁移] 旧数据无法解析，跳过');
+                return true;
+            }
+            // 构建完整的 DB 对象（从旧数据提取）
+            var full = {
+                floors: decoded.floors || [],
+                dormitories: decoded.dormitories || [],
+                students: decoded.students || [],
+                users: decoded.users || [],
+                deductionRecords: decoded.deductionRecords || [],
+                leaveRecords: decoded.leaveRecords || [],
+                absenceRecords: decoded.absenceRecords || []
+            };
+            // deductionItems 可能在旧数据中不存在
+            if(decoded.deductionItems) full.deductionItems = decoded.deductionItems;
+            else full.deductionItems = { hygiene:[], discipline:[] };
+            // 将每条业务记录构造为 sync_store 行
+            var allRows = [];
+            var nowIso = new Date().toISOString();
+            // floor / dormitory / student / user：直接转
+            ['floors','dormitories','students','users'].forEach(function(arrKey){
+                var typeMap = { floors:'floor', dormitories:'dormitory', students:'student', users:'user' };
+                var records = full[arrKey] || [];
+                records.forEach(function(rec){
+                    if(!rec || rec.id == null) return;
+                    allRows.push(v3BuildUpsertRow(typeMap[arrKey], rec.id, rec, false, nowIso));
+                });
+            });
+            // deductionItems 特殊处理
+            ['hygiene','discipline'].forEach(function(sub){
+                var items = (full.deductionItems && full.deductionItems[sub]) || [];
+                items.forEach(function(item){
+                    if(!item || item.id == null) return;
+                    var enriched = Object.assign({}, item, { _subType: sub });
+                    allRows.push(v3BuildUpsertRow('deduction_item', item.id, enriched, false, nowIso));
+                });
+            });
+            // 业务记录：deduction_record / leave_record / absence_record
+            var bizMap = { deductionRecords:'deduction_record', leaveRecords:'leave_record', absenceRecords:'absence_record' };
+            ['deductionRecords','leaveRecords','absenceRecords'].forEach(function(arrKey){
+                var records = full[arrKey] || [];
+                records.forEach(function(rec){
+                    if(!rec || rec.id == null) return;
+                    allRows.push(v3BuildUpsertRow(bizMap[arrKey], rec.id, rec, false, nowIso));
+                });
+            });
+            if(allRows.length === 0){ console.log('[迁移] 旧数据无有效记录，跳过'); return true; }
+            console.log('[迁移] 准备迁移 ' + allRows.length + ' 条记录...');
+            // 分批 upsert
+            function doBatch(startIdx){
+                if(startIdx >= allRows.length){
+                    // 全部插入完成，删除旧格式行 id=1
+                    return supabaseClient.from('sync_store').delete().eq('id',1).then(function(r2){
+                        if(r2.error) console.warn('[迁移] 清理旧行失败（可忽略）:', r2.error.message);
+                        else console.log('[迁移] 旧格式行已删除');
+                        return true;
+                    });
+                }
+                var chunk = allRows.slice(startIdx, startIdx + V3_UPSERT_CHUNK);
+                return supabaseClient.from('sync_store').upsert(chunk, { onConflict: 'record_type,record_id' }).then(function(r){
+                    if(r.error){ console.error('[迁移] 批次失败:', r.error.message); return false; }
+                    return doBatch(startIdx + V3_UPSERT_CHUNK);
+                });
+            }
+            return doBatch(0).then(function(ok){
+                if(ok){ toast('数据格式升级完成'); }
+                return ok;
+            });
+        });
     }
 
     // ==================== 云端数据编解码（向后兼容旧格式） ====================
@@ -1322,6 +1755,8 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
     function syncToCloud() {
         if (!syncEnabled || !supabaseClient || !DB) return Promise.resolve(false);
         ensureSyncMeta();
+        // V3 按行存储：表结构已升级时自动切换
+        if(_detectedSchemaVersion === 3) return syncToCloudV3();
         var pending=DB.deductionRecords.filter(function(r){
             var k=String(r.id);
             return DB.syncedRecordIds.indexOf(k)===-1 || DB.dirtyRecordIds.indexOf(k)>-1;
@@ -1449,6 +1884,8 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
     }
     function loadFromCloud() {
         if (!syncEnabled || !supabaseClient) return Promise.resolve(null);
+        // V3 按行存储：表结构已升级时自动切换
+        if(_detectedSchemaVersion === 3) return loadFromCloudV3();
         return supabaseClient.from('sync_store').select('data').eq('id',1).maybeSingle().then(function(res){
             if (res.error) { console.error('拉取失败:', res.error.message); return null; }
             if (!res.data || res.data.data == null) return null;
@@ -1559,7 +1996,25 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
                 supabaseClient = window.supabase.createClient(SUPABASE_CONFIG.url, SUPABASE_CONFIG.anonKey);
                 // 网络恢复时自动重试未完成的增量上传（走重试队列）
                 window.addEventListener('online', function(){ if(syncEnabled&&supabaseClient&&DB){ ensureSyncMeta(); syncWithRetry(); } });
-                return loadFromCloud().then(function(pullResult) {
+                // V3：检测表结构版本 + 旧数据迁移
+                return detectV3Schema().then(function(ver){
+                    if(ver === 3){
+                        // 表结构已升级，尝试迁移旧格式数据
+                        console.log('[V3] 表结构已是按行存储，尝试迁移旧格式数据...');
+                        return migrateOldFormatToRows().then(function(){
+                            console.log('[V3] 旧格式迁移完成或无数据可迁，继续正常同步流程');
+                        });
+                    }
+                    console.log('[V3] 表结构未升级，使用 V2 同步（请手动执行 ALTER TABLE SQL）');
+                    return null;
+                }).then(function(){
+                    // V3 首次升级后：把本地所有已有记录标记为脏，触发全量上传
+                    // （因为旧 V2 同步的记录没有 V3 脏标记，syncToCloudV3 不会上传它们）
+                    if(_detectedSchemaVersion === 3){
+                        v3MarkAllLocalDirty();
+                    }
+                    return loadFromCloud();
+                }).then(function(pullResult) {
                     if (pullResult) {
                         // 云端优先策略：拉取成功后强制以云端记录集合为权威。
                         // 将本地 syncedRecordIds 替换为云端全部记录ID，清空脏记录，
@@ -2168,6 +2623,8 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
         DB.deductionRecords=DB.deductionRecords.filter(function(r){return String(r.id)!==String(id);});
         // 登记删除墓碑：防止该记录在下次拉取时从云端回灌（saveDB 全量上传时云端同步剔除）
         if(DB.deletedRecordIds.indexOf(String(id))===-1) DB.deletedRecordIds.push(String(id));
+        // V3 按行存储：标记删除
+        v3MarkDeleted('deduction_record', id);
         saveDB();
         toast('已删除');
         renderView();
@@ -2185,6 +2642,8 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
         if(!confirm('确定将 '+s.name+' 迁出 '+dormLabel+' 吗？\n（迁出后该学生将保留在系统中，可在学生名单管理中重新分配宿舍）')) return;
         s.dormitoryId = null;
         s.bedNumber = '';
+        // V3 按行存储：学生迁出修改，标记脏记录
+        v3MarkDirty('student', studentId);
         saveDB();
         toast(s.name+' 已迁出');
         renderView();
@@ -2270,6 +2729,8 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
         if(occupied){toast('该床位已被 '+occupied.name+' 占用，请选择其他床位','error');return;}
         s.dormitoryId = targetDormId;
         s.bedNumber = targetBed;
+        // V3 按行存储：学生调宿修改，标记脏记录
+        v3MarkDirty('student', transferStudentId);
         saveDB();
         toast(s.name+' 已调至 '+targetDorm.roomNumber+' 床位 '+targetBed);
         closeTransferModal();
@@ -2387,6 +2848,8 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
         var si=DB.syncedRecordIds.indexOf(k);
         if(si>-1) DB.syncedRecordIds.splice(si,1);
         r.lastModified=Date.now();
+        // V3 按行存储：修改扣分记录 → 脏标记
+        v3MarkDirty('deduction_record', r.id);
         saveDB();
         closeEditModal();
         toast('修改已保存');
@@ -2638,6 +3101,8 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
         if(hygieneItemIds.length===0 && disciplineItemIds.length===0){toast('请至少选择一个扣分项目','error');return;}
         var newRecord={id:generateRecordId(),createdAt:Date.now(),dormitoryId:addFormState.dormitoryId,studentId:addFormState.studentId||null,hygieneItemIds:hygieneItemIds,hygieneScore:hygieneScore,disciplineItemIds:disciplineItemIds,disciplineScore:disciplineScore,recordDate:addFormState.recordDate,remark:addFormState.remark||''};
         DB.deductionRecords.push(newRecord);
+        // V3 按行存储：标记为脏，新增记录首次上传
+        v3MarkDirty('deduction_record', newRecord.id);
         saveDB();
         toast('登记成功！');
         addFormState.studentId=null; addFormState.hygieneItemIds=[]; addFormState.disciplineItemIds=[]; addFormState.remark='';
@@ -2889,7 +3354,10 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
         var dormitoryId=parseInt(document.getElementById('newStuDorm').value);
         var bedNumber=document.getElementById('newStuBed').value.trim();
         if(!name||!className||!dormitoryId){toast('请填写完整信息','error');return;}
-        DB.students.push({id:DB.nextIds.student++,dormitoryId:dormitoryId,name:name,className:className,bedNumber:bedNumber});
+        var newStuId = DB.nextIds.student++;
+        DB.students.push({id:newStuId,dormitoryId:dormitoryId,name:name,className:className,bedNumber:bedNumber});
+        // V3 按行存储：新学生标记脏记录
+        v3MarkDirty('student', newStuId);
         saveDB();
         toast('学生已添加');
         renderStudentsView(document.getElementById('contentArea'));
@@ -2903,6 +3371,8 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
             // 已在 dormitories 中：若不在 dormitoryList（曾被删除），重新激活
             if(DB.dormitoryList.indexOf(roomNumber) === -1){
                 DB.dormitoryList.push(roomNumber);
+                // V3 按行存储：dormitoryList 变化 → meta 脏
+                v3MarkDirty('meta', 'main');
                 return { dorm:existing, autoAdded:true };
             }
             return { dorm:existing, autoAdded:false };
@@ -2914,6 +3384,9 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
         var newDorm = { id:DB.nextIds.dormitory++, floorId:floor.id, roomNumber:roomNumber, capacity:8 };
         DB.dormitories.push(newDorm);
         DB.dormitoryList.push(roomNumber);
+        // V3 按行存储：新宿舍 + dormitoryList 变化 → 脏标记
+        v3MarkDirty('dormitory', newDorm.id);
+        v3MarkDirty('meta', 'main');
         return { dorm:newDorm, autoAdded:true };
     }
     function batchImportStudents(){
@@ -2935,14 +3408,18 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
             var bedNumber=parts.length>3?parts[3].trim():'';
             // 非住宿生：宿舍号为 0 或空时，dormitoryId=null，标记为走读生
             if(roomNumber===''||roomNumber==='0'||roomNumber.toLowerCase()==='null'){
-                DB.students.push({id:DB.nextIds.student++,dormitoryId:null,name:name,className:className,bedNumber:''});
+                var nonStuId = DB.nextIds.student++;
+                DB.students.push({id:nonStuId,dormitoryId:null,name:name,className:className,bedNumber:''});
+                v3MarkDirty('student', nonStuId);
                 imported++; nonResident++;
                 continue;
             }
             var res=ensureDormitoryRoom(roomNumber);
             if(!res){toast('宿舍号无效或不存在：'+roomNumber,'error');continue;}
             if(res.autoAdded) autoAdded++;
-            DB.students.push({id:DB.nextIds.student++,dormitoryId:res.dorm.id,name:name,className:className,bedNumber:bedNumber});
+            var impStuId = DB.nextIds.student++;
+            DB.students.push({id:impStuId,dormitoryId:res.dorm.id,name:name,className:className,bedNumber:bedNumber});
+            v3MarkDirty('student', impStuId);
             imported++;
         }
         saveDB();
@@ -2970,14 +3447,18 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
                     var bedNumber=row.length>3?String(row[3]).trim():'';
                     // 非住宿生：宿舍号为 0 或空时，dormitoryId=null
                     if(roomNumber===''||roomNumber==='0'||roomNumber.toLowerCase()==='null'){
-                        DB.students.push({id:DB.nextIds.student++,dormitoryId:null,name:name,className:className,bedNumber:''});
+                        var exNonStu = DB.nextIds.student++;
+                        DB.students.push({id:exNonStu,dormitoryId:null,name:name,className:className,bedNumber:''});
+                        v3MarkDirty('student', exNonStu);
                         imported++; nonResident++;
                         return;
                     }
                     var res=ensureDormitoryRoom(roomNumber);
                     if(!res){toast('宿舍号无效或不存在：'+roomNumber,'error');return;}
                     if(res.autoAdded) autoAdded++;
-                    DB.students.push({id:DB.nextIds.student++,dormitoryId:res.dorm.id,name:name,className:className,bedNumber:bedNumber});
+                    var exStuId = DB.nextIds.student++;
+                    DB.students.push({id:exStuId,dormitoryId:res.dorm.id,name:name,className:className,bedNumber:bedNumber});
+                    v3MarkDirty('student', exStuId);
                     imported++;
                 });
                 saveDB();
@@ -2994,6 +3475,8 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
         if(!isAdmin()){toast('无权限','error');return;}
         if(!confirm('确认删除该学生？')) return;
         DB.students=DB.students.filter(function(s){return s.id!==id;});
+        // V3 按行存储：标记删除
+        v3MarkDeleted('student', id);
         saveDB();
         toast('已删除');
         renderStudentsView(document.getElementById('contentArea'));
@@ -3069,11 +3552,16 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
         if(existingDorm){
             // 已存在于 dormitories 但不在 dormitoryList（曾被删除），重新激活
             if(DB.dormitoryList.indexOf(val) === -1) DB.dormitoryList.push(val);
+            // V3 按行存储：重新激活 + meta 脏
+            v3MarkDirty('meta', 'main');
         } else {
             // 全新宿舍号
             var newId = DB.nextIds.dormitory++;
             DB.dormitories.push({ id:newId, floorId:floor.id, roomNumber:val, capacity:8 });
             DB.dormitoryList.push(val);
+            // V3 按行存储：新宿舍 + meta 脏
+            v3MarkDirty('dormitory', newId);
+            v3MarkDirty('meta', 'main');
         }
         saveDB();
         toast('宿舍号 '+val+' 已添加');
@@ -3095,6 +3583,8 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
         if(!confirm('确定删除宿舍 ['+roomNumber+'] 吗？\n（历史扣分/退宿记录将保留，但该宿舍号不再出现在选择列表中）')) return;
         // 仅从 dormitoryList 移除（控制可见性），保留 dormitories 条目以供历史记录引用
         DB.dormitoryList = DB.dormitoryList.filter(function(r){ return r !== roomNumber; });
+        // V3 按行存储：dormitoryList 变化 → meta 脏
+        v3MarkDirty('meta', 'main');
         saveDB();
         toast('宿舍号 '+roomNumber+' 已删除');
         // 若当前选中的是被删宿舍，清空选择
@@ -3129,20 +3619,24 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
         var score=parseFloat(document.getElementById('newHyItemScore').value);
         if(!name||!score||score<=0){toast('请输入有效信息','error');return;}
         if(!DB.deductionItems.hygiene) DB.deductionItems.hygiene=[];
-        DB.deductionItems.hygiene.push({id:DB.nextIds.item++,name:name,defaultScore:score});
+        var newItemId = DB.nextIds.item++;
+        DB.deductionItems.hygiene.push({id:newItemId,name:name,defaultScore:score});
+        v3MarkDirty('deduction_item', newItemId);
         saveDB(); toast('✅ 卫生项目添加成功！'); renderItemsView(document.getElementById('contentArea'));
     }
-    function deleteHygieneItem(id){ if(!isAdmin()){toast('无权限','error');return;} if(!confirm('确认删除？'))return; DB.deductionItems.hygiene=DB.deductionItems.hygiene.filter(function(i){return i.id!==id;}); saveDB(); toast('已删除'); renderItemsView(document.getElementById('contentArea')); }
+    function deleteHygieneItem(id){ if(!isAdmin()){toast('无权限','error');return;} if(!confirm('确认删除？'))return; DB.deductionItems.hygiene=DB.deductionItems.hygiene.filter(function(i){return i.id!==id;}); v3MarkDeleted('deduction_item', id); saveDB(); toast('已删除'); renderItemsView(document.getElementById('contentArea')); }
     function addDisciplineItem(){
         if(!isAdmin()){toast('无权限','error');return;}
         var name=document.getElementById('newDisItemName').value.trim();
         var score=parseFloat(document.getElementById('newDisItemScore').value);
         if(!name||!score||score<=0){toast('请输入有效信息','error');return;}
         if(!DB.deductionItems.discipline) DB.deductionItems.discipline=[];
-        DB.deductionItems.discipline.push({id:DB.nextIds.item++,name:name,defaultScore:score});
+        var newItemId2 = DB.nextIds.item++;
+        DB.deductionItems.discipline.push({id:newItemId2,name:name,defaultScore:score});
+        v3MarkDirty('deduction_item', newItemId2);
         saveDB(); toast('✅ 纪律项目添加成功！'); renderItemsView(document.getElementById('contentArea'));
     }
-    function deleteDisciplineItem(id){ if(!isAdmin()){toast('无权限','error');return;} if(!confirm('确认删除？'))return; DB.deductionItems.discipline=DB.deductionItems.discipline.filter(function(i){return i.id!==id;}); saveDB(); toast('已删除'); renderItemsView(document.getElementById('contentArea')); }
+    function deleteDisciplineItem(id){ if(!isAdmin()){toast('无权限','error');return;} if(!confirm('确认删除？'))return; DB.deductionItems.discipline=DB.deductionItems.discipline.filter(function(i){return i.id!==id;}); v3MarkDeleted('deduction_item', id); saveDB(); toast('已删除'); renderItemsView(document.getElementById('contentArea')); }
     function batchImportHygieneItems(){
         if(!isAdmin()){toast('无权限','error');return;}
         var text=document.getElementById('hyBatchImport').value.trim();
@@ -3154,7 +3648,9 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
             var name=parts[0].trim(); var score=parseFloat(parts[1]);
             if(!name||isNaN(score)||score<=0) continue;
             if(!DB.deductionItems.hygiene) DB.deductionItems.hygiene=[];
-            DB.deductionItems.hygiene.push({id:DB.nextIds.item++,name:name,defaultScore:score});
+            var impItemId = DB.nextIds.item++;
+            DB.deductionItems.hygiene.push({id:impItemId,name:name,defaultScore:score});
+            v3MarkDirty('deduction_item', impItemId);
             imported++;
         }
         saveDB(); toast('成功导入'+imported+'个卫生项目'); renderItemsView(document.getElementById('contentArea'));
@@ -3170,7 +3666,9 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
             var name=parts[0].trim(); var score=parseFloat(parts[1]);
             if(!name||isNaN(score)||score<=0) continue;
             if(!DB.deductionItems.discipline) DB.deductionItems.discipline=[];
-            DB.deductionItems.discipline.push({id:DB.nextIds.item++,name:name,defaultScore:score});
+            var impItemId2 = DB.nextIds.item++;
+            DB.deductionItems.discipline.push({id:impItemId2,name:name,defaultScore:score});
+            v3MarkDirty('deduction_item', impItemId2);
             imported++;
         }
         saveDB(); toast('成功导入'+imported+'个纪律项目'); renderItemsView(document.getElementById('contentArea'));
@@ -3189,6 +3687,8 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
         DB.deductionRecords.forEach(function(r){
             var k=String(r.id);
             if(DB.deletedRecordIds.indexOf(k)===-1) DB.deletedRecordIds.push(k);
+            // V3 按行存储：标记删除
+            v3MarkDeleted('deduction_record', k);
         });
         DB.deductionRecords=[];
         // 清空同步状态：所有记录已删除，无需保留已同步/脏标记
@@ -3203,6 +3703,8 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
     function deleteAllAbsenceRecords(){
         if(!isAdmin()){toast('无权限','error');return;}
         if(!confirm('确定要删除全部请假记录吗？此操作不可恢复！')) return;
+        // V3 按行存储：先标记所有待删记录
+        (DB.absenceRecords||[]).forEach(function(r){ if(r && r.id!=null) v3MarkDeleted('absence_record', r.id); });
         DB.absenceRecords=[];
         saveDB();
         toast('已删除全部请假记录');
@@ -3212,6 +3714,8 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
     function deleteAllStopRecords(){
         if(!isAdmin()){toast('无权限','error');return;}
         if(!confirm('确定要删除全部停宿记录吗？此操作不可恢复！')) return;
+        // V3 按行存储：先标记所有待删停宿记录
+        (DB.leaveRecords||[]).forEach(function(r){ if(r && r.type==='stop' && r.id!=null) v3MarkDeleted('leave_record', r.id); });
         DB.leaveRecords=(DB.leaveRecords||[]).filter(function(r){return r.type!=='stop';});
         saveDB();
         toast('已删除全部停宿记录');
@@ -3221,6 +3725,8 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
     function deleteAllLeaveRecords(){
         if(!isAdmin()){toast('无权限','error');return;}
         if(!confirm('确定要删除全部退宿记录吗？此操作不可恢复！')) return;
+        // V3 按行存储：先标记所有待删退宿记录
+        (DB.leaveRecords||[]).forEach(function(r){ if(r && r.type==='leave' && r.id!=null) v3MarkDeleted('leave_record', r.id); });
         DB.leaveRecords=(DB.leaveRecords||[]).filter(function(r){return r.type!=='leave';});
         saveDB();
         toast('已删除全部退宿记录');
@@ -3905,6 +4411,8 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
         };
         if(!DB.leaveRecords) DB.leaveRecords=[];
         DB.leaveRecords.push(newRec);
+        // V3 按行存储：新退宿/停宿记录标记脏
+        v3MarkDirty('leave_record', newRec.id);
         saveDB();
         toast(status==='pending'?'登记成功，待管理员审核':'登记成功！');
         if(type==='leave'){
@@ -3922,6 +4430,8 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
         var r=DB.leaveRecords.find(function(x){return String(x.id)===String(id);});
         if(!r){toast('记录不存在（ID:'+id+'），请刷新页面','error');return;}
         r.status='approved';
+        // V3 按行存储：审核状态变更 → 脏
+        v3MarkDirty('leave_record', id);
         saveDB();
         toast('✅ 审核已通过');
         applyLeaveFilter();
@@ -3933,6 +4443,8 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
         var r=DB.leaveRecords.find(function(x){return String(x.id)===String(id);});
         if(!r){toast('记录不存在（ID:'+id+'），请刷新页面','error');return;}
         r.status='rejected';
+        // V3 按行存储：审核状态变更 → 脏
+        v3MarkDirty('leave_record', id);
         saveDB();
         toast('❌ 审核未通过');
         applyLeaveFilter();
@@ -3988,6 +4500,8 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
         if(!isAdmin()){toast('无权限','error');return;}
         if(!confirm('确认删除？')) return;
         DB.leaveRecords=DB.leaveRecords.filter(function(r){return r.id!==id;});
+        // V3 按行存储：标记删除
+        v3MarkDeleted('leave_record', id);
         saveDB();
         toast('已删除');
         applyLeaveFilter();
@@ -4021,6 +4535,8 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
         };
         if(!DB.absenceRecords) DB.absenceRecords=[];
         DB.absenceRecords.push(newRec);
+        // V3 按行存储：新请假记录标记脏
+        v3MarkDirty('absence_record', newRec.id);
         saveDB();
         toast('请假登记成功！');
         document.getElementById('absName').value=''; document.getElementById('absDorm').value=''; document.getElementById('absBed').value=''; document.getElementById('absReason').value='';
@@ -4031,6 +4547,8 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
         if(!isAdmin()){toast('无权限','error');return;}
         if(!confirm('确认删除？')) return;
         DB.absenceRecords=(DB.absenceRecords||[]).filter(function(r){return r.id!==id;});
+        // V3 按行存储：标记删除
+        v3MarkDeleted('absence_record', id);
         saveDB();
         toast('已删除');
         renderAbsenceRecords();
