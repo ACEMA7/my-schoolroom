@@ -174,32 +174,44 @@ if(window.MutationObserver){
 document.addEventListener('DOMContentLoaded',function(){ initDatePickers(document); });
 </script>
     <style>
+        html{font-size:14px}
         :root{--primary:#4f6ef7;--primary-dark:#3a56d4;--primary-light:#e8ecff;--success:#34c759;--warning:#ff9500;--danger:#ff3b30;--gray-50:#f9fafb;--gray-100:#f3f4f6;--gray-200:#e5e7eb;--gray-300:#d1d5db;--gray-400:#9ca3af;--gray-500:#6b7280;--gray-600:#4b5563;--gray-700:#374151;--gray-800:#1f2937;--gray-900:#111827;--radius:8px;--shadow:0 1px 3px rgba(0,0,0,.1);--sat:env(safe-area-inset-top);--sab:env(safe-area-inset-bottom)}
         *{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
-        body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif;background:var(--gray-100);color:var(--gray-800);height:100vh;height:100dvh;overflow:hidden;font-size:14px;line-height:1.5;-webkit-font-smoothing:antialiased;-webkit-text-size-adjust:100%}
+        body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif;background:var(--gray-100);color:var(--gray-800);height:100vh;height:100dvh;overflow:hidden;font-size:1rem;line-height:1.5;-webkit-font-smoothing:antialiased;-webkit-text-size-adjust:100%}
         button,input,select,textarea,a{touch-action:manipulation}
         #loginPage{display:flex;align-items:center;justify-content:center;height:100vh;height:100dvh;background:linear-gradient(135deg,#4f6ef7,#a855f7);padding:16px}
         .login-box{background:#fff;border-radius:16px;padding:40px;width:380px;max-width:90vw;box-shadow:0 25px 60px rgba(0,0,0,.25);text-align:center}
-        .login-box .logo{font-size:48px;margin-bottom:16px}
-        .login-box h1{font-size:22px;font-weight:700;margin-bottom:4px}
-        .login-box .subtitle{color:#888;font-size:13px;margin-bottom:28px}
-        .login-box input{width:100%;padding:12px 16px;border:2px solid #e5e7eb;border-radius:8px;font-size:16px;margin-bottom:14px;outline:none;background:#fff}
+        .login-box .logo{font-size:3.4286rem;margin-bottom:16px}
+        .login-box h1{font-size:1.5714rem;font-weight:700;margin-bottom:4px}
+        .login-box .subtitle{color:#888;font-size:0.9286rem;margin-bottom:28px}
+        .login-box input{width:100%;padding:12px 16px;border:2px solid #e5e7eb;border-radius:8px;font-size:1.1429rem;margin-bottom:14px;outline:none;background:#fff}
         .login-box input:focus{border-color:var(--primary)}
-        .login-btn{width:100%;padding:13px;background:var(--primary);color:#fff;border:none;border-radius:8px;font-size:16px;font-weight:700;cursor:pointer;letter-spacing:2px}
+        .login-btn{width:100%;padding:13px;background:var(--primary);color:#fff;border:none;border-radius:8px;font-size:1.1429rem;font-weight:700;cursor:pointer;letter-spacing:2px}
         .login-btn:hover{background:var(--primary-dark)}
-        .login-error{color:var(--danger);font-size:13px;margin-top:10px;display:none}
+        .login-error{color:var(--danger);font-size:0.9286rem;margin-top:10px;display:none}
         #mainApp{display:none;height:100vh;height:100dvh;flex-direction:column}
         .header{height:60px;background:#fff;border-bottom:1px solid var(--gray-200);display:flex;align-items:center;justify-content:space-between;padding:0 20px;flex-shrink:0}
         .header-left{display:flex;align-items:center;gap:12px}
-        .header-logo{font-size:20px;font-weight:700;color:var(--primary)}
-        .header-badge{background:var(--primary-light);color:var(--primary);padding:4px 12px;border-radius:20px;font-size:12px;font-weight:700}
+        .header-logo{font-size:1.4286rem;font-weight:700;color:var(--primary)}
+        .header-badge{background:var(--primary-light);color:var(--primary);padding:4px 12px;border-radius:20px;font-size:0.8571rem;font-weight:700}
         .header-right{display:flex;align-items:center;gap:12px}
         .user-avatar{width:34px;height:34px;border-radius:50%;background:var(--primary);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700}
-        .logout-btn{padding:8px 16px;background:var(--gray-100);border:1px solid var(--gray-200);border-radius:8px;cursor:pointer;font-size:13px}
+        .logout-btn{padding:8px 16px;background:var(--gray-100);border:1px solid var(--gray-200);border-radius:8px;cursor:pointer;font-size:0.9286rem}
+        /* 同步状态指示器 */
+        .sync-status-dot{width:10px;height:10px;border-radius:50%;display:inline-block;margin-right:2px;cursor:pointer;flex-shrink:0}
+        .sync-status-dot.synced{background:#34c759;box-shadow:0 0 4px rgba(52,199,89,.5)}
+        .sync-status-dot.syncing{background:#ff9500;box-shadow:0 0 6px rgba(255,149,0,.6);animation:dot-pulse 1s infinite}
+        .sync-status-dot.unsynced{background:#ff3b30;box-shadow:0 0 6px rgba(255,59,48,.6);animation:dot-blink 0.8s infinite}
+        @keyframes dot-blink{0%,100%{opacity:1}50%{opacity:.3}}
+        @keyframes dot-pulse{0%,100%{transform:scale(1)}50%{transform:scale(1.3)}}
+        /* 字体调节按钮：默认隐藏，仅STAFF移动端通过JS加body.staff-font-scale显示 */
+        .font-scale-btn{display:none}
+        .font-scale-panel{display:none}
+        body.staff-font-scale .font-scale-btn{display:flex}
         .main-body{display:flex;flex:1;overflow:hidden}
         .sidebar{width:240px;background:#fff;border-right:1px solid var(--gray-200);display:flex;flex-direction:column;flex-shrink:0}
         .sidebar-nav{padding:12px 8px;border-bottom:1px solid var(--gray-100)}
-        .nav-item{display:flex;align-items:center;gap:10px;padding:10px 14px;border-radius:8px;cursor:pointer;color:var(--gray-600);font-weight:500;font-size:14px;margin-bottom:2px}
+        .nav-item{display:flex;align-items:center;gap:10px;padding:10px 14px;border-radius:8px;cursor:pointer;color:var(--gray-600);font-weight:500;font-size:1rem;margin-bottom:2px}
         .nav-item:hover{background:var(--gray-100)}
         .nav-item.active{background:var(--primary-light);color:var(--primary);font-weight:700}
         .sidebar-tree{flex:1;overflow-y:auto;padding:8px}
@@ -207,38 +219,38 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
         .tree-floor-header:hover{background:var(--gray-100)}
         .tree-rooms{margin-left:20px;display:none;padding-left:8px;border-left:2px solid var(--gray-200)}
         .tree-rooms.open{display:block}
-        .tree-room{padding:5px 10px;cursor:pointer;border-radius:4px;font-size:13px;color:var(--gray-600)}
+        .tree-room{padding:5px 10px;cursor:pointer;border-radius:4px;font-size:0.9286rem;color:var(--gray-600)}
         .tree-room:hover{background:var(--gray-100)}
         .tree-room.active{background:var(--primary-light);color:var(--primary);font-weight:700}
         .content{flex:1;overflow-y:auto;padding:20px}
         .content-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;flex-wrap:wrap;gap:12px}
-        .content-header h2{font-size:20px;font-weight:700}
-        .btn{padding:9px 18px;border-radius:8px;border:none;cursor:pointer;font-size:13px;font-weight:600;display:inline-flex;align-items:center;gap:6px}
+        .content-header h2{font-size:1.4286rem;font-weight:700}
+        .btn{padding:9px 18px;border-radius:8px;border:none;cursor:pointer;font-size:0.9286rem;font-weight:600;display:inline-flex;align-items:center;gap:6px}
         .btn-primary{background:var(--primary);color:#fff}
         .btn-primary:hover{background:var(--primary-dark)}
         .btn-danger{background:var(--danger);color:#fff}
         .btn-success{background:var(--success);color:#fff}
         .btn-warning{background:var(--warning);color:#fff}
         .btn-outline{background:#fff;color:var(--gray-600);border:1px solid var(--gray-300)}
-        .btn-sm{padding:6px 12px;font-size:12px}
-        .btn-xs{padding:4px 8px;font-size:11px;border-radius:4px}
+        .btn-sm{padding:6px 12px;font-size:0.8571rem}
+        .btn-xs{padding:4px 8px;font-size:0.7857rem;border-radius:4px}
         .card{background:#fff;border-radius:8px;box-shadow:var(--shadow);margin-bottom:16px;overflow:hidden}
         .card-header{padding:14px 18px;border-bottom:1px solid var(--gray-100);font-weight:700;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px}
         .card-body{padding:18px}
-        table{width:100%;border-collapse:collapse;font-size:13px}
+        table{width:100%;border-collapse:collapse;font-size:0.9286rem}
         th{text-align:left;padding:10px 12px;background:var(--gray-50);font-weight:700;color:var(--gray-600);border-bottom:2px solid var(--gray-200)}
         td{padding:10px 12px;border-bottom:1px solid var(--gray-100)}
         .form-group{margin-bottom:14px}
-        .form-group label{display:block;font-weight:600;font-size:13px;color:var(--gray-600);margin-bottom:5px}
-        .form-group input,.form-group select,.form-group textarea{width:100%;padding:9px 12px;border:1.5px solid var(--gray-200);border-radius:6px;font-size:14px;outline:none;font-family:inherit}
+        .form-group label{display:block;font-weight:600;font-size:0.9286rem;color:var(--gray-600);margin-bottom:5px}
+        .form-group input,.form-group select,.form-group textarea{width:100%;padding:9px 12px;border:1.5px solid var(--gray-200);border-radius:6px;font-size:1rem;outline:none;font-family:inherit}
         /* datalist 输入框右侧下拉箭头指示：仅保留原生浏览器自带箭头，去除自定义背景箭头避免重复 */
         .form-group input[list]{padding-right:30px;appearance:auto;cursor:pointer}
         .form-group input[list]::-webkit-calendar-picker-indicator{opacity:1;cursor:pointer}
         .form-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:14px}
         .stat-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:14px;margin-bottom:20px}
         .stat-card{background:#fff;border-radius:8px;padding:16px;box-shadow:var(--shadow);text-align:center;border-top:3px solid var(--primary)}
-        .stat-card .number{font-size:24px;font-weight:700}
-        .stat-card .label{font-size:12px;color:var(--gray-500);margin-top:4px}
+        .stat-card .number{font-size:1.7143rem;font-weight:700}
+        .stat-card .label{font-size:0.8571rem;color:var(--gray-500);margin-top:4px}
         .stat-card.warning{border-top-color:var(--warning)}
         .stat-card.danger{border-top-color:var(--danger)}
         #toast{position:fixed;top:70px;right:24px;z-index:9999}
@@ -246,11 +258,11 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
         .toast-item.success{background:var(--success)}
         .toast-item.error{background:var(--danger)}
         .highlight-red{color:var(--danger);font-weight:700}
-        .badge-tag{display:inline-block;padding:2px 8px;border-radius:12px;font-size:11px;font-weight:600}
+        .badge-tag{display:inline-block;padding:2px 8px;border-radius:12px;font-size:0.7857rem;font-weight:600}
         .badge-danger{background:#fee2e2;color:var(--danger)}
         .badge-warning{background:#fef3c7;color:#b45309}
         .badge-primary{background:#dbeafe;color:#1d4ed8}
-        .status-tag{display:inline-block;padding:2px 10px;border-radius:12px;font-size:11px;font-weight:600;color:#fff;white-space:nowrap}
+        .status-tag{display:inline-block;padding:2px 10px;border-radius:12px;font-size:0.7857rem;font-weight:600;color:#fff;white-space:nowrap}
         .status-red{background:#ff3b30}
         .status-orange{background:#ff9500}
         .status-purple{background:#a855f7}
@@ -263,33 +275,33 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
         .acc-block.acc-stop{background:#f5f3ff;border-color:#a855f7}
         .acc-block.acc-absence{background:#eff6ff;border-color:#4f6ef7}
         .acc-header{display:flex;align-items:center;gap:10px;padding:14px 16px;cursor:pointer;-webkit-user-select:none;user-select:none}
-        .acc-title{font-weight:700;font-size:15px}
+        .acc-title{font-weight:700;font-size:1.0714rem}
         .acc-leave .acc-title{color:#ff3b30}
         .acc-stop .acc-title{color:#a855f7}
         .acc-absence .acc-title{color:#4f6ef7}
-        .acc-info{font-size:12px;font-weight:600;color:var(--gray-600);background:rgba(255,255,255,.75);padding:2px 8px;border-radius:10px;white-space:nowrap}
-        .acc-arrow{margin-left:auto;font-size:13px;color:var(--gray-500)}
+        .acc-info{font-size:0.8571rem;font-weight:600;color:var(--gray-600);background:rgba(255,255,255,.75);padding:2px 8px;border-radius:10px;white-space:nowrap}
+        .acc-arrow{margin-left:auto;font-size:0.9286rem;color:var(--gray-500)}
         .acc-body{max-height:0;overflow:hidden;transition:max-height .25s ease;background:#fff}
         /* 色块展开由 open 类驱动（固定大上限），避免 JS 测量 scrollHeight 写内联高度在
            微信 X5/WKWebView 或卡顿场景下过渡不完成、内容被 overflow:hidden 裁剪 */
         .acc-block.open .acc-body{max-height:920px;overflow-y:auto;-webkit-overflow-scrolling:touch}
         /* 通用折叠卡片（记录列表/统计报表区域共用）：标题行点击开合，箭头旋转指示 */
         .fold-block{background:#fff;border:1px solid var(--gray-200);border-radius:10px;margin-bottom:12px;overflow:hidden}
-        .fold-header{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:12px 14px;cursor:pointer;user-select:none;font-weight:600;font-size:14px;color:var(--gray-800)}
+        .fold-header{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:12px 14px;cursor:pointer;user-select:none;font-weight:600;font-size:1rem;color:var(--gray-800)}
         .fold-header:active{background:var(--gray-50)}
-        .fold-arrow{display:inline-block;margin-left:auto;transition:transform .25s ease;color:var(--gray-400);font-size:12px}
+        .fold-arrow{display:inline-block;margin-left:auto;transition:transform .25s ease;color:var(--gray-400);font-size:0.8571rem}
         .fold-block.open .fold-arrow{transform:rotate(90deg)}
         .fold-body{max-height:0;overflow:hidden;transition:max-height .25s ease}
         .fold-block.open .fold-body{max-height:2600px;overflow-y:auto;-webkit-overflow-scrolling:touch}
-        .fold-sub{font-weight:400;font-size:12px;color:var(--gray-500);margin-left:6px}
+        .fold-sub{font-weight:400;font-size:0.8571rem;color:var(--gray-500);margin-left:6px}
         /* 移动端住宿信息：宿舍成员单行紧凑列表（姓名+圆点状态+班级·床号 同一行，右侧个人扣分） */
         .mem-row{display:flex;align-items:center;gap:8px;padding:11px 2px;border-bottom:1px solid #f0f0f0}
         .mem-row:last-child{border-bottom:none}
-        .mem-row .mem-name{font-size:15px;font-weight:700;color:var(--gray-900);flex-shrink:0}
-        .mem-row .mem-status{display:inline-flex;align-items:center;gap:4px;font-size:12px;font-weight:600;flex-shrink:0;white-space:nowrap}
+        .mem-row .mem-name{font-size:1.0714rem;font-weight:700;color:var(--gray-900);flex-shrink:0}
+        .mem-row .mem-status{display:inline-flex;align-items:center;gap:4px;font-size:0.8571rem;font-weight:600;flex-shrink:0;white-space:nowrap}
         .mem-row .mem-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
-        .mem-row .mem-sub{font-size:12px;color:#6b7280;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
-        .mem-row .mem-score{margin-left:auto;font-size:14px;font-weight:700;color:#34c759;flex-shrink:0}
+        .mem-row .mem-sub{font-size:0.8571rem;color:#6b7280;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+        .mem-row .mem-score{margin-left:auto;font-size:1rem;font-weight:700;color:#34c759;flex-shrink:0}
         .mem-row .mem-score.has{color:#ff3b30}
         .acc-body-inner{padding:14px 16px}
         .empty-state{text-align:center;padding:40px;color:var(--gray-400)}
@@ -299,7 +311,7 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
         .item-list{margin-bottom:12px}
         .item-list .item-row{display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid #f0f0f0}
         .item-list .item-row:last-child{border-bottom:none}
-        .loading-overlay{position:fixed;inset:0;background:#fff;z-index:99999;display:flex;align-items:center;justify-content:center;font-size:18px;font-weight:600}
+        .loading-overlay{position:fixed;inset:0;background:#fff;z-index:99999;display:flex;align-items:center;justify-content:center;font-size:1.2857rem;font-weight:600}
         .spinner{border:4px solid #f3f4f6;border-top:4px solid var(--primary);border-radius:50%;width:40px;height:40px;animation:spin .8s linear infinite;margin-right:16px}
         @keyframes spin{to{transform:rotate(360deg)}}
         .file-upload-wrapper{position:relative;overflow:hidden;display:inline-block;margin-top:8px}
@@ -320,20 +332,20 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
         .modal-overlay{display:none;position:fixed;inset:0;background:rgba(17,24,39,.5);z-index:2000;align-items:center;justify-content:center;padding:16px}
         .modal-overlay.show{display:flex}
         .edit-modal{background:#fff;width:100%;max-width:500px;max-height:86vh;display:flex;flex-direction:column;overflow:hidden;border-radius:14px;box-shadow:0 20px 50px rgba(0,0,0,.25);-webkit-overflow-scrolling:touch}
-        .edit-modal .em-header{flex-shrink:0;display:flex;justify-content:space-between;align-items:center;padding:14px 16px;border-bottom:1px solid var(--gray-200);background:#fff;font-weight:700;font-size:15px}
-        .edit-modal .em-close{background:none;border:none;font-size:18px;cursor:pointer;color:var(--gray-500);padding:4px 8px;border-radius:8px}
+        .edit-modal .em-header{flex-shrink:0;display:flex;justify-content:space-between;align-items:center;padding:14px 16px;border-bottom:1px solid var(--gray-200);background:#fff;font-weight:700;font-size:1.0714rem}
+        .edit-modal .em-close{background:none;border:none;font-size:1.2857rem;cursor:pointer;color:var(--gray-500);padding:4px 8px;border-radius:8px}
         .edit-modal .em-close:active{background:var(--gray-100)}
         .edit-modal .em-body{padding:14px 16px;overflow-y:auto;-webkit-overflow-scrolling:touch;flex:1 1 auto;min-height:0}
         .edit-modal .em-footer{flex-shrink:0;display:flex;gap:10px;padding:12px 16px;border-top:1px solid var(--gray-200);background:#fff}
         .edit-modal .em-footer .btn{flex:1;min-height:44px}
-        .edit-modal .checkbox-group label{font-size:14px}
+        .edit-modal .checkbox-group label{font-size:1rem}
 
         /* ========== 移动端适配 ========== */
         .sidebar-toggle{
             display:none;
             background:none;
             border:none;
-            font-size:22px;
+            font-size:1.5714rem;
             cursor:pointer;
             color:var(--gray-700);
             padding:6px 8px;
@@ -344,7 +356,7 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
             display:none;
             background:none;
             border:none;
-            font-size:20px;
+            font-size:1.4286rem;
             cursor:pointer;
             color:var(--primary);
             margin-right:2px;
@@ -383,11 +395,11 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
             gap:2px;
             padding:7px 0 6px;
             min-height:56px;
-            font-size:11px;
+            font-size:0.7857rem;
             color:var(--gray-500);
             cursor:pointer;
         }
-        .bottom-nav-item .bni-icon{font-size:20px;line-height:1}
+        .bottom-nav-item .bni-icon{font-size:1.4286rem;line-height:1}
         .bottom-nav-item.active{color:var(--primary);font-weight:700}
         .bottom-nav-item:active{opacity:.7}
 
@@ -395,20 +407,20 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
             /* 表格转卡片布局，消灭横向滚动 */
             thead{display:none}
             tbody{display:block}
-            table{width:100%;border-collapse:collapse;font-size:14px}
+            table{width:100%;border-collapse:collapse;font-size:1rem}
             tr{display:block;background:var(--gray-50);border:1px solid var(--gray-200);border-radius:10px;padding:2px 12px;margin-bottom:10px}
             td{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:8px 0;border-bottom:1px dashed var(--gray-200);text-align:right}
             tr td:last-child{border-bottom:none}
-            td::before{content:attr(data-label);font-weight:600;color:var(--gray-500);font-size:12px;text-align:left;flex-shrink:0}
+            td::before{content:attr(data-label);font-weight:600;color:var(--gray-500);font-size:0.8571rem;text-align:left;flex-shrink:0}
             td:not([data-label])::before{content:none}
             td[colspan]{display:block;text-align:center;color:var(--gray-400)}
 
             /* 顶栏 */
             .header{height:calc(60px + var(--sat));padding:var(--sat) 8px 0}
-            .header-left .header-logo{font-size:15px}
+            .header-left .header-logo{font-size:1.0714rem}
             .header-badge{display:none}
             #userNameDisplay{display:none}
-            .logout-btn{padding:8px 10px;font-size:12px}
+            .logout-btn{padding:8px 10px;font-size:0.8571rem}
             .mobile-back-btn{display:flex;align-items:center}
             .sidebar-toggle{display:none !important}
 
@@ -429,7 +441,7 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
             .chip:active{transform:scale(.95)}
             .chip.active{border-color:var(--primary);background:#eef2ff;color:var(--primary);font-weight:700}
             .chip-floors{display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px}
-            .chip-floors .chip{flex:0 0 calc(25% - 6px);padding:11px 2px;font-size:14px}
+            .chip-floors .chip{flex:0 0 calc(25% - 6px);padding:11px 2px;font-size:1rem}
             /* 班级账号住宿信息：楼层芯片左对齐紧凑排列（每行仍4个），楼层少时不再两端散开 */
             .chip-floors.chip-floors-left{justify-content:flex-start}
             .chip-dorms{
@@ -437,23 +449,23 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
                 padding:2px 2px 6px;scrollbar-width:none;
             }
             .chip-dorms::-webkit-scrollbar{display:none}
-            .chip-dorms .chip{flex:0 0 auto;padding:9px 14px;font-size:13px}
+            .chip-dorms .chip{flex:0 0 auto;padding:9px 14px;font-size:0.9286rem}
             /* 统计报表楼层芯片：每行4个固定网格（复用 chip-floors 的成熟 wrap 模式），共8个标签两行全部可见 */
             .chip-floors-scroll{display:flex;flex-wrap:wrap;gap:8px;padding:4px 0 6px}
-            .chip-floors-scroll .chip{flex:0 0 calc(25% - 6px);padding:11px 2px;font-size:14px;text-align:center}
+            .chip-floors-scroll .chip{flex:0 0 calc(25% - 6px);padding:11px 2px;font-size:1rem;text-align:center}
             /* 楼层扣分情况：每个宿舍一张卡片，内部5列垂直堆叠（标签在上、值在下） */
             .dorm-row-mobile{display:flex;align-items:stretch;gap:0;padding:12px 6px;background:#f8f9fc;border-radius:10px;margin-bottom:8px;border:1px solid #e5e7eb}
             .dorm-row-mobile .rank-item{flex:1;min-width:0;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:2px 4px;border-right:1px dashed #e5e7eb}
             .dorm-row-mobile .rank-item:last-child{border-right:none}
-            .dorm-row-mobile .rank-label{font-size:10px;color:#9ca3af;margin-bottom:3px;white-space:nowrap}
-            .dorm-row-mobile .rank-value{font-size:15px;font-weight:700;color:#1f2937;text-align:center;line-height:1.2;white-space:nowrap}
+            .dorm-row-mobile .rank-label{font-size:0.7143rem;color:#9ca3af;margin-bottom:3px;white-space:nowrap}
+            .dorm-row-mobile .rank-value{font-size:1.0714rem;font-weight:700;color:#1f2937;text-align:center;line-height:1.2;white-space:nowrap}
             .dorm-row-mobile .rank-value.has{color:#ff3b30}
             .dorm-row-mobile .rank-item.rank-idx-1 .rank-value{color:#4f6ef7}
             .dorm-row-mobile .rank-item.rank-idx-1.top .rank-value{color:#f59e0b}
             .dorm-row-mobile .rank-item.rank-idx-4 .rank-value{color:#4f6ef7}
             .dorm-row-mobile .rank-item.rank-idx-4 .rank-value.has{color:#ff3b30}
             .chip-targets{display:flex;flex-wrap:wrap;gap:8px}
-            .chip-targets .chip{flex:0 0 calc(33.333% - 6px);padding:11px 2px;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+            .chip-targets .chip{flex:0 0 calc(33.333% - 6px);padding:11px 2px;font-size:0.9286rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 
             /* 色块式功能首页 */
             .home-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
@@ -462,20 +474,20 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
                 color:#fff;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;
                 cursor:pointer;box-shadow:0 4px 14px rgba(0,0,0,.15);user-select:none;
             }
-            .home-card .hc-icon{font-size:32px;line-height:1}
-            .home-card .hc-name{font-size:16px;font-weight:700;letter-spacing:1px}
+            .home-card .hc-icon{font-size:2.2857rem;line-height:1}
+            .home-card .hc-name{font-size:1.1429rem;font-weight:700;letter-spacing:1px}
             .home-card:active{transform:scale(.96);opacity:.92}
-            .home-welcome{margin:2px 0 14px;color:var(--gray-600);font-size:13px}
+            .home-welcome{margin:2px 0 14px;color:var(--gray-600);font-size:0.9286rem}
 
             /* 住宿信息页内楼层树（由侧边栏移入页面内部） */
             .inpage-tree-card .card-body{padding:6px 8px;max-height:320px;overflow-y:auto;-webkit-overflow-scrolling:touch}
-            .inpage-tree-card .tree-floor-header{padding:11px 8px;font-size:14px}
+            .inpage-tree-card .tree-floor-header{padding:11px 8px;font-size:1rem}
             .inpage-tree-card .tree-rooms{margin-left:14px}
-            .inpage-tree-card .tree-room{padding:11px 8px;font-size:14px}
-            .nav-item{padding:12px 14px;font-size:15px}
-            .tree-floor-header{padding:10px;font-size:14px}
+            .inpage-tree-card .tree-room{padding:11px 8px;font-size:1rem}
+            .nav-item{padding:12px 14px;font-size:1.0714rem}
+            .tree-floor-header{padding:10px;font-size:1rem}
             .tree-rooms{margin-left:12px}
-            .tree-room{padding:10px;font-size:14px}
+            .tree-room{padding:10px;font-size:1rem}
 
             /* 内容区底部预留导航栏空间 */
             .content{padding:12px 12px calc(78px + var(--sab))}
@@ -483,18 +495,18 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
             /* 按钮：加大触控目标 */
             .btn{min-height:44px}
             .btn-sm{min-height:38px}
-            .btn-xs{min-height:32px;padding:6px 10px;font-size:12px;border-radius:6px}
+            .btn-xs{min-height:32px;padding:6px 10px;font-size:0.8571rem;border-radius:6px}
             .btn:active{transform:scale(.97)}
             .file-upload-btn{min-height:44px}
 
             /* 登录页 */
             .login-box{padding:24px 20px;width:92vw}
-            .login-btn{padding:14px;font-size:16px}
+            .login-btn{padding:14px;font-size:1.1429rem}
 
             /* 表单控件：16px字号防止iOS聚焦自动放大 */
             input[type="text"],input[type="password"],input[type="date"],input[type="number"],
             .form-group input,.form-group select,.form-group textarea,textarea,select{
-                font-size:16px;
+                font-size:1.1429rem;
                 min-height:44px;
                 padding:10px 12px;
             }
@@ -517,12 +529,12 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
             /* 统计卡片 */
             .stat-cards{grid-template-columns:1fr 1fr;gap:10px}
             .stat-card{padding:14px 10px}
-            .stat-card .number{font-size:22px}
+            .stat-card .number{font-size:1.5714rem}
             /* 住宿信息页：三个统计卡片一行三列展示（宿舍人数/扣分记录数/累计扣分），完全独立的类避免与其他 stat-cards 冲突 */
             .stat-cards-mobile{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin:12px 0}
             .stat-cards-mobile .stat-item{background:#f8f9fc;border-radius:10px;padding:10px 4px;text-align:center;border:1px solid #e5e7eb}
-            .stat-cards-mobile .stat-item .number{font-size:22px;font-weight:700;color:#4f6ef7;line-height:1.2}
-            .stat-cards-mobile .stat-item .label{font-size:11px;color:#6b7280;margin-top:2px;white-space:nowrap}
+            .stat-cards-mobile .stat-item .number{font-size:1.5714rem;font-weight:700;color:#4f6ef7;line-height:1.2}
+            .stat-cards-mobile .stat-item .label{font-size:0.7857rem;color:#6b7280;margin-top:2px;white-space:nowrap}
 
             /* 扣分项改为半宽大触控芯片 */
             .checkbox-group{gap:8px;padding:0;border:none;min-height:0}
@@ -533,23 +545,65 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
                 border-radius:10px;
                 background:var(--gray-100);
                 border:1px solid var(--gray-200);
-                font-size:14px;
+                font-size:1rem;
             }
             .checkbox-group input[type="checkbox"]{width:18px;height:18px;min-height:0;padding:0;flex-shrink:0}
             .checkbox-group label:has(input:checked){background:var(--primary-light);border-color:var(--primary)}
             .checkbox-group span[id$="CustomInputWrap"]{width:100%}
 
             /* 卡片 */
-            .card-header{padding:12px 14px;font-size:14px}
+            .card-header{padding:12px 14px;font-size:1rem}
             .card-body{padding:14px}
             .item-list .item-row{padding:12px 0}
 
             /* Toast 居中显示 */
             #toast{left:16px;right:16px;top:calc(64px + var(--sat));display:flex;flex-direction:column;align-items:center}
-            .toast-item{width:100%;max-width:420px;text-align:center;padding:12px 16px;font-size:14px}
+            .toast-item{width:100%;max-width:420px;text-align:center;padding:12px 16px;font-size:1rem}
 
-            .content-header h2{font-size:18px}
+            .content-header h2{font-size:1.2857rem}
             .empty-state{padding:28px 12px}
+
+            /* ===== 字体调节面板（仅STAFF移动端） ===== */
+            .font-scale-btn{
+                display:none;
+                min-width:44px;height:44px;
+                background:var(--gray-100);border:1px solid var(--gray-200);
+                border-radius:8px;cursor:pointer;
+                font-size:1rem;font-weight:700;color:var(--primary);
+                align-items:center;justify-content:center;
+            }
+            .font-scale-panel{
+                display:none;
+                position:fixed;top:calc(64px + var(--sat));right:12px;
+                background:#fff;border-radius:12px;
+                box-shadow:0 4px 24px rgba(0,0,0,.15);
+                padding:14px 16px;z-index:1400;
+                min-width:200px;
+            }
+            .font-scale-panel.show{display:block}
+            .font-scale-panel .fsp-title{font-size:0.9286rem;font-weight:700;color:var(--gray-800);margin-bottom:10px;text-align:center}
+            .font-scale-panel .fsp-row{display:flex;align-items:center;justify-content:center;gap:12px}
+            .font-scale-panel .fsp-btn{
+                width:44px;height:44px;border-radius:10px;
+                border:1.5px solid var(--gray-200);background:var(--gray-50);
+                font-size:1.1429rem;font-weight:700;cursor:pointer;
+                color:var(--primary);display:flex;align-items:center;justify-content:center;
+            }
+            .font-scale-panel .fsp-btn:active{background:var(--primary-light)}
+            .font-scale-panel .fsp-value{font-size:1.1429rem;font-weight:700;color:var(--gray-800);min-width:56px;text-align:center}
+            .font-scale-panel .fsp-reset{
+                width:100%;margin-top:10px;padding:8px;
+                background:var(--gray-100);border:1px solid var(--gray-200);
+                border-radius:8px;font-size:0.8571rem;cursor:pointer;color:var(--gray-600);
+            }
+            .font-scale-panel .fsp-reset:active{background:var(--gray-200)}
+
+            /* 防溢出：字体放大后长文本自动换行 */
+            body{overflow-wrap:break-word;word-break:break-word}
+            .card-body,.card-header,.stat-card,.stat-item,.mem-row,.dorm-row-mobile,
+            .form-group,.table-wrap,.tree-room,.tree-floor-header,.chip,
+            .toast-item,.content-area{overflow-wrap:break-word;word-break:break-word}
+            .mem-sub,.dorm-row-mobile .rank-item .rank-value,.dorm-row-mobile .d-class{min-width:0}
         }
     </style>
 </head>
@@ -562,7 +616,7 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
             <p class="subtitle">德育处管理平台</p>
             <input type="text" id="loginUsername" placeholder="请输入用户名" autocomplete="username" autocapitalize="off" autocorrect="off">
             <input type="password" id="loginPassword" placeholder="请输入密码" autocomplete="current-password">
-            <label style="display:flex;align-items:center;gap:6px;margin-bottom:14px;font-size:13px;color:#555;cursor:pointer;">
+            <label style="display:flex;align-items:center;gap:6px;margin-bottom:14px;font-size:0.9286rem;color:#555;cursor:pointer;">
                 <input type="checkbox" id="rememberMe" style="width:16px;height:16px;"> 记住账号密码
             </label>
             <button class="login-btn" onclick="handleLogin()">登 录</button>
@@ -581,8 +635,20 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
                 <div class="user-avatar" id="userAvatar"></div>
                 <span id="userNameDisplay"></span>
                 <button class="logout-btn" id="manualSyncBtn" title="手动同步云端记录" onclick="manualSync()">🔄</button>
+                <span class="sync-status-dot synced" id="syncStatusDot" title="同步状态：已同步（点击手动重试）" onclick="manualSync()"></span>
+                <button class="font-scale-btn" id="fontScaleBtn" title="字体大小" onclick="toggleFontPanel()">Aa</button>
                 <button class="logout-btn" onclick="handleLogout()">退出</button>
             </div>
+        </div>
+        <!-- 字体调节浮动面板（仅STAFF移动端可见） -->
+        <div class="font-scale-panel" id="fontScalePanel">
+            <div class="fsp-title">🔤 字体大小</div>
+            <div class="fsp-row">
+                <button class="fsp-btn" onclick="adjustFont(-5)" aria-label="缩小字体">A-</button>
+                <span class="fsp-value" id="fontScaleValue">100%</span>
+                <button class="fsp-btn" onclick="adjustFont(5)" aria-label="放大字体">A+</button>
+            </div>
+            <button class="fsp-reset" onclick="resetFont()">↩ 重置默认</button>
         </div>
         <div class="sidebar-overlay" id="sidebarOverlay" onclick="toggleSidebar()"></div>
         <div class="main-body">
@@ -1194,6 +1260,65 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
     // 云端 data 字段存 version 2.0 全量对象（基础数据 + 扣分记录），压缩存储
     // 上传：基础表（楼层/宿舍/学生/项目/用户/退宿）以本地为准直接覆盖；扣分记录保持增量合并
     //（pending = 未同步 ∪ 本地修改过的脏记录，同 id 以本地为准，已删除记录通过墓碑剔除）
+    // ==================== 同步状态指示器 + 断网重试 ====================
+    function updateSyncStatus(state){
+        var dot=document.getElementById('syncStatusDot');
+        if(!dot) return;
+        dot.classList.remove('synced','syncing','unsynced');
+        dot.classList.add(state);
+        var tips={synced:'已同步',syncing:'同步中…',unsynced:'有未同步数据（点击重试）'};
+        dot.title='同步状态：'+(tips[state]||'');
+    }
+    // 重试状态：指数退避 5s→10s→20s→40s→60s（封顶），最多 5 次
+    var _retryState={attempt:0, timer:null, running:false};
+    function clearRetryTimer(){ if(_retryState.timer){ clearTimeout(_retryState.timer); _retryState.timer=null; } }
+    function syncWithRetry(){
+        if(!syncEnabled||!supabaseClient||!DB) return Promise.resolve(false);
+        if(_retryState.running) return Promise.resolve(false); // 防重入
+        _retryState.running=true;
+        _retryState.attempt=0;
+        clearRetryTimer();
+        function doAttempt(){
+            updateSyncStatus('syncing');
+            // 离线：不立即重试，等 online 事件触发
+            if(typeof navigator!=='undefined' && navigator.onLine===false){
+                updateSyncStatus('unsynced');
+                _retryState.running=false;
+                return Promise.resolve(false);
+            }
+            return syncToCloud().then(function(ok){
+                if(ok){
+                    updateSyncStatus('synced');
+                    _retryState.attempt=0;
+                    _retryState.running=false;
+                    return true;
+                }
+                // 失败：指数退避重试
+                _retryState.attempt++;
+                if(_retryState.attempt>=5){
+                    updateSyncStatus('unsynced');
+                    _retryState.running=false;
+                    return false;
+                }
+                var delay=Math.min(60000, 5000*Math.pow(2, _retryState.attempt-1));
+                updateSyncStatus('unsynced');
+                _retryState.timer=setTimeout(function(){ doAttempt(); }, delay);
+                return false;
+            }).catch(function(){
+                _retryState.attempt++;
+                if(_retryState.attempt>=5){
+                    updateSyncStatus('unsynced');
+                    _retryState.running=false;
+                    return false;
+                }
+                var delay=Math.min(60000, 5000*Math.pow(2, _retryState.attempt-1));
+                updateSyncStatus('unsynced');
+                _retryState.timer=setTimeout(function(){ doAttempt(); }, delay);
+                return false;
+            });
+        }
+        return doAttempt();
+    }
     function syncToCloud() {
         if (!syncEnabled || !supabaseClient || !DB) return Promise.resolve(false);
         ensureSyncMeta();
@@ -1432,8 +1557,8 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
             syncEnabled = true;
             try {
                 supabaseClient = window.supabase.createClient(SUPABASE_CONFIG.url, SUPABASE_CONFIG.anonKey);
-                // 网络恢复时自动重试未完成的增量上传
-                window.addEventListener('online', function(){ if(syncEnabled&&supabaseClient&&DB){ ensureSyncMeta(); syncToCloud(); } });
+                // 网络恢复时自动重试未完成的增量上传（走重试队列）
+                window.addEventListener('online', function(){ if(syncEnabled&&supabaseClient&&DB){ ensureSyncMeta(); syncWithRetry(); } });
                 return loadFromCloud().then(function(pullResult) {
                     if (pullResult) {
                         // 云端优先策略：拉取成功后强制以云端记录集合为权威。
@@ -1451,7 +1576,14 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
                     } else {
                         console.log('云端暂无有效数据，上传本地数据');
                     }
-                    syncToCloud();
+                    // 若存在未同步的脏记录，启动重试队列上传
+                    if(DB.dirtyRecordIds && DB.dirtyRecordIds.length>0){
+                        updateSyncStatus('unsynced');
+                        syncWithRetry();
+                    } else {
+                        updateSyncStatus('synced');
+                        syncToCloud();
+                    }
                     checkSavedLogin();
                 });
             } catch(e) {
@@ -1466,11 +1598,18 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
     }
     function saveDB() {
         saveDBToLocal();
-        if (syncEnabled && supabaseClient) syncToCloud();
+        if (syncEnabled && supabaseClient) syncWithRetry();
     }
     // ==================== 手动同步（拉取+推送，含加载提示） ====================
     function manualSync(){
         if(!syncEnabled||!supabaseClient){toast('云端同步未启用','error');return;}
+        // 离线提示：加入重试队列，网络恢复后自动上传
+        if(typeof navigator!=='undefined' && navigator.onLine===false){
+            toast('当前网络不可用，已加入重试队列，网络恢复后自动上传','error');
+            updateSyncStatus('unsynced');
+            syncWithRetry();
+            return;
+        }
         if(manualSync._busy) return;
         manualSync._busy=true;
         var btn=document.getElementById('manualSyncBtn');
@@ -1481,7 +1620,9 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
             if(btn){btn.textContent='🔄';btn.disabled=false;}
             var pulled=results[0], pushed=results[1];
             if(pulled===null && pushed===false){
-                toast('同步失败，请检查网络后重试','error');
+                updateSyncStatus('unsynced');
+                toast('同步失败，已加入重试队列稍后自动上传','error');
+                syncWithRetry();
                 return;
             }
             var added=pulled?pulled.added:0;
@@ -1493,6 +1634,7 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
             if(updated>0) parts.push('更新 '+updated+' 条');
             if(removed>0) parts.push('清理 '+removed+' 条');
             if(basicChanged) parts.push('基础数据已同步');
+            updateSyncStatus('synced');
             toast(parts.length>0?('同步完成：'+parts.join('，')):'同步完成，数据已是最新');
             // 拉取到新数据时刷新当前视图与树形菜单
             if(added>0||updated>0||removed>0||basicChanged){ renderTree(); renderView(); }
@@ -1500,7 +1642,10 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
             manualSync._busy=false;
             if(btn){btn.textContent='🔄';btn.disabled=false;}
             console.error('手动同步失败:', e);
-            toast('同步失败，请检查网络后重试','error');
+            updateSyncStatus('unsynced');
+            var msg=(e&&e.message)?e.message:'网络异常';
+            toast('同步失败（'+msg+'），已加入重试队列','error');
+            syncWithRetry();
         });
     }
 
@@ -1516,6 +1661,7 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
                     document.getElementById('loginPage').style.display='none';
                     document.getElementById('mainApp').style.display='flex';
                     updateHeaderForUser(found);
+                    loadFontScaleForStaff();
                     initView();
                 }
             } catch(e) {}
@@ -1615,6 +1761,7 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
             document.getElementById('loginPage').style.display='none';
             document.getElementById('mainApp').style.display='flex';
             updateHeaderForUser(user);
+            loadFontScaleForStaff();
             initView();
             toast('欢迎，'+user.realName+'！');
         } else {
@@ -1624,6 +1771,11 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
     }
     function handleLogout(){
         currentUser=null;
+        // 重置字体缩放
+        applyFontScale(100);
+        document.body.classList.remove('staff-font-scale');
+        var panel=document.getElementById('fontScalePanel');
+        if(panel) panel.classList.remove('show');
         // 仅清除 sessionStorage 中的登录状态，保留 localStorage 中的"记住密码"凭证
         sessionStorage.removeItem('currentUser');
         document.getElementById('mainApp').style.display='none';
@@ -1636,6 +1788,44 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
             document.getElementById('loginPassword').value='';
         }
         // rememberMe 复选框状态保持不变（用户主动取消勾选时，handleLogin 会清除 localStorage 凭证）
+    }
+
+    // ==================== 字体缩放（仅STAFF移动端） ====================
+    var FONT_SCALE_KEY='dorm_font_scale_staff';
+    var FONT_BASE=14; // 基准字号 14px
+    var FONT_MIN=100, FONT_MAX=160, FONT_STEP=5;
+
+    function applyFontScale(scale){
+        scale=Math.max(FONT_MIN,Math.min(FONT_MAX,scale));
+        var newSize=FONT_BASE*scale/100;
+        document.documentElement.style.fontSize=newSize+'px';
+        var valEl=document.getElementById('fontScaleValue');
+        if(valEl) valEl.textContent=scale+'%';
+        return scale;
+    }
+    function adjustFont(delta){
+        var current=getStoredFontScale();
+        var newScale=applyFontScale(current+delta);
+        localStorage.setItem(FONT_SCALE_KEY,newScale.toString());
+    }
+    function resetFont(){
+        applyFontScale(100);
+        localStorage.setItem(FONT_SCALE_KEY,'100');
+    }
+    function toggleFontPanel(){
+        var panel=document.getElementById('fontScalePanel');
+        if(panel) panel.classList.toggle('show');
+    }
+    function getStoredFontScale(){
+        var v=parseInt(localStorage.getItem(FONT_SCALE_KEY));
+        return (isNaN(v)||v<FONT_MIN||v>FONT_MAX)?100:v;
+    }
+    function loadFontScaleForStaff(){
+        if(!currentUser||currentUser.role!=='STAFF') return;
+        if(window.innerWidth>768) return;
+        document.body.classList.add('staff-font-scale');
+        var scale=getStoredFontScale();
+        applyFontScale(scale);
     }
 
     // ==================== 视图切换 ====================
@@ -1858,7 +2048,7 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
         var statusCounts={}; statusOrder.forEach(function(k){ statusCounts[k]=0; });
         students.forEach(function(s){ var st=getStudentStatus(s.id); if(statusCounts[st.label]!==undefined) statusCounts[st.label]++; });
         var statusRowHtml=statusOrder.map(function(k){
-            return '<span style="display:inline-flex;align-items:center;gap:6px;font-size:13px;font-weight:600;color:var(--gray-700)"><span style="width:10px;height:10px;border-radius:50%;background:'+statusColorMap[k]+';flex-shrink:0"></span>'+k+': '+statusCounts[k]+'人</span>';
+            return '<span style="display:inline-flex;align-items:center;gap:6px;font-size:0.9286rem;font-weight:600;color:var(--gray-700)"><span style="width:10px;height:10px;border-radius:50%;background:'+statusColorMap[k]+';flex-shrink:0"></span>'+k+': '+statusCounts[k]+'人</span>';
         }).join('');
         var studentHtml=students.map(function(s){
             var sr=records.filter(function(r){return r.studentId===s.id;});
@@ -1878,7 +2068,7 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
             var dotColor=statusColorMap[st.label]||'#9ca3af';
             var memOps = '';
             if(isAdmin()){
-                memOps = '<span class="mem-ops"><button class="btn btn-outline btn-xs" style="padding:2px 6px;font-size:11px" onclick="openTransferModal('+s.id+')">调宿</button><button class="btn btn-danger btn-xs" style="padding:2px 6px;font-size:11px" onclick="moveOutStudent('+s.id+')">迁出</button></span>';
+                memOps = '<span class="mem-ops"><button class="btn btn-outline btn-xs" style="padding:2px 6px;font-size:0.7857rem" onclick="openTransferModal('+s.id+')">调宿</button><button class="btn btn-danger btn-xs" style="padding:2px 6px;font-size:0.7857rem" onclick="moveOutStudent('+s.id+')">迁出</button></span>';
             }
             return '<div class="mem-row"><span class="mem-name">'+s.name+'</span><span class="mem-status" style="color:'+dotColor+'"><span class="mem-dot" style="background:'+dotColor+'"></span>'+st.label+'</span><span class="mem-sub">'+(s.className||'-')+'·床号'+(s.bedNumber||'-')+'</span><span class="mem-score'+(ss>0?' has':'')+'">'+ss+'分</span>'+memOps+'</div>';
         }).join('')||'<div class="empty-state" style="padding:18px">该宿舍暂无成员</div>';
@@ -1917,10 +2107,10 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
             }).join('');
             var dormChips=dormsOfFloor.map(function(r){
                 return '<div class="chip'+(r.id===dorm.id?' active':'')+'" onclick="hierarchyPickDorm('+r.id+')">'+r.roomNumber+'</div>';
-            }).join('')||'<span style="color:#aaa;font-size:13px">该楼层暂无宿舍</span>';
+            }).join('')||'<span style="color:#aaa;font-size:0.9286rem">该楼层暂无宿舍</span>';
             topCard='<div class="card"><div class="card-body">'
                 +'<div class="form-group"><label>🏢 选择楼层</label><div class="chip-floors'+(classMode?' chip-floors-left':'')+'">'+floorChips+'</div></div>'
-                +'<div class="form-group" style="margin-bottom:0"><label>🚪 选择宿舍号 <span style="font-weight:400;font-size:12px;color:var(--gray-500)">左右滑动查看更多</span></label><div class="chip-dorms">'+dormChips+'</div></div>'
+                +'<div class="form-group" style="margin-bottom:0"><label>🚪 选择宿舍号 <span style="font-weight:400;font-size:0.8571rem;color:var(--gray-500)">左右滑动查看更多</span></label><div class="chip-dorms">'+dormChips+'</div></div>'
                 +'</div></div>';
         }
         // 三个统计卡片内容（宿舍人数/扣分记录数/累计扣分）：PC 端合并在统计大卡内；移动端移至成员列表下方
@@ -1939,7 +2129,7 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
         var memberOpsTh = isAdmin() ? '<th>操作</th>' : '';
         var membersCardPc='<div class="card"><div class="card-header">👥 宿舍成员</div><div style="overflow-x:auto"><table><thead><tr><th>姓名</th><th>班级</th><th>床号</th><th>状态</th><th>个人扣分</th>'+memberOpsTh+'</tr></thead><tbody>'+studentHtml+'</tbody></table></div></div>';
         var membersCardMobile='<div class="card"><div class="card-header">👥 宿舍成员</div><div class="card-body" style="padding:2px 14px">'+memberCardHtml+'</div></div>';
-        var recordsCard='<div class="card"><div class="card-header">📜 历史扣分记录 <span class="badge-tag badge-danger">'+total+'分</span><span style="font-weight:400;font-size:12px;color:var(--gray-500);margin-left:6px">按日期倒序</span></div><div style="overflow-x:auto"><table><thead><tr><th>日期</th><th>对象</th><th>卫生扣分</th><th>分值</th><th>纪律扣分</th><th>分值</th><th>备注</th><th>操作</th></tr></thead><tbody>'+recordHtml+'</tbody></table></div></div>';
+        var recordsCard='<div class="card"><div class="card-header">📜 历史扣分记录 <span class="badge-tag badge-danger">'+total+'分</span><span style="font-weight:400;font-size:0.8571rem;color:var(--gray-500);margin-left:6px">按日期倒序</span></div><div style="overflow-x:auto"><table><thead><tr><th>日期</th><th>对象</th><th>卫生扣分</th><th>分值</th><th>纪律扣分</th><th>分值</th><th>备注</th><th>操作</th></tr></thead><tbody>'+recordHtml+'</tbody></table></div></div>';
         // 移动端顺序：楼层/宿舍芯片 → 状态汇总 → 宿舍成员（单行紧凑）→ 三个统计卡片 → 历史扣分记录
         // PC 端顺序保持不变：统计大卡（状态+三卡片）→ 历史扣分记录 → 宿舍成员表
         container.innerHTML='<div class="content-header"><h2>📋 宿舍 '+dorm.roomNumber+'（'+floor.name+'）</h2></div>'+topCard+(isMobileH?(statusCard+membersCardMobile+statThreeMobile+recordsCard):(statsCard+recordsCard+membersCardPc));
@@ -2022,10 +2212,10 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
         }
         var html = '<div class="em-header"><span>🔄 调换床位/宿舍</span><button class="em-close" aria-label="关闭" onclick="closeTransferModal()">✕</button></div>'
             + '<div class="em-body">'
-            + '<div class="form-group"><label>当前信息</label><div style="padding:8px 12px;background:var(--gray-50);border-radius:6px;font-size:13px">姓名：<b>'+escapeHtmlAttr(s.name)+'</b>　班级：'+(s.className||'-')+'　当前宿舍：'+curRoom+'　当前床号：'+(s.bedNumber||'-')+'</div></div>'
+            + '<div class="form-group"><label>当前信息</label><div style="padding:8px 12px;background:var(--gray-50);border-radius:6px;font-size:0.9286rem">姓名：<b>'+escapeHtmlAttr(s.name)+'</b>　班级：'+(s.className||'-')+'　当前宿舍：'+curRoom+'　当前床号：'+(s.bedNumber||'-')+'</div></div>'
             + '<div class="form-group"><label>目标宿舍号 *</label><select id="transferDormId" onchange="onTransferDormChange()">'+dormOpts+'</select></div>'
             + '<div class="form-group"><label>目标床号 *</label><select id="transferBed">'+bedOpts+'</select></div>'
-            + '<div style="font-size:12px;color:#888">提示：已被占用的床位将显示占用者姓名且不可选择</div>'
+            + '<div style="font-size:0.8571rem;color:#888">提示：已被占用的床位将显示占用者姓名且不可选择</div>'
             + '</div>'
             + '<div class="em-footer"><button class="btn btn-primary" onclick="saveTransfer()">💾 确认调宿</button><button class="btn btn-outline" onclick="closeTransferModal()">取消</button></div>';
         document.getElementById('transferModalBox').innerHTML = html;
@@ -2252,14 +2442,14 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
             }).join('');
             var dormChips=dormitories.map(function(d){
                 return '<div class="chip'+(d.id===addFormState.dormitoryId?' active':'')+'" onclick="mobilePickDorm('+d.id+')">'+d.roomNumber+'</div>';
-            }).join('')||'<span style="color:#aaa;font-size:13px">该楼层暂无宿舍</span>';
+            }).join('')||'<span style="color:#aaa;font-size:0.9286rem">该楼层暂无宿舍</span>';
             var targetChips='<div class="chip'+(addFormState.studentId===null?' active':'')+'" onclick="mobilePickTarget(this,null)">🏠 宿舍集体</div>'
                 +students.map(function(s){
                     return '<div class="chip'+(addFormState.studentId===s.id?' active':'')+'" onclick="mobilePickTarget(this,'+s.id+')">'+s.name+'</div>';
                 }).join('');
             container.innerHTML='<div class="content-header"><h2>📝 扣分登记</h2></div><div class="card"><div class="card-header">填写扣分信息</div><div class="card-body">'
                 +'<div class="form-group"><label>🏢 选择楼层 *</label><div class="chip-floors">'+floorChips+'</div></div>'
-                +'<div class="form-group"><label>🚪 选择宿舍号 * <span style="font-weight:400;font-size:12px;color:var(--gray-500)">左右滑动查看更多</span></label><div class="chip-dorms">'+dormChips+'</div></div>'
+                +'<div class="form-group"><label>🚪 选择宿舍号 * <span style="font-weight:400;font-size:0.8571rem;color:var(--gray-500)">左右滑动查看更多</span></label><div class="chip-dorms">'+dormChips+'</div></div>'
                 +'<div class="form-group"><label>👤 扣分对象 *</label><div class="chip-targets">'+targetChips+'</div></div>'
                 +'<div class="form-group"><label>扣分日期 *</label><input type="text" class="date-picker" id="addDate" value="'+addFormState.recordDate+'" onchange="addFormChange(\'date\')"></div>'
                 +hySection+disSection+tailHtml
@@ -2472,7 +2662,7 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
         dormStatsAll.sort(function(a,b){ if(a.score!==b.score) return b.score-a.score; return a.roomNumber.localeCompare(b.roomNumber,'zh-Hans-CN',{numeric:true}); });
         statsCache.dormAll = dormStatsAll;
         // 楼层条形图（两端共用）
-        var floorBarsHtml = floorStats.map(function(f,i){ var max=floorStats[0].score||1; var pct=max>0?(f.score/max*100):0; var colors=['#4f6ef7','#7c5cfc','#a855f7','#ec4899','#f43f5e','#f97316','#eab308','#22c55e']; return '<div style="display:flex;align-items:center;gap:10px;margin-bottom:8px"><span style="font-weight:700;width:30px">#'+(i+1)+'</span><span style="width:50px">'+f.name+'</span><div style="flex:1;height:22px;background:#f0f0f0;border-radius:11px;overflow:hidden;"><div style="height:100%;width:'+pct+'%;background:'+colors[i%colors.length]+';border-radius:11px;display:flex;align-items:center;justify-content:flex-end;padding-right:8px;"><span style="color:#fff;font-size:11px;font-weight:700">'+f.score+'分</span></div></div><span style="min-width:40px;font-size:12px;color:#6b7280;">'+f.count+'条</span></div>'; }).join('');
+        var floorBarsHtml = floorStats.map(function(f,i){ var max=floorStats[0].score||1; var pct=max>0?(f.score/max*100):0; var colors=['#4f6ef7','#7c5cfc','#a855f7','#ec4899','#f43f5e','#f97316','#eab308','#22c55e']; return '<div style="display:flex;align-items:center;gap:10px;margin-bottom:8px"><span style="font-weight:700;width:30px">#'+(i+1)+'</span><span style="width:50px">'+f.name+'</span><div style="flex:1;height:22px;background:#f0f0f0;border-radius:11px;overflow:hidden;"><div style="height:100%;width:'+pct+'%;background:'+colors[i%colors.length]+';border-radius:11px;display:flex;align-items:center;justify-content:flex-end;padding-right:8px;"><span style="color:#fff;font-size:0.7857rem;font-weight:700">'+f.score+'分</span></div></div><span style="min-width:40px;font-size:0.8571rem;color:#6b7280;">'+f.count+'条</span></div>'; }).join('');
         // 全校宿舍排行榜：默认 TOP20，可展开全部（含 0 分）
         function dormRowsHtml(list){
             if(!list.length) return '<tr><td colspan="5" style="text-align:center;color:#aaa">暂无数据</td></tr>';
@@ -2850,7 +3040,7 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
             + '<input type="text" id="newDormRoom" placeholder="如：123、725（三位数字，百位1-8）" maxlength="3" style="flex:1;padding:8px;border:1.5px solid #ddd;border-radius:6px">'
             + '<button class="btn btn-primary" onclick="addDormitory()">➕ 添加</button>'
             + '</div>'
-            + '<div style="font-size:12px;color:#888;margin-top:6px">系统按百位数字自动识别所属楼层（1xx=一楼 … 8xx=八楼）</div>'
+            + '<div style="font-size:0.8571rem;color:#888;margin-top:6px">系统按百位数字自动识别所属楼层（1xx=一楼 … 8xx=八楼）</div>'
             + '</div>'
             + groupHtml
             + '</div>';
@@ -3943,7 +4133,7 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
                 + '<button class="btn btn-danger" style="margin-left:8px" onclick="deleteAllAbsenceRecords()">🗑️ 删除全部请假记录</button>'
                 + '<button class="btn btn-danger" style="margin-left:8px" onclick="deleteAllStopRecords()">🗑️ 删除全部停宿记录</button>'
                 + '<button class="btn btn-danger" style="margin-left:8px" onclick="deleteAllLeaveRecords()">🗑️ 删除全部退宿记录</button>'
-                + '<p style="color:var(--danger);margin-top:8px;font-size:12px">此操作将永久删除对应类型的全部记录，不可恢复！</p></div></div>'
+                + '<p style="color:var(--danger);margin-top:8px;font-size:0.8571rem">此操作将永久删除对应类型的全部记录，不可恢复！</p></div></div>'
                 + '</div>';
         }
 
