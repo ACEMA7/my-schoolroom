@@ -1417,6 +1417,47 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
         });
     }
 
+    // 批量 upsert 上传：每批 V3_UPSERT_CHUNK 行，最多 V3_UPLOAD_CONCURRENCY 批并发。
+    // 依赖 sync_store 表 UNIQUE (record_type, record_id)：新行插入、已存在行整行更新
+    // （墓碑行 deleted=true 也通过 upsert 直接写回，不再需要先 DELETE 再 INSERT）。
+    // 任一批失败即整体失败（不降级逐条，避免掩盖问题），脏标记保留由上层重试。
+    var V3_UPLOAD_CONCURRENCY = 3;
+    function v3UploadRows(rows){
+        if(!supabaseClient || !rows || rows.length === 0) return Promise.resolve(true);
+        var batches = [];
+        for(var i = 0; i < rows.length; i += V3_UPSERT_CHUNK){
+            batches.push(rows.slice(i, i + V3_UPSERT_CHUNK));
+        }
+        var nextBatch = 0;
+        function worker(){
+            if(nextBatch >= batches.length) return Promise.resolve(true);
+            var idx = nextBatch++;
+            var batch = batches[idx];
+            var t0 = Date.now();
+            return supabaseClient.from('sync_store')
+                .upsert(batch, { onConflict: 'record_type,record_id' })
+                .then(function(res){
+                    if(res.error){
+                        // 打印完整错误便于诊断（409 通常是 onConflict 参数/唯一约束问题）
+                        console.error('[V3] 批次 ' + (idx+1) + '/' + batches.length + '（' + batch.length + ' 行）upsert 失败:',
+                            res.error.code || '', res.error.message, res.error.hint || '', res.error.details || '');
+                        return false;
+                    }
+                    console.log('[V3] 批次 ' + (idx+1) + '/' + batches.length + ' 上传成功（' + batch.length + ' 行，' + (Date.now()-t0) + 'ms）');
+                    return worker(); // 该 worker 继续领取下一批
+                })
+                .catch(function(e){
+                    console.error('[V3] 批次 ' + (idx+1) + ' 网络异常:', (e && e.message) ? e.message : e);
+                    return false;
+                });
+        }
+        var workers = [];
+        for(var w = 0; w < Math.min(V3_UPLOAD_CONCURRENCY, batches.length); w++) workers.push(worker());
+        return Promise.all(workers).then(function(results){
+            return results.every(function(ok){ return ok; });
+        });
+    }
+
     function syncToCloudV3(){
         if (!syncEnabled || !supabaseClient || !DB) return Promise.resolve(false);
         ensureSyncMeta();
@@ -1445,29 +1486,8 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
             DB.lastSyncTime = Date.now();
             return Promise.resolve(true);
         }
-        // 先删后插：逐行 DELETE (record_type,record_id) 再 INSERT 新数据
-        // 绕开 PostgREST upsert 和自增序列问题
-        function uploadOne(row){
-            // 1. 先删除同 (record_type, record_id) 的旧行
-            return supabaseClient.from('sync_store')
-                .delete()
-                .eq('record_type', row.record_type)
-                .eq('record_id', row.record_id)
-                .then(function(){
-                    // 2. 再插入新行（显式大 id，绕开序列）
-                    return supabaseClient.from('sync_store').insert([row]);
-                });
-        }
-        function doBatch(startIdx){
-            if(startIdx >= rows.length) return Promise.resolve(true);
-            var chunk = rows.slice(startIdx, startIdx + V3_UPSERT_CHUNK);
-            return Promise.all(chunk.map(uploadOne)).then(function(results){
-                var fail = results.find(function(r){ return r.error; });
-                if(fail){ console.error('[V3] 上传批次失败:', fail.error.message); return false; }
-                return doBatch(startIdx + V3_UPSERT_CHUNK);
-            });
-        }
-        return doBatch(0).then(function(ok){
+        // 批量 upsert 上传（依赖 UNIQUE(record_type,record_id)）：成功后清除脏标记由调用方处理
+        return v3UploadRows(rows).then(function(ok){
             if(!ok) return false;
             // 上传成功：清除脏标记和删除标记
             V3_RECORD_TYPES.forEach(function(meta){
@@ -1726,34 +1746,15 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
             });
             if(allRows.length === 0){ console.log('[迁移] 旧数据无有效记录，跳过'); return false; }
             console.log('[迁移] 准备迁移 ' + allRows.length + ' 条记录...');
-            // 先删后插
-            function uploadOne(row){
-                return supabaseClient.from('sync_store')
-                    .delete()
-                    .eq('record_type', row.record_type)
-                    .eq('record_id', row.record_id)
-                    .then(function(){
-                        return supabaseClient.from('sync_store').insert([row]);
-                    });
-            }
-            function doBatch(startIdx){
-                if(startIdx >= allRows.length){
-                    return supabaseClient.from('sync_store').delete().eq('id',1).then(function(r2){
-                        if(r2.error) console.warn('[迁移] 清理旧行失败（可忽略）:', r2.error.message);
-                        else console.log('[迁移] 旧格式行已删除');
-                        return true;
-                    });
-                }
-                var chunk = allRows.slice(startIdx, startIdx + V3_UPSERT_CHUNK);
-                return Promise.all(chunk.map(uploadOne)).then(function(results){
-                    var fail = results.find(function(r){ return r.error; });
-                    if(fail){ console.error('[迁移] 批次失败:', fail.error.message); return false; }
-                    return doBatch(startIdx + V3_UPSERT_CHUNK);
+            // 批量 upsert（与常规同步共用 v3UploadRows），完成后删除旧格式行 id=1
+            return v3UploadRows(allRows).then(function(ok){
+                if(!ok) return false;
+                return supabaseClient.from('sync_store').delete().eq('id',1).then(function(r2){
+                    if(r2.error) console.warn('[迁移] 清理旧行失败（可忽略）:', r2.error.message);
+                    else console.log('[迁移] 旧格式行已删除');
+                    toast('数据格式升级完成');
+                    return true;
                 });
-            }
-            return doBatch(0).then(function(ok){
-                if(ok){ toast('数据格式升级完成'); }
-                return ok;
             });
         });
     }
