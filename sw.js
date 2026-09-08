@@ -1,8 +1,8 @@
 // Service Worker 缓存配置（仅同源资源，跨域 CDN 资源不缓存避免 opaque response 问题）
-var CACHE_NAME = 'dormitory-cache-v1';
+var CACHE_NAME = 'dormitory-cache-v2';
 var urlsToCache = [
     './',
-    './迭代41（各项优化）.html',
+    './index.html',
     './manifest.json',
     './icon-192.png',
     './icon-512.png'
