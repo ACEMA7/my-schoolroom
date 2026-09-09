@@ -298,8 +298,8 @@
                     if(Array.isArray(mLive.data.dormitoryList)) DB.dormitoryList = mLive.data.dormitoryList;
                     if(mLive.data.nextIds) DB.nextIds = mLive.data.nextIds;
                 }
-                // 数组类型：floor / dormitory / student / user + 三类业务记录
-                ['floor','dormitory','student','user','deduction_record','leave_record','absence_record'].forEach(function(type){
+                // 数组类型：floor / dormitory / student / user + 三类业务记录 + 巡查核实三类记录
+                ['floor','dormitory','student','user','deduction_record','leave_record','absence_record','inspection_confirmation','anomaly_report','daily_summary'].forEach(function(type){
                     var tMeta = V3_RECORD_TYPES.find(function(m){ return m.type === type; });
                     if(!tMeta) return;
                     var liveRows = (grouped[type] || []).filter(function(r){ return !r.deleted; }).map(function(r){ return r.data; });

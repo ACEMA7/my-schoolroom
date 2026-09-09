@@ -660,6 +660,7 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
                     <div class="nav-item active" data-view="hierarchy" id="navHierarchy" onclick="switchView('hierarchy')">🌳 住宿信息</div>
                     <div class="nav-item" data-view="add" id="navAdd" onclick="switchView('add')">📝 扣分登记</div>
                     <div class="nav-item" data-view="stats" id="navStats" onclick="switchView('stats')">📊 统计报表</div>
+                    <div class="nav-item" data-view="inspection" id="navInspection" style="display:none" onclick="switchView('inspection')">👀 巡查核实</div>
                     <div class="nav-item" data-view="students" id="navStudents" style="display:none" onclick="switchView('students')">👥 学生名单管理</div>
                     <div class="nav-item" data-view="items" id="navItems" style="display:none" onclick="switchView('items')">📋 扣分项目管理</div>
                     <div class="nav-item" data-view="leavemanage" id="navLeaveManage" style="display:none" onclick="switchView('leavemanage')">🏠 学生管理</div>
@@ -680,6 +681,12 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
     </div>
     <div class="modal-overlay" id="transferModal" onclick="if(event.target===this) closeTransferModal()">
         <div class="edit-modal" id="transferModalBox" role="dialog" aria-label="调宿"></div>
+    </div>
+    <div class="modal-overlay" id="anomalyModal" onclick="if(event.target===this) closeAnomalyModal()">
+        <div class="edit-modal" id="anomalyModalBox" role="dialog" aria-label="异常上报"></div>
+    </div>
+    <div class="modal-overlay" id="accountModal" onclick="if(event.target===this) closeAccountModal()">
+        <div class="edit-modal" id="accountModalBox" role="dialog" aria-label="账号编辑"></div>
     </div>
 
     <!-- 业务逻辑模块化拆分：config -> data -> sync -> ui -> app（经典脚本，全局作用域） -->

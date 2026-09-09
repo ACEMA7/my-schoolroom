@@ -95,7 +95,7 @@
         document.getElementById('roleBadge').textContent = admin ? '👨‍💼 管理人员' : (classAdmin ? '🏫 班主任' : '📝 生活老师');
 
         // 先隐藏所有菜单
-        var menuIds = ['navHierarchy', 'navAdd', 'navStats', 'navStudents', 'navItems', 'navLeaveManage', 'navExport'];
+        var menuIds = ['navHierarchy', 'navAdd', 'navStats', 'navInspection', 'navStudents', 'navItems', 'navLeaveManage', 'navExport'];
         menuIds.forEach(function(id) {
             var el = document.getElementById(id);
             if (el) el.style.display = 'none';
@@ -103,7 +103,7 @@
 
         if (admin) {
             // 管理员显示全部菜单
-            ['navHierarchy','navAdd','navStats','navStudents','navItems','navLeaveManage','navExport'].forEach(function(id){
+            ['navHierarchy','navAdd','navStats','navInspection','navStudents','navItems','navLeaveManage','navExport'].forEach(function(id){
                 document.getElementById(id).style.display = 'flex';
             });
         } else if (classAdmin) {
@@ -112,10 +112,11 @@
             document.getElementById('navLeaveManage').style.display = 'flex';
             document.getElementById('navExport').style.display = 'flex';
         } else {
-            // 普通生活老师（staff）保留原有菜单
+            // 普通生活老师（staff）：住宿信息 + 扣分登记 + 统计报表 + 巡查核实 + 学生管理
             document.getElementById('navHierarchy').style.display = 'flex';
             document.getElementById('navAdd').style.display = 'flex';
             document.getElementById('navStats').style.display = 'flex';
+            document.getElementById('navInspection').style.display = 'flex';
             document.getElementById('navLeaveManage').style.display = 'flex';
             // 数据管理菜单对 staff 隐藏
             document.getElementById('navExport').style.display = 'none';
@@ -327,6 +328,7 @@
         else if(currentView==='hierarchy') renderHierarchyView(c);
         else if(currentView==='add') renderAddView(c);
         else if(currentView==='stats') renderStatsView(c);
+        else if(currentView==='inspection') renderInspectionView(c);
         else if(currentView==='students') renderStudentsView(c);
         else if(currentView==='items') renderItemsView(c);
         else if(currentView==='leavemanage') renderLeaveManageView(c);
@@ -1764,6 +1766,426 @@
         saveDB();
         toast('已删除');
         renderAbsenceRecords();
+    }
+
+    // ==================== 巡查核实模块 ====================
+    // 巡查视图状态：viewDate 为空串=今日（可操作）；否则为历史只读查看日期 YYYY-MM-DD
+    var inspectionState = { viewDate: '' };
+    // 异常上报模态框临时状态
+    var anomalyModalState = { dormitoryId: null };
+
+    /**
+     * 历史日期选择：读取日期选择器并切换到该日只读巡查视图。
+     */
+    function onInspectionHistoryDate(){
+        var el=document.getElementById('inspectionHistoryDate');
+        var v=el?String(el.value).trim():'';
+        if(!v){ toast('请选择日期','error'); return; }
+        inspectionState.viewDate=v;
+        renderInspectionView(document.getElementById('contentArea'));
+    }
+    /**
+     * 返回今日巡查视图。
+     */
+    function backToInspectionToday(){
+        inspectionState.viewDate='';
+        renderInspectionView(document.getElementById('contentArea'));
+    }
+
+    /**
+     * 巡查确认：生活老师核实某条请假/停宿/退宿信息属实。
+     * 仅表示"信息属实"，不涉及在宿/不在宿判断；写入 inspectionConfirmations
+     * 并标脏纳入 V3 同步。同一记录同一天不可重复确认；历史日期只读。
+     * @param {string} recordType - 'leave'（退宿）| 'stop'（停宿）| 'absence'（请假）
+     * @param {string|number} recordId - 对应的 leaveRecords/absenceRecords 记录 ID
+     */
+    function confirmInspection(recordType, recordId){
+        if(!currentUser) return;
+        var today=getTodayLocalStr();
+        if((inspectionState.viewDate||today) !== today){ toast('历史日期不可操作','error'); return; }
+        if(getInspectionConfirmation(recordType, recordId, today)){ toast('该生今日已确认','error'); return; }
+        var item=getInspectionItems(today, getAssignedFloorIds()).find(function(it){
+            return it.recordType===recordType && String(it.recordId)===String(recordId);
+        });
+        if(!item){ toast('记录不存在或已不在负责楼层','error'); return; }
+        var now=Date.now();
+        var rec={
+            id: generateRecordId(),
+            studentId: item.studentId || null,
+            dormitoryId: item.dormitoryId || null,
+            recordType: recordType,
+            recordId: recordId,
+            confirmDate: today,
+            confirmedBy: currentUser.id,
+            confirmedByName: currentUser.realName,
+            confirmedAt: now,
+            createdAt: now, lastModified: now
+        };
+        if(!Array.isArray(DB.inspectionConfirmations)) DB.inspectionConfirmations=[];
+        DB.inspectionConfirmations.push(rec);
+        v3MarkDirty('inspection_confirmation', rec.id);
+        saveDB();
+        toast('✅ 已确认：'+item.name);
+        renderInspectionView(document.getElementById('contentArea'));
+    }
+
+    /**
+     * 打开异常上报模态框（按宿舍上报）。
+     * @param {number} dormitoryId - 宿舍 ID
+     */
+    function openAnomalyModal(dormitoryId){
+        if(!isStaff() && !isAdmin()){ toast('无权限','error'); return; }
+        var dorm=getDormitoryById(dormitoryId);
+        if(!dorm){ toast('宿舍信息缺失','error'); return; }
+        anomalyModalState.dormitoryId=dormitoryId;
+        var students=getStudentsByDormitory(dormitoryId);
+        var stuOpts='<option value="">— 请选择学生 —</option>'
+            +students.map(function(s){
+                return '<option value="'+s.id+'">'+escapeHtmlAttr(s.name)+'（'+escapeHtmlAttr(s.className||'')+' · 床号'+(s.bedNumber||'-')+'）</option>';
+            }).join('')
+            +'<option value="manual">✏️ 其他（手动输入姓名）</option>';
+        var html='<div class="em-header"><span>⚠️ 异常上报（宿舍 '+escapeHtmlAttr(dorm.roomNumber)+'）</span><button class="em-close" aria-label="关闭" onclick="closeAnomalyModal()">✕</button></div>'
+            +'<div class="em-body">'
+            +'<div class="form-group"><label>学生 *</label><select id="anomalyStudent" onchange="onAnomalyStudentChange()">'+stuOpts+'</select></div>'
+            +'<div class="form-group" id="anomalyManualWrap" style="display:none"><label>学生姓名 *</label><input type="text" id="anomalyName" placeholder="手动输入学生姓名"></div>'
+            +'<div class="form-group"><label>异常类型 *</label><select id="anomalyType"><option value="picked_up">🚗 家长接走（不扣分）</option><option value="no_note">⚠️ 无假条（自动生成纪律扣分：无请假信息 1分）</option></select></div>'
+            +'<div class="form-group"><label>备注</label><input type="text" id="anomalyNote" placeholder="可选：具体情况说明"></div>'
+            +'</div>'
+            +'<div class="em-footer"><button class="btn btn-primary" onclick="submitAnomalyReport()">📤 提交上报</button><button class="btn btn-outline" onclick="closeAnomalyModal()">取消</button></div>';
+        document.getElementById('anomalyModalBox').innerHTML=html;
+        document.getElementById('anomalyModal').classList.add('show');
+    }
+    /** 关闭异常上报模态框 */
+    function closeAnomalyModal(){
+        var m=document.getElementById('anomalyModal');
+        if(m) m.classList.remove('show');
+    }
+    /** 异常上报：学生选择"手动输入"时显示姓名输入框 */
+    function onAnomalyStudentChange(){
+        var sel=document.getElementById('anomalyStudent');
+        var wrap=document.getElementById('anomalyManualWrap');
+        if(wrap) wrap.style.display = (sel && sel.value==='manual') ? '' : 'none';
+    }
+    /**
+     * 提交异常上报：
+     *  - picked_up（家长接走）：仅记录 anomalyReports，不生成扣分；
+     *  - no_note（无假条）：记录 anomalyReports 并自动生成纪律扣分记录
+     *    （项目"无请假信息"，扣 1 分），deductionRecordId 关联两条记录。
+     * 全部落库标脏纳入 V3 同步后刷新巡查视图。
+     */
+    function submitAnomalyReport(){
+        var dormitoryId=anomalyModalState.dormitoryId;
+        var dorm=getDormitoryById(dormitoryId);
+        if(!dorm){ toast('宿舍信息缺失','error'); return; }
+        var stuVal=document.getElementById('anomalyStudent').value;
+        var stu=stuVal && stuVal!=='manual' ? getStudentById(parseInt(stuVal,10)) : null;
+        var manualNameEl=document.getElementById('anomalyName');
+        var manualName=manualNameEl?String(manualNameEl.value).trim():'';
+        var studentName=stu ? stu.name : manualName;
+        if(!studentName){ toast('请选择学生或手动输入姓名','error'); return; }
+        var type=document.getElementById('anomalyType').value==='no_note' ? 'no_note' : 'picked_up';
+        var note=String(document.getElementById('anomalyNote').value||'').trim();
+        var today=getTodayLocalStr();
+        var now=Date.now();
+        var report={
+            id: generateRecordId(),
+            studentId: stu ? stu.id : null,
+            studentName: studentName,
+            className: stu ? (stu.className||'') : '',
+            dormitoryId: dormitoryId,
+            dormitoryRoom: dorm.roomNumber,
+            bed: stu && stu.bedNumber!=null ? String(stu.bedNumber) : '',
+            reportDate: today,
+            reportedBy: currentUser.id,
+            reportedByName: currentUser.realName,
+            anomalyType: type,
+            note: note,
+            deductionRecordId: null,
+            createdAt: now, lastModified: now
+        };
+        // 无假条：自动生成纪律扣分记录（"无请假信息"扣 1 分）并与异常上报互相关联
+        if(type==='no_note'){
+            var item=ensureNoNoteDeductionItem();
+            var dedRec={
+                id: generateRecordId(),
+                createdAt: now,
+                dormitoryId: dormitoryId,
+                studentId: stu ? stu.id : null,
+                hygieneItemIds: [], hygieneScore: 0,
+                disciplineItemIds: [item.id], disciplineScore: item.defaultScore || 1,
+                recordDate: today,
+                remark: '巡查核实·无假条'+(note?'：'+note:'')
+            };
+            DB.deductionRecords.push(dedRec);
+            v3MarkDirty('deduction_record', dedRec.id);
+            report.deductionRecordId=dedRec.id;
+        }
+        if(!Array.isArray(DB.anomalyReports)) DB.anomalyReports=[];
+        DB.anomalyReports.push(report);
+        v3MarkDirty('anomaly_report', report.id);
+        saveDB();
+        closeAnomalyModal();
+        toast(type==='no_note' ? '已上报无假条，并自动生成扣分记录' : '已上报家长接走');
+        renderInspectionView(document.getElementById('contentArea'));
+        renderTree();
+    }
+
+    /**
+     * 今日待确认学生全部核实完成后，生成/更新当日晚检总结并落库（幂等）。
+     * 已有总结时按最新统计更新（数据变化才标脏），避免重复同步；返回总结对象。
+     * @returns {object} 总结数据
+     */
+    function ensureTodaySummary(){
+        var today=getTodayLocalStr();
+        var sum=computeInspectionSummary(today, currentUser);
+        var existing=getDailySummary(today, currentUser.id);
+        var now=Date.now();
+        if(!existing){
+            var rec={
+                id: generateRecordId(),
+                summaryDate: today,
+                buildingName: sum.buildingName,
+                floors: sum.floors.slice(),
+                confirmedBy: sum.confirmedBy,
+                confirmedByName: sum.confirmedByName,
+                totalStudents: sum.totalStudents,
+                absenceCount: sum.absenceCount,
+                leavePendingCount: sum.leavePendingCount,
+                pickedUpCount: sum.pickedUpCount,
+                anomalyCount: sum.anomalyCount,
+                actualCount: sum.actualCount,
+                leavePendingDetails: sum.leavePendingDetails,
+                pickedUpDetails: sum.pickedUpDetails,
+                anomalyDetails: sum.anomalyDetails,
+                createdAt: now, lastModified: now
+            };
+            if(!Array.isArray(DB.dailyInspectionSummaries)) DB.dailyInspectionSummaries=[];
+            DB.dailyInspectionSummaries.push(rec);
+            v3MarkDirty('daily_summary', rec.id);
+            saveDB();
+            return rec;
+        }
+        // 已有总结：更新统计与详情快照（有变化才标脏上传）
+        var changed=false;
+        ['buildingName','totalStudents','absenceCount','leavePendingCount','pickedUpCount','anomalyCount','actualCount','confirmedByName']
+            .forEach(function(k){
+                if(existing[k] !== sum[k]){ existing[k]=sum[k]; changed=true; }
+            });
+        ['floors','leavePendingDetails','pickedUpDetails','anomalyDetails'].forEach(function(k){
+            if(JSON.stringify(existing[k]||null) !== JSON.stringify(sum[k]||null)){
+                existing[k] = (k==='floors') ? sum[k].slice() : sum[k];
+                changed=true;
+            }
+        });
+        if(changed){
+            existing.lastModified=now;
+            v3MarkDirty('daily_summary', existing.id);
+            saveDB();
+        }
+        return existing;
+    }
+
+    /**
+     * 导出某日晚检总结为 Excel（XLSX，多工作表：统计 + 三类详情）。
+     * @param {string} date - 日期 YYYY-MM-DD
+     */
+    function exportInspectionSummary(date){
+        if(!window.XLSX){ toast('Excel 组件未加载','error'); return; }
+        var sum=getDailySummary(date, currentUser.id) || computeInspectionSummary(date, currentUser);
+        var floorNums=(sum.floors||[]).map(function(fid){ var f=getFloorById(fid); return f?f.sortOrder:fid; }).sort(function(a,b){return a-b;});
+        var wb=XLSX.utils.book_new();
+        var aoa=[
+            ['晚检总结（'+formatInspectionDateTitle(date)+'）'],
+            ['日期', date],
+            ['楼栋', sum.buildingName || '本楼'],
+            ['负责楼层', floorNums.join('、')+'楼'],
+            ['确认人', sum.confirmedByName || ''],
+            [],
+            ['入宿人数', sum.totalStudents],
+            ['当天请假', sum.absenceCount],
+            ['退宿/停宿中', sum.leavePendingCount],
+            ['家长接走', sum.pickedUpCount],
+            ['无假条', sum.anomalyCount],
+            ['实到人数', sum.actualCount]
+        ];
+        XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(aoa), '总结统计');
+        function detailSheet(name, list, cols){
+            var rows=[cols.map(function(c){ return c.label; })];
+            (list||[]).forEach(function(r){
+                rows.push(cols.map(function(c){ return r[c.key]==null?'':r[c.key]; }));
+            });
+            XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(rows), name);
+        }
+        detailSheet('退宿停宿中', sum.leavePendingDetails, [
+            {key:'name',label:'姓名'},{key:'className',label:'班级'},{key:'bed',label:'床号'},{key:'dormitory',label:'宿舍'},{key:'type',label:'类型'},{key:'startDate',label:'开始日期'},{key:'endDate',label:'结束日期'}
+        ]);
+        detailSheet('家长接走', sum.pickedUpDetails, [
+            {key:'name',label:'姓名'},{key:'className',label:'班级'},{key:'bed',label:'床号'},{key:'dormitory',label:'宿舍'},{key:'confirmedBy',label:'确认人'},{key:'note',label:'备注'}
+        ]);
+        detailSheet('无假条', sum.anomalyDetails, [
+            {key:'name',label:'姓名'},{key:'className',label:'班级'},{key:'bed',label:'床号'},{key:'dormitory',label:'宿舍'},{key:'reportedBy',label:'上报人'},{key:'note',label:'备注'}
+        ]);
+        XLSX.writeFile(wb, '晚检总结_'+date+'.xlsx');
+        toast('已导出 Excel');
+    }
+
+    // ==================== 账号管理（仅管理员） ====================
+    /**
+     * 打开账号新增/编辑模态框（userId 为 0/空=新增）。
+     * 编辑时用户名与角色只读（角色不可变更），密码留空表示不修改。
+     * @param {number} userId - 用户 ID；0 表示新增
+     */
+    function openAccountModal(userId){
+        if(!isAdmin()){ toast('无权限','error'); return; }
+        var u=userId ? DB.users.find(function(x){ return String(x.id)===String(userId); }) : null;
+        var isEdit=!!u;
+        u=u || { id:0, username:'', realName:'', role:'STAFF', assignedFloors:[], buildingName:'' };
+        var roleOpts=[['STAFF','生活老师'],['CLASS_ADMIN','班主任'],['ADMIN','管理员']].map(function(r){
+            return '<option value="'+r[0]+'" '+(u.role===r[0]?'selected':'')+'>'+r[1]+'</option>';
+        }).join('');
+        var floorChecks=DB.floors.map(function(f){
+            var checked=(u.assignedFloors||[]).indexOf(f.id)!==-1 ? 'checked' : '';
+            return '<label style="display:inline-flex;align-items:center;gap:4px;margin:4px 10px 4px 0;font-weight:500"><input type="checkbox" class="acct-floor-check" value="'+f.id+'" '+checked+'> '+f.name+'</label>';
+        }).join('');
+        var html='<div class="em-header"><span>'+(isEdit?'✏️ 编辑账号':'➕ 新增账号')+'</span><button class="em-close" aria-label="关闭" onclick="closeAccountModal()">✕</button></div>'
+            +'<div class="em-body">'
+            +'<div class="form-group"><label>用户名 *</label><input type="text" id="acctUsername" value="'+escapeHtmlAttr(u.username)+'" '+(isEdit?'readonly style="background:var(--gray-100)"':'')+' placeholder="登录用户名（班主任账号通常与班级同名，如 三1）"></div>'
+            +'<div class="form-group"><label>姓名 *</label><input type="text" id="acctRealName" value="'+escapeHtmlAttr(u.realName||'')+'"></div>'
+            +'<div class="form-group"><label>'+(isEdit?'新密码（留空则不修改）':'初始密码')+'</label><input type="text" id="acctPassword" placeholder="'+(isEdit?'留空保持原密码':'留空默认 123456')+'"></div>'
+            +'<div class="form-group"><label>角色</label><select id="acctRole" '+(isEdit?'disabled style="background:var(--gray-100)"':'')+'>'+roleOpts+'</select></div>'
+            +'<div class="form-group"><label>楼栋名称（生活老师）</label><input type="text" id="acctBuilding" value="'+escapeHtmlAttr(u.buildingName||'')+'" placeholder="如：恩泽楼"></div>'
+            +'<div class="form-group"><label>负责楼层（仅生活老师生效，不勾选=全部楼层）</label><div class="checkbox-group">'+floorChecks+'</div></div>'
+            +(isEdit?'<p style="color:var(--gray-500);font-size:0.8571rem">账号角色不可修改；如需变更角色请新建账号。</p>':'')
+            +'</div>'
+            +'<div class="em-footer"><button class="btn btn-primary" onclick="saveAccount()">💾 保存</button><button class="btn btn-outline" onclick="closeAccountModal()">取消</button></div>';
+        document.getElementById('accountModalBox').innerHTML=html;
+        document.getElementById('accountModal').classList.add('show');
+    }
+    /** 关闭账号编辑模态框 */
+    function closeAccountModal(){
+        var m=document.getElementById('accountModal');
+        if(m) m.classList.remove('show');
+    }
+    /** 保存账号（入口，safeAsync 统一捕获哈希/落库异常） */
+    function saveAccount(){
+        safeAsync(saveAccountImpl, '保存账号', { retry: true });
+    }
+    /**
+     * 保存账号实际逻辑：表单校验 → 同名用户存在则更新（姓名/楼栋/楼层/可选新密码），
+     * 否则新建（密码留空默认 123456，哈希后落库）；写 user 行并标脏，saveDB 同步。
+     * @returns {Promise}
+     */
+    function saveAccountImpl(){
+        var username=String(document.getElementById('acctUsername').value||'').trim();
+        var realName=String(document.getElementById('acctRealName').value||'').trim();
+        var password=String(document.getElementById('acctPassword').value||'');
+        var role=document.getElementById('acctRole').value;
+        var buildingName=String(document.getElementById('acctBuilding').value||'').trim();
+        var floors=[];
+        document.querySelectorAll('.acct-floor-check:checked').forEach(function(cb){ floors.push(parseInt(cb.value,10)); });
+        if(!username || !realName){ toast('请填写用户名和姓名','error'); return Promise.resolve(); }
+        var target=DB.users.find(function(u){ return u.username===username; });
+        function finishSave(){
+            saveDB();
+            closeAccountModal();
+            toast('账号已保存');
+            if(currentView==='export') renderExportView(document.getElementById('contentArea'));
+        }
+        if(target){
+            // 编辑现有账号
+            target.realName=realName;
+            target.buildingName=buildingName;
+            target.assignedFloors=(target.role==='STAFF') ? floors : [];
+            target.lastModified=Date.now();
+            v3MarkDirty('user', target.id);
+            if(password){
+                return hashPassword(password).then(function(h){
+                    target.passwordHash=h;
+                    target.lastModified=Date.now();
+                    v3MarkDirty('user', target.id);
+                    finishSave();
+                });
+            }
+            finishSave();
+            return Promise.resolve();
+        }
+        // 新建账号
+        if(!role){ toast('请选择角色','error'); return Promise.resolve(); }
+        var pwd=password || '123456';
+        var nowTs=Date.now();
+        return hashPassword(pwd).then(function(h){
+            var nu={
+                id: DB.nextIds.user++,
+                username: username,
+                passwordHash: h,
+                realName: realName,
+                role: role,
+                buildingName: buildingName,
+                assignedFloors: (role==='STAFF') ? floors : [],
+                createdAt: nowTs, lastModified: nowTs
+            };
+            if(role==='CLASS_ADMIN') nu.className=username; // 班主任账号按用户名（班级名）隔离数据
+            DB.users.push(nu);
+            v3MarkDirty('user', nu.id);
+            finishSave();
+        });
+    }
+    /**
+     * 删除账号（二次确认）：内置 admin/staff 与当前登录账号不可删除；
+     * 删除打 user 墓碑并 saveDB 同步。
+     * @param {number} id - 用户 ID
+     */
+    function deleteUser(id){
+        if(!isAdmin()){ toast('无权限','error'); return; }
+        var u=DB.users.find(function(x){ return String(x.id)===String(id); });
+        if(!u){ toast('账号不存在','error'); return; }
+        if(String(u.id)===String(currentUser.id)){ toast('不可删除当前登录账号','error'); return; }
+        if(u.username==='admin' || u.username==='staff'){ toast('内置账号不可删除','error'); return; }
+        if(!confirm('确认删除账号「'+u.username+'（'+(u.realName||'')+'）」？')) return;
+        DB.users=DB.users.filter(function(x){ return String(x.id)!==String(id); });
+        v3MarkDeleted('user', id);
+        saveDB();
+        toast('账号已删除');
+        renderExportView(document.getElementById('contentArea'));
+    }
+    /**
+     * 一键重置账号密码为 123456（confirm 确认，异步哈希后落库标脏）。
+     * @param {number} id - 用户 ID
+     */
+    function resetUserPassword(id){
+        if(!isAdmin()){ toast('无权限','error'); return; }
+        var u=DB.users.find(function(x){ return String(x.id)===String(id); });
+        if(!u){ toast('账号不存在','error'); return; }
+        if(!confirm('确认将「'+u.username+'」的密码重置为 123456？')) return;
+        hashPassword('123456').then(function(h){
+            u.passwordHash=h;
+            u.lastModified=Date.now();
+            v3MarkDirty('user', u.id);
+            saveDB();
+            toast('密码已重置为 123456');
+        });
+    }
+    /**
+     * 保存楼层分工配置（楼层分配管理卡片）：更新所选生活老师的
+     * assignedFloors（空数组=全部楼层）与 buildingName，标脏落库后局部刷新卡片。
+     */
+    function saveFloorAssign(){
+        if(!isAdmin()){ toast('无权限','error'); return; }
+        var sel=document.getElementById('assignStaffSelect');
+        var uid=sel ? parseInt(sel.value,10) : (typeof floorAssignState!=='undefined'?floorAssignState.staffId:null);
+        var u=DB.users.find(function(x){ return String(x.id)===String(uid); });
+        if(!u){ toast('请选择生活老师','error'); return; }
+        var buildingName=String((document.getElementById('assignBuildingName')||{}).value||'').trim();
+        var floors=[];
+        document.querySelectorAll('.assign-floor-check:checked').forEach(function(cb){ floors.push(parseInt(cb.value,10)); });
+        u.assignedFloors=floors; // 空数组=负责全部楼层
+        u.buildingName=buildingName;
+        u.lastModified=Date.now();
+        v3MarkDirty('user', u.id);
+        saveDB();
+        toast('分工已保存：'+u.username+' → '+(floors.length?floors.slice().sort(function(a,b){return a-b;}).join('、')+'楼':'全部楼层'));
+        var box=document.getElementById('floorAssignBody');
+        if(box) box.innerHTML=buildFloorAssignHtml();
     }
 
     // ==================== 初始化 ====================

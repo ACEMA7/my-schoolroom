@@ -342,6 +342,44 @@
         });
     }
 
+    // ==================== 生活老师楼层分工（assignedFloors） ====================
+    /**
+     * 判断当前用户是否为生活老师（STAFF）。
+     * @returns {boolean}
+     */
+    function isStaff() {
+        return !!(currentUser && currentUser.role === 'STAFF');
+    }
+    /**
+     * 取指定用户可见的楼层 ID 列表（楼层分工过滤的唯一入口）。
+     * 规则：ADMIN 全部楼层；STAFF 按 user.assignedFloors 过滤，
+     * assignedFloors 为空/未配置时视为负责全部楼层；CLASS_ADMIN 返回全部
+     * （班级范围由 getClassDormIds 另行过滤）。
+     * @param {{role:string,assignedFloors?:number[]}} [user] - 用户对象，缺省取 currentUser
+     * @returns {number[]} 楼层 ID 数组（如 [1,2,3,4]）
+     */
+    function getAssignedFloorIds(user) {
+        user = user || currentUser;
+        var all = (DB && DB.floors ? DB.floors : []).map(function(f){ return f.id; });
+        if (user && user.role === 'STAFF' && Array.isArray(user.assignedFloors) && user.assignedFloors.length > 0) {
+            var set = {};
+            user.assignedFloors.forEach(function(fid){ set[fid] = true; });
+            return all.filter(function(fid){ return set[fid]; });
+        }
+        return all;
+    }
+    /**
+     * 取指定用户可见的楼层对象列表（按 sortOrder 升序）。
+     * @param {object} [user] - 用户对象，缺省取 currentUser
+     * @returns {Array<{id:number,name:string,sortOrder:number}>}
+     */
+    function getAssignedFloors(user) {
+        var idSet = {};
+        getAssignedFloorIds(user).forEach(function(id){ idSet[id] = true; });
+        return (DB && DB.floors ? DB.floors : []).filter(function(f){ return idSet[f.id]; })
+            .sort(function(a,b){ return (a.sortOrder||0) - (b.sortOrder||0); });
+    }
+
 
     // ==================== 密码哈希（SHA-256 / Web Crypto API） ====================
     // 极端降级方案：crypto.subtle 不可用（如非安全上下文 HTTP）时的确定性混淆。
@@ -410,10 +448,12 @@
     // ==================== 初始化与同步 ====================
     /**
      * 确保内置账号齐全（幂等，应用启动与云端重置后都会调用）。
-     * 保证存在：admin/管理员（ADMIN，密码 admin123）、staff/生活老师
-     * （STAFF，密码 staff123）、三1～三31 共 31 个班级账号
-     * （CLASS_ADMIN，密码 123456）。缺失账号统一异步哈希后创建并标脏上传；
-     * 同时完成旧称呼迁移与会话缓存校准（见 _ensureCorrectUsersFinish）。
+     * 保证存在：admin/管理员（ADMIN，密码 admin123）、staff/总生活老师
+     * （STAFF，密码 staff123，负责全部楼层）、staff1（STAFF，密码 123456，
+     * 负责 1-4 楼）、staff2（STAFF，密码 123456，负责 5-8 楼）、
+     * 三1～三31 共 31 个班级账号（CLASS_ADMIN，密码 123456）。
+     * staff1/staff2 已存在时跳过创建，仅补齐缺失的 assignedFloors/buildingName
+     * 字段（不覆盖管理员后续在"楼层分配管理"中的调整）。
      * @returns {Promise} 账号补齐完成后 resolve
      */
     function ensureCorrectUsers() {
@@ -421,8 +461,28 @@
         var adminExists = false, staffExists = false;
         for (var i = 0; i < DB.users.length; i++) {
             if (DB.users[i].username === 'admin') { DB.users[i].role = 'ADMIN'; DB.users[i].realName = '管理人员'; adminExists = true; }
-            if (DB.users[i].username === 'staff') { DB.users[i].role = 'STAFF'; DB.users[i].realName = '生活老师'; staffExists = true; }
+            if (DB.users[i].username === 'staff') {
+                DB.users[i].role = 'STAFF'; DB.users[i].realName = '生活老师'; staffExists = true;
+                // staff 为"总生活老师"：assignedFloors 为空数组即代表负责全部楼层
+                if(!Array.isArray(DB.users[i].assignedFloors)) DB.users[i].assignedFloors = [];
+            }
         }
+        // 巡查楼层分工预设：staff1 负责 1-4 楼、staff2 负责 5-8 楼
+        var presetStaff = [
+            { username: 'staff1', realName: '生活老师（1-4楼）', floors: [1,2,3,4], buildingName: '恩泽楼' },
+            { username: 'staff2', realName: '生活老师（5-8楼）', floors: [5,6,7,8], buildingName: '恩泽楼' }
+        ];
+        var missingStaff = [];
+        presetStaff.forEach(function(p){
+            var u = DB.users.find(function(x){ return x.username === p.username; });
+            if(!u){ missingStaff.push(p); return; }
+            // 已存在：仅补齐缺失字段，不覆盖管理员后续的楼层/楼栋调整
+            var changed = false;
+            if(u.role !== 'STAFF'){ u.role = 'STAFF'; changed = true; }
+            if(!Array.isArray(u.assignedFloors)){ u.assignedFloors = p.floors.slice(); changed = true; }
+            if(!u.buildingName){ u.buildingName = p.buildingName; changed = true; }
+            if(changed) v3MarkDirty('user', u.id);
+        });
         // 先收集缺失账号，统一异步计算密码哈希后再创建（确保落库即无明文）
         var missingClasses = [];
         for (var i = 1; i <= 31; i++) {
@@ -430,7 +490,7 @@
             if (!DB.users.some(function(u) { return u.username === className; })) missingClasses.push(className);
         }
         var needAdmin = !adminExists, needStaff = !staffExists;
-        if (!needAdmin && !needStaff && missingClasses.length === 0) {
+        if (!needAdmin && !needStaff && missingClasses.length === 0 && missingStaff.length === 0) {
             _ensureCorrectUsersFinish();
             return Promise.resolve();
         }
@@ -438,23 +498,37 @@
         var jobs = [];
         if (needAdmin) jobs.push(hashPassword('admin123').then(function(h){ hashes.admin = h; }));
         if (needStaff) jobs.push(hashPassword('staff123').then(function(h){ hashes.staff = h; }));
-        if (missingClasses.length > 0) jobs.push(hashPassword('123456').then(function(h){ hashes.cls = h; }));
+        if (missingClasses.length > 0 || missingStaff.length > 0) jobs.push(hashPassword('123456').then(function(h){ hashes.pwd123 = h; }));
         return Promise.all(jobs).then(function(){
             if (needAdmin) { var u1={ id: DB.nextIds.user++, username: 'admin', passwordHash: hashes.admin, realName: '管理人员', role: 'ADMIN' }; DB.users.push(u1); v3MarkDirty('user', u1.id); }
-            if (needStaff) { var u2={ id: DB.nextIds.user++, username: 'staff', passwordHash: hashes.staff, realName: '生活老师', role: 'STAFF' }; DB.users.push(u2); v3MarkDirty('user', u2.id); }
+            if (needStaff) { var u2={ id: DB.nextIds.user++, username: 'staff', passwordHash: hashes.staff, realName: '生活老师', role: 'STAFF', assignedFloors: [] }; DB.users.push(u2); v3MarkDirty('user', u2.id); }
 
             // 补充31个班级账号（如果缺失）
             missingClasses.forEach(function(className){
                 var u3 = {
                     id: DB.nextIds.user++,
                     username: className,
-                    passwordHash: hashes.cls,
+                    passwordHash: hashes.pwd123,
                     realName: className + '班班主任',
                     role: 'CLASS_ADMIN',
                     className: className
                 };
                 DB.users.push(u3);
                 v3MarkDirty('user', u3.id);
+            });
+            // 补充巡查分工生活老师账号（staff1/staff2）
+            missingStaff.forEach(function(p){
+                var u4 = {
+                    id: DB.nextIds.user++,
+                    username: p.username,
+                    passwordHash: hashes.pwd123,
+                    realName: p.realName,
+                    role: 'STAFF',
+                    assignedFloors: p.floors.slice(),
+                    buildingName: p.buildingName
+                };
+                DB.users.push(u4);
+                v3MarkDirty('user', u4.id);
             });
             _ensureCorrectUsersFinish();
         });
@@ -575,7 +649,12 @@
         var absenceRecords = [];
         // dormitoryList：系统生效的所有宿舍号（字符串数组），作为宿舍号选择/显示的唯一数据源
         var dormitoryList = dormitories.map(function(d){ return String(d.roomNumber); });
-        DB = { floors, dormitories, dormitoryList, students, deductionItems, deductionRecords: records, leaveRecords: leaveRecords, absenceRecords: absenceRecords, users, nextIds: { floor:9, dormitory: dormId, student: stuId, item:300, record: recId, leave:1, absence:1, user: nextUserId } };
+        // 巡查核实模块三张表（V3 业务记录，默认空数组）：
+        // inspectionConfirmations 巡查确认 / anomalyReports 异常上报 / dailyInspectionSummaries 每日晚检总结
+        var inspectionConfirmations = [];
+        var anomalyReports = [];
+        var dailyInspectionSummaries = [];
+        DB = { floors, dormitories, dormitoryList, students, deductionItems, deductionRecords: records, leaveRecords: leaveRecords, absenceRecords: absenceRecords, inspectionConfirmations: inspectionConfirmations, anomalyReports: anomalyReports, dailyInspectionSummaries: dailyInspectionSummaries, users, nextIds: { floor:9, dormitory: dormId, student: stuId, item:300, record: recId, leave:1, absence:1, user: nextUserId, confirmation:1, anomaly:1, summary:1 } };
         saveDBToLocal();
         });
     }
@@ -792,6 +871,16 @@
             });
         }
         if(repaired) ensureSyncMeta(); // 重建 dormitoryList
+        // 4) 巡查核实模块：旧版本地存档缺少三张表时补齐空数组（不覆盖已有数据）
+        ['inspectionConfirmations','anomalyReports','dailyInspectionSummaries'].forEach(function(k){
+            if(!Array.isArray(DB[k])){ DB[k] = []; repaired = true; }
+        });
+        // nextIds 同步补齐巡查模块键位
+        if(DB.nextIds){
+            ['confirmation','anomaly','summary'].forEach(function(k){
+                if(typeof DB.nextIds[k] !== 'number') DB.nextIds[k] = 1;
+            });
+        }
         return repaired;
     }
     // 通过 班级+姓名+宿舍号+床号 快照匹配学生（用于给旧记录补 studentId）
@@ -935,6 +1024,204 @@
         if(count > 0){
             console.log('[V3] 首次升级：已将本地 '+count+' 条记录标记为脏，等待全量上传');
         }
+    }
+
+
+    // ==================== 巡查核实模块：数据查询与统计 ====================
+    // 三类巡查对象的中文类型标签（recordType 取值）：
+    //   leave=退宿、stop=停宿（来自 leaveRecords，待审核 pending）；absence=请假（来自 absenceRecords）
+    var INSPECTION_TYPE_LABELS = { leave: '退宿', stop: '停宿', absence: '请假' };
+
+    /**
+     * 判断一条请假/退宿/停宿记录的日期区间是否覆盖指定日期。
+     * 有 startDate/endDate 时按闭区间判断；否则回退为 date 字段单日判断。
+     * @param {object} r - 记录（含 startDate/endDate 或 date，YYYY-MM-DD）
+     * @param {string} date - 目标日期 YYYY-MM-DD
+     * @returns {boolean}
+     */
+    function recordCoversDate(r, date){
+        if(!r) return false;
+        if(r.startDate && r.endDate) return r.startDate <= date && date <= r.endDate;
+        return (r.date || r.startDate) === date;
+    }
+    // 取学生所在宿舍 ID（studentId 可能缺失/学生已删除，返回 null）
+    function _studentDormitoryId(studentId){
+        var stu = studentId ? getStudentById(studentId) : null;
+        return stu ? stu.dormitoryId : null;
+    }
+    /**
+     * 解析一条请假/退宿/异常记录所属楼层 ID（优先 studentId→学生宿舍，
+     * 其次宿舍号字符串），无法解析返回 null。
+     */
+    function resolveRecordFloorId(dormitoryId, roomNumber){
+        var dorm = dormitoryId ? getDormitoryById(dormitoryId) : (roomNumber ? getDormitoryByRoomNumber(roomNumber) : null);
+        return dorm ? dorm.floorId : null;
+    }
+    /**
+     * 查询某日、指定楼层范围内的待巡查核实学生列表。
+     * 来源：leaveRecords 中状态为 pending（待审核）的退宿/停宿记录 +
+     * absenceRecords 中覆盖该日的请假记录；均要求日期区间覆盖 date 且
+     * 宿舍楼层落在 floorIds 内。
+     * @param {string} date - 巡查日期 YYYY-MM-DD
+     * @param {number[]} floorIds - 可见楼层 ID 列表
+     * @returns {Array} 巡查项列表（含 recordType/recordId/学生与宿舍快照）
+     */
+    function getInspectionItems(date, floorIds){
+        if(!DB) return [];
+        var fset = {};
+        (floorIds || []).forEach(function(f){ fset[f] = true; });
+        function inScope(dormitoryId, room){
+            var fid = resolveRecordFloorId(dormitoryId, room);
+            return fid != null && fset[fid];
+        }
+        function dormRoomOf(dormitoryId, fallbackRoom){
+            if(fallbackRoom) return fallbackRoom;
+            var dorm = dormitoryId ? getDormitoryById(dormitoryId) : null;
+            return dorm ? dorm.roomNumber : '';
+        }
+        var items = [];
+        // 1) 退宿/停宿（待审核）
+        (DB.leaveRecords || []).forEach(function(r){
+            if(r.status !== 'pending') return;
+            if(!recordCoversDate(r, date)) return;
+            var stuDormId = _studentDormitoryId(r.studentId);
+            if(!inScope(stuDormId, r.dormitory)) return;
+            items.push({
+                recordType: r.type === 'stop' ? 'stop' : 'leave',
+                recordId: r.id, studentId: r.studentId || null, dormitoryId: stuDormId,
+                room: dormRoomOf(stuDormId, r.dormitory), name: r.name, className: r.className,
+                bed: r.bed, startDate: r.startDate || r.date, endDate: r.endDate || r.date, reason: r.reason
+            });
+        });
+        // 2) 请假（absence 记录登记即生效，巡查时同样需核实到人）
+        (DB.absenceRecords || []).forEach(function(r){
+            if(!recordCoversDate(r, date)) return;
+            var stuDormId = _studentDormitoryId(r.studentId);
+            if(!inScope(stuDormId, r.dormitory)) return;
+            items.push({
+                recordType: 'absence', recordId: r.id, studentId: r.studentId || null, dormitoryId: stuDormId,
+                room: dormRoomOf(stuDormId, r.dormitory), name: r.name, className: r.className,
+                bed: r.bed, startDate: r.startDate, endDate: r.endDate, reason: r.reason
+            });
+        });
+        return items;
+    }
+    /**
+     * 查找某条巡查记录在某日的确认记录（同一 recordType+recordId+confirmDate 唯一）。
+     * @returns {object|null} 确认记录；未确认返回 null
+     */
+    function getInspectionConfirmation(recordType, recordId, date){
+        if(!DB || !Array.isArray(DB.inspectionConfirmations)) return null;
+        return DB.inspectionConfirmations.find(function(c){
+            return c.recordType === recordType && String(c.recordId) === String(recordId) && c.confirmDate === date;
+        }) || null;
+    }
+    /**
+     * 查询某日、指定楼层范围内的异常上报列表（按上报时间倒序）。
+     * @param {string} date - 巡查日期
+     * @param {number[]} floorIds - 可见楼层 ID 列表
+     * @returns {Array} anomalyReports 记录
+     */
+    function getInspectionAnomalies(date, floorIds){
+        if(!DB || !Array.isArray(DB.anomalyReports)) return [];
+        var fset = {};
+        (floorIds || []).forEach(function(f){ fset[f] = true; });
+        return DB.anomalyReports.filter(function(a){
+            if(a.reportDate !== date) return false;
+            var fid = resolveRecordFloorId(a.dormitoryId, a.dormitoryRoom);
+            return fid != null && fset[fid];
+        }).sort(function(a,b){ return (b.createdAt||0) - (a.createdAt||0); });
+    }
+    /**
+     * 计算某日晚检总结数据（纯统计，不落库）。
+     * 口径：
+     *   totalStudents 入宿人数 = 住本用户负责楼层宿舍的学生数；
+     *   absenceCount  当天请假 = absenceRecords 覆盖当日且在范围内；
+     *   leavePendingCount 退宿/停宿中 = leaveRecords 已审核通过且覆盖当日；
+     *   pickedUpCount 家长接走 = 当日 picked_up 异常上报；
+     *   anomalyCount  无假条   = 当日 no_note 异常上报；
+     *   actualCount   实到人数 = 入宿 - 请假 - 退宿/停宿中 - 家长接走（无假条学生在宿，不计减）。
+     * @param {string} date - 总结日期 YYYY-MM-DD
+     * @param {object} [user] - 用户对象，缺省取 currentUser
+     * @returns {object} 总结数据对象（详情列表含姓名/班级/床号等快照）
+     */
+    function computeInspectionSummary(date, user){
+        user = user || currentUser;
+        var floorIds = getAssignedFloorIds(user);
+        var fset = {};
+        floorIds.forEach(function(f){ fset[f] = true; });
+        function inScope(dormitoryId, room){
+            var fid = resolveRecordFloorId(dormitoryId, room);
+            return fid != null && fset[fid];
+        }
+        // 入宿人数
+        var totalStudents = (DB.students || []).filter(function(s){
+            if(!s.dormitoryId) return false;
+            var dorm = getDormitoryById(s.dormitoryId);
+            return dorm && fset[dorm.floorId];
+        }).length;
+        // 当天请假
+        var absenceRecs = (DB.absenceRecords || []).filter(function(r){
+            return recordCoversDate(r, date) && inScope(_studentDormitoryId(r.studentId), r.dormitory);
+        });
+        // 退宿/停宿中（已审核通过且覆盖当日）
+        var leaveRecs = (DB.leaveRecords || []).filter(function(r){
+            return r.status === 'approved' && recordCoversDate(r, date) && inScope(_studentDormitoryId(r.studentId), r.dormitory);
+        });
+        // 异常上报
+        var anomalies = getInspectionAnomalies(date, floorIds);
+        var picked = anomalies.filter(function(a){ return a.anomalyType === 'picked_up'; });
+        var noNote = anomalies.filter(function(a){ return a.anomalyType === 'no_note'; });
+        return {
+            summaryDate: date,
+            buildingName: user.buildingName || '',
+            floors: floorIds.slice(),
+            confirmedBy: user.id,
+            confirmedByName: user.realName || '',
+            totalStudents: totalStudents,
+            absenceCount: absenceRecs.length,
+            leavePendingCount: leaveRecs.length,
+            pickedUpCount: picked.length,
+            anomalyCount: noNote.length,
+            actualCount: Math.max(0, totalStudents - absenceRecs.length - leaveRecs.length - picked.length),
+            // 详情快照（历史回溯时不依赖学生/记录后续变化）
+            leavePendingDetails: leaveRecs.map(function(r){
+                return { name: r.name, className: r.className, bed: r.bed, dormitory: r.dormitory, type: r.type === 'stop' ? '停宿' : '退宿', startDate: r.startDate || r.date, endDate: r.endDate || r.date };
+            }),
+            pickedUpDetails: picked.map(function(a){
+                return { name: a.studentName, className: a.className, bed: a.bed, dormitory: a.dormitoryRoom, confirmedBy: a.reportedByName || '', note: a.note || '' };
+            }),
+            anomalyDetails: noNote.map(function(a){
+                return { name: a.studentName, className: a.className, bed: a.bed, dormitory: a.dormitoryRoom, reportedBy: a.reportedByName || '', note: a.note || '' };
+            })
+        };
+    }
+    /**
+     * 读取已落库的某日某用户的晚检总结。
+     * @param {string} date - 日期 YYYY-MM-DD
+     * @param {number|string} userId - 确认人（生活老师）用户 ID
+     * @returns {object|null} 总结记录；不存在返回 null
+     */
+    function getDailySummary(date, userId){
+        if(!DB || !Array.isArray(DB.dailyInspectionSummaries)) return null;
+        return DB.dailyInspectionSummaries.find(function(s){
+            return s.summaryDate === date && String(s.confirmedBy) === String(userId);
+        }) || null;
+    }
+    /**
+     * 确保纪律扣分项"无请假信息"存在（异常上报"无假条"自动扣分用）。
+     * 缺失时以 nextIds.item 创建（默认扣 1 分）并标脏上传；已存在直接返回。
+     * @returns {{id:number,name:string,defaultScore:number}} 扣分项目
+     */
+    function ensureNoNoteDeductionItem(){
+        if(!DB.deductionItems) DB.deductionItems = { hygiene: [], discipline: [] };
+        if(!Array.isArray(DB.deductionItems.discipline)) DB.deductionItems.discipline = [];
+        var item = DB.deductionItems.discipline.find(function(i){ return i.name === '无请假信息'; });
+        if(item) return item;
+        item = { id: DB.nextIds.item++, name: '无请假信息', defaultScore: 1 };
+        DB.deductionItems.discipline.push(item);
+        v3MarkDirty('deduction_item', item.id);
+        return item;
     }
 
 

@@ -230,6 +230,7 @@
         hierarchy:{icon:'🌳',label:'住宿'},
         add:{icon:'📝',label:'登记'},
         stats:{icon:'📊',label:'统计'},
+        inspection:{icon:'👀',label:'巡查'},
         students:{icon:'👥',label:'名单'},
         items:{icon:'📋',label:'项目'},
         leavemanage:{icon:'🏠',label:'学生'},
@@ -246,9 +247,10 @@
         document.querySelectorAll('.sidebar-nav .nav-item').forEach(function(el){
             if(el.style.display!=='none') visible.push(el.getAttribute('data-view'));
         });
-        // 首页为固定首Tab（色块网格是全部功能的主入口）；底栏仅保留最高频的3个功能
+        // 首页为固定首Tab（色块网格是全部功能的主入口）；底栏保留最高频的4个功能
+        // （管理员/生活老师可见顺序中第 4 个为"巡查核实"）
         var tabs=[{view:'home',icon:NAV_META.home.icon,label:NAV_META.home.label}];
-        visible.slice(0,3).forEach(function(v){
+        visible.slice(0,4).forEach(function(v){
             var m=NAV_META[v]||{icon:'•',label:v};
             tabs.push({view:v,icon:m.icon,label:m.label});
         });
@@ -271,6 +273,7 @@
             {view:'hierarchy',  icon:'🌳', name:'住宿信息',     color:'#4f6ef7', roles:['ADMIN','STAFF','CLASS_ADMIN']},
             {view:'add',        icon:'📝', name:'扣分登记',     color:'#34c759', roles:['ADMIN','STAFF']},
             {view:'stats',      icon:'📊', name:'统计报表',     color:'#ff9500', roles:['ADMIN','STAFF']},
+            {view:'inspection', icon:'👀', name:'巡查核实',     color:'#0ea5e9', roles:['ADMIN','STAFF']},
             {view:'students',   icon:'👥', name:'学生名单管理',     color:'#ff3b30', roles:['ADMIN']},
             {view:'items',      icon:'📋', name:'扣分项目管理', color:'#a855f7', roles:['ADMIN']},
             {view:'leavemanage',icon:'🏠', name:'学生管理', color:'#0891b2', roles:['ADMIN','STAFF','CLASS_ADMIN']},
@@ -289,8 +292,12 @@
         p = p || '';
         var classMode = isClassAdmin();
         var dormSet = classMode ? getClassDormIds() : null;
+        // 生活老师楼层分工：仅渲染 assignedFloors 内的楼层（ADMIN/班主任为全部）
+        var allowedFloorSet = {};
+        getAssignedFloorIds().forEach(function(fid){ allowedFloorSet[fid] = true; });
         var html = withTitle ? '<div style="font-weight:700;padding:8px 10px">🏢 全部楼层</div>' : '';
         DB.floors.forEach(function(f){
+            if(!allowedFloorSet[f.id]) return; // 分工外的楼层不显示
             var rooms=getDormitoriesByFloor(f.id);
             // 班级账号：仅显示该班级学生入住的楼层与宿舍
             if(classMode){
@@ -367,25 +374,33 @@
         var isMobileH=window.innerWidth<=768;
         var classMode=isClassAdmin();
         var classDormSet=classMode?getClassDormIds():null;
+        // 生活老师楼层分工：可见楼层白名单（ADMIN/班主任为全部楼层）
+        var allowedFloorSet = {};
+        getAssignedFloorIds().forEach(function(fid){ allowedFloorSet[fid] = true; });
         // 若当前选中的宿舍已被删除（不在 dormitoryList），清空选择重新定位
         var selDorm = selectedDormitoryId ? getDormitoryById(selectedDormitoryId) : null;
         if(selDorm && isDormitoryDeleted(selDorm.roomNumber)){ selectedDormitoryId=null; selectedFloorId=null; selDorm=null; }
-        if(!selectedDormitoryId||!getDormitoryById(selectedDormitoryId)||(classMode&&!classDormSet[selectedDormitoryId])){
-            // 手机端/班级账号：默认选中第一个可用楼层的第一个宿舍；桌面端保持原有默认逻辑
+        if(!selectedDormitoryId||!getDormitoryById(selectedDormitoryId)||(classMode&&!classDormSet[selectedDormitoryId])||(selDorm&&!allowedFloorSet[selDorm.floorId])){
+            // 手机端/班级账号/分工生活老师：默认选中第一个可用楼层的第一个宿舍；桌面端保持原有默认逻辑
             var firstDorm=null;
-            if(isMobileH||classMode){
-                var floorsPool=DB.floors;
+            function dormAllowed(d){
+                if(!allowedFloorSet[d.floorId]) return false;           // 分工外楼层
+                if(classMode && !classDormSet[d.id]) return false;      // 班级账号本班宿舍
+                return true;
+            }
+            if(isMobileH||classMode||isStaff()){
+                var floorsPool=DB.floors.filter(function(f){ return allowedFloorSet[f.id]; });
                 if(classMode){
-                    floorsPool=DB.floors.filter(function(f){
+                    floorsPool=floorsPool.filter(function(f){
                         return getDormitoriesByFloor(f.id).some(function(d){ return classDormSet[d.id]; });
                     });
                 }
                 var f0=floorsPool[0];
                 var dorms0=f0?getDormitoriesByFloor(f0.id):[];
-                if(classMode) dorms0=dorms0.filter(function(d){ return classDormSet[d.id]; });
+                dorms0=dorms0.filter(dormAllowed);
                 firstDorm=dorms0.length?dorms0[0]:null;
             }else{
-                firstDorm=DB.dormitories[0];
+                firstDorm=DB.dormitories.find(dormAllowed)||DB.dormitories[0];
             }
             if(firstDorm){
                 selectedDormitoryId=firstDorm.id;
@@ -457,11 +472,11 @@
         // 手机端顶部导航卡：楼层芯片(每行4个均匀分布) + 宿舍横滑条，与扣分登记页交互一致；桌面端不渲染（侧边栏树保留）
         var topCard='';
         if (window.innerWidth<=768) {
-            var floorsList=DB.floors;
-            var dormsOfFloor=getDormitoriesByFloor(dorm.floorId);
+            var floorsList=DB.floors.filter(function(f){ return allowedFloorSet[f.id]; });
+            var dormsOfFloor=getDormitoriesByFloor(dorm.floorId).filter(function(d){ return allowedFloorSet[d.floorId]; });
             // 班级账号：仅显示本班学生入住的楼层与宿舍
             if(classMode){
-                floorsList=DB.floors.filter(function(f){
+                floorsList=floorsList.filter(function(f){
                     return getDormitoriesByFloor(f.id).some(function(d){ return classDormSet[d.id]; });
                 });
                 dormsOfFloor=dormsOfFloor.filter(function(d){ return classDormSet[d.id]; });
@@ -520,7 +535,11 @@
      * @param {HTMLElement} container - contentArea 容器
      */
     function renderAddView(container){
-        if(!addFormState.floorId) addFormState.floorId=DB.floors[0].id;
+        // 生活老师楼层分工：楼层选择仅列出 assignedFloors 内楼层（为空=全部）
+        var allowedFloors=getAssignedFloors();
+        if(!addFormState.floorId || !allowedFloors.some(function(f){ return f.id===addFormState.floorId; })){
+            addFormState.floorId = allowedFloors.length ? allowedFloors[0].id : (DB.floors[0] && DB.floors[0].id);
+        }
         var dormitories=getDormitoriesByFloor(addFormState.floorId);
         if(dormitories.length>0&&!addFormState.dormitoryId) addFormState.dormitoryId=dormitories[0].id;
         if(addFormState.dormitoryId&&!getDormitoryById(addFormState.dormitoryId)) addFormState.dormitoryId=null;
@@ -555,7 +574,7 @@
         var tailHtml='<div class="form-group"><label>备注</label><input type="text" id="addRemark" placeholder="可填写具体原因..." onchange="addFormChange(\'remark\')" value="'+(addFormState.remark||'')+'"></div><div style="display:flex;gap:8px;margin-top:8px"><button class="btn btn-primary" onclick="submitDeduction()">✅ 提交扣分</button><button class="btn btn-outline" onclick="resetAddForm()">🔄 重置</button></div>';
         if(window.innerWidth<=768){
             // ===== 移动端芯片式布局：楼层4/行均布 → 宿舍横滑 → 对象换行标签 =====
-            var floorChips=DB.floors.map(function(f){
+            var floorChips=allowedFloors.map(function(f){
                 return '<div class="chip'+(f.id===addFormState.floorId?' active':'')+'" onclick="mobilePickFloor('+f.id+')">'+f.name+'</div>';
             }).join('');
             var dormChips=dormitories.map(function(d){
@@ -574,7 +593,7 @@
                 +'</div></div>';
         }else{
             // ===== 桌面端：保持原有下拉框 + 复选框布局 =====
-            var floorOpts=DB.floors.map(function(f){return '<option value="'+f.id+'" '+(f.id===addFormState.floorId?'selected':'')+'>'+f.name+'</option>';}).join('');
+            var floorOpts=allowedFloors.map(function(f){return '<option value="'+f.id+'" '+(f.id===addFormState.floorId?'selected':'')+'>'+f.name+'</option>';}).join('');
             var dormOpts=dormitories.map(function(d){return '<option value="'+d.id+'" '+(d.id===addFormState.dormitoryId?'selected':'')+'>'+d.roomNumber+'</option>';}).join('');
             var stuOpts='<option value="">🏠 宿舍集体</option>'+students.map(function(s){return '<option value="'+s.id+'">'+s.name+'（'+(s.className||'')+'）床号'+(s.bedNumber||'-')+'</option>';}).join('');
             container.innerHTML='<div class="content-header"><h2>📝 扣分登记</h2></div><div class="card"><div class="card-header">填写扣分信息</div><div class="card-body"><div class="form-row"><div class="form-group"><label>楼层 *</label><select id="addFloor" onchange="addFormChange(\'floor\')">'+floorOpts+'</select></div><div class="form-group"><label>宿舍号 *</label><select id="addDormitory" onchange="addFormChange(\'dorm\')">'+dormOpts+'</select></div></div><div class="form-row"><div class="form-group"><label>扣分对象 *</label><select id="addStudent" onchange="addFormChange(\'student\')">'+stuOpts+'</select></div><div class="form-group"><label>扣分日期 *</label><input type="text" class="date-picker" id="addDate" value="'+addFormState.recordDate+'" onchange="addFormChange(\'date\')"></div></div>'+hySection+disSection+tailHtml+'</div></div>';
@@ -590,6 +609,192 @@
         // 宿舍横向条自动滚动到选中项
         var actChip=document.querySelector('.chip-dorms .chip.active');
         if(actChip&&actChip.scrollIntoView){try{actChip.scrollIntoView({inline:'center',block:'nearest'});}catch(e){}}
+    }
+
+    // ==================== 巡查核实视图 ====================
+    /**
+     * 将 YYYY-MM-DD 格式化为总结标题用中文日期（如 "9月9号 周三晚"）。
+     * @param {string} dateStr - 日期字符串
+     * @returns {string}
+     */
+    function formatInspectionDateTitle(dateStr){
+        try{
+            var parts=String(dateStr).split('-');
+            var d=new Date(parseInt(parts[0],10), parseInt(parts[1],10)-1, parseInt(parts[2],10));
+            var week='日一二三四五六'.charAt(d.getDay());
+            return (d.getMonth()+1)+'月'+d.getDate()+'号 周'+week+'晚';
+        }catch(e){ return dateStr; }
+    }
+    // 巡查类型标签样式
+    var INSPECTION_TAG_CLS = { leave:'status-tag status-orange', stop:'status-tag status-blue', absence:'status-tag status-blue', picked_up:'status-tag status-orange', no_note:'status-tag status-red' };
+    function inspectionTagCls(t){ return INSPECTION_TAG_CLS[t] || 'status-tag'; }
+
+    /**
+     * 渲染「巡查核实」视图（仅 STAFF/ADMIN）：
+     * 顶部历史日期查询 + 四张统计卡（待核实总数/已确认/待确认/异常数）+
+     * 按楼层→宿舍分组的待核实学生列表（确认按钮/异常上报按钮）+
+     * 晚检总结卡（今日待确认为 0 自动生成；历史日期只读，支持导出 Excel）。
+     * @param {HTMLElement} container - contentArea 容器
+     */
+    function renderInspectionView(container){
+        if(!currentUser || (currentUser.role!=='STAFF' && currentUser.role!=='ADMIN')){
+            container.innerHTML='<div class="empty-state">无权限</div>';
+            return;
+        }
+        var today=getTodayLocalStr();
+        var date=(typeof inspectionState!=='undefined' && inspectionState.viewDate) || today;
+        var isToday=(date===today);
+        var floorIds=getAssignedFloorIds();
+        var items=getInspectionItems(date, floorIds);
+        var anomalies=getInspectionAnomalies(date, floorIds);
+        var confirmedCount=0;
+        items.forEach(function(it){ if(getInspectionConfirmation(it.recordType, it.recordId, date)) confirmedCount++; });
+        var pendingCount=items.length-confirmedCount;
+
+        // —— 历史日期查询卡 ——
+        var html='<div class="content-header"><h2>👀 巡查核实</h2></div>';
+        html+='<div class="card"><div class="card-header">📅 晚检总结查询</div><div class="card-body"><div class="filter-section">'
+            +'<div class="form-group"><label>选择日期</label><input type="text" class="date-picker" id="inspectionHistoryDate" value="'+date+'" onchange="onInspectionHistoryDate()"></div>'
+            +'<button class="btn btn-primary" onclick="onInspectionHistoryDate()">🔍 查看该日</button>'
+            +(isToday?'':'<button class="btn btn-outline" onclick="backToInspectionToday()">↩️ 返回今日</button>')
+            +(isToday?'':'<span style="color:var(--gray-500);font-size:0.8571rem;align-self:center">历史日期为只读模式</span>')
+            +'</div></div></div>';
+
+        // —— 统计卡片 ——
+        html+='<div class="stat-cards-mobile">'
+            +'<div class="stat-item"><div class="number" style="color:#4f6ef7">'+items.length+'</div><div class="label">📋 待核实总数</div></div>'
+            +'<div class="stat-item"><div class="number" style="color:#34c759">'+confirmedCount+'</div><div class="label">✅ 已确认</div></div>'
+            +'<div class="stat-item"><div class="number" style="color:#ff9500">'+pendingCount+'</div><div class="label">⏳ 待确认</div></div>'
+            +'<div class="stat-item"><div class="number" style="color:#ff3b30">'+anomalies.length+'</div><div class="label">⚠️ 异常上报</div></div>'
+            +'</div>';
+
+        // —— 按楼层→宿舍分组 ——
+        var floorMap={};
+        function roomBucket(fid, room){
+            if(!floorMap[fid]) floorMap[fid]={ floor:getFloorById(fid), rooms:{} };
+            if(!floorMap[fid].rooms[room]) floorMap[fid].rooms[room]={ items:[], anomalies:[], dormitoryId:null };
+            return floorMap[fid].rooms[room];
+        }
+        items.forEach(function(it){
+            var fid=resolveRecordFloorId(it.dormitoryId, it.room);
+            if(fid==null) return;
+            var bucket=roomBucket(fid, it.room||'未知');
+            bucket.items.push(it);
+            if(it.dormitoryId) bucket.dormitoryId=it.dormitoryId;
+            else if(!bucket.dormitoryId){ var d=getDormitoryByRoomNumber(it.room); if(d) bucket.dormitoryId=d.id; }
+        });
+        anomalies.forEach(function(a){
+            var fid=resolveRecordFloorId(a.dormitoryId, a.dormitoryRoom);
+            if(fid==null) return;
+            var bucket=roomBucket(fid, a.dormitoryRoom||'未知');
+            bucket.anomalies.push(a);
+            if(a.dormitoryId) bucket.dormitoryId=a.dormitoryId;
+        });
+        var floorIdsSorted=Object.keys(floorMap).map(Number).sort(function(a,b){
+            var fa=floorMap[a].floor, fb=floorMap[b].floor;
+            return ((fa&&fa.sortOrder)||a)-((fb&&fb.sortOrder)||b);
+        });
+        if(floorIdsSorted.length===0){
+            html+='<div class="card"><div class="card-body" style="text-align:center;color:var(--gray-500);padding:24px">'+(isToday?'今日负责楼层暂无请假/停宿/退宿待核实学生':'该日暂无巡查记录')+'</div></div>';
+        }
+        floorIdsSorted.forEach(function(fid){
+            var fg=floorMap[fid];
+            html+='<div class="content-header" style="margin-top:14px"><h2 style="font-size:1.1rem">🏢 '+((fg.floor&&fg.floor.name)||('楼层'+fid))+'</h2></div>';
+            var roomKeys=Object.keys(fg.rooms).sort();
+            roomKeys.forEach(function(room){
+                var bucket=fg.rooms[room];
+                html+='<div class="card"><div class="card-header">🚪 '+room+' 宿舍</div><div class="card-body" style="padding:10px 14px">';
+                bucket.items.forEach(function(it){
+                    var conf=getInspectionConfirmation(it.recordType, it.recordId, date);
+                    var timeRange=it.startDate&&it.endDate ? (it.startDate===it.endDate?it.startDate:it.startDate+' ~ '+it.endDate) : '';
+                    html+='<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--gray-100);flex-wrap:wrap">'
+                        +'<div style="min-width:0"><b>'+escapeHtmlAttr(it.name||'')+'</b> <span class="'+inspectionTagCls(it.recordType)+'">'+(INSPECTION_TYPE_LABELS[it.recordType]||'')+'</span>'
+                        +'<div style="color:var(--gray-500);font-size:0.8571rem;margin-top:2px">'+escapeHtmlAttr(it.className||'-')+' · 床号'+escapeHtmlAttr(it.bed||'-')+(timeRange?' · '+timeRange:'')+'</div></div>'
+                        +'<div style="flex-shrink:0">'
+                        +(conf
+                            ? '<span class="status-tag status-blue">✅ 已确认（'+escapeHtmlAttr(conf.confirmedByName||'')+'）</span>'
+                            : (isToday
+                                ? '<button class="btn btn-primary btn-xs" onclick="confirmInspection(\''+it.recordType+'\',\''+String(it.recordId).replace(/'/g,'')+'\')">✅ 确认属实</button>'
+                                : '<span class="status-tag" style="background:var(--gray-100);color:var(--gray-500)">⏳ 待确认</span>'))
+                        +'</div></div>';
+                });
+                bucket.anomalies.forEach(function(a){
+                    html+='<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--gray-100);flex-wrap:wrap">'
+                        +'<div style="min-width:0"><b>'+escapeHtmlAttr(a.studentName||'')+'</b> <span class="'+inspectionTagCls(a.anomalyType)+'">'+(a.anomalyType==='picked_up'?'家长接走':'无假条')+'</span>'
+                        +'<div style="color:var(--gray-500);font-size:0.8571rem;margin-top:2px">'+escapeHtmlAttr(a.className||'-')+' · 床号'+escapeHtmlAttr(a.bed||'-')+' · 上报人：'+escapeHtmlAttr(a.reportedByName||'-')+(a.note?' · '+escapeHtmlAttr(a.note):'')+'</div></div>'
+                        +'<div style="flex-shrink:0"><span class="status-tag status-red">⚠️ 异常</span></div></div>';
+                });
+                if(isToday){
+                    html+='<div style="margin-top:10px"><button class="btn btn-danger btn-xs" onclick="openAnomalyModal('+(bucket.dormitoryId||0)+')">⚠️ 异常上报</button></div>';
+                }
+                html+='</div></div>';
+            });
+        });
+
+        // —— 晚检总结 ——
+        if(isToday){
+            if(pendingCount===0){
+                var sum=ensureTodaySummary(); // app.js：待确认为 0 时落库/更新今日总结并返回
+                html+=buildInspectionSummaryHtml(sum, date, true, false);
+            }else{
+                html+='<div class="card"><div class="card-body" style="text-align:center;color:var(--gray-500);padding:20px">还有 <b style="color:var(--warning)">'+pendingCount+'</b> 名学生待核实，全部确认后将自动生成今日晚检总结</div></div>';
+            }
+        }else{
+            var stored=getDailySummary(date, currentUser.id);
+            var histSum=stored || computeInspectionSummary(date, currentUser);
+            html+=buildInspectionSummaryHtml(histSum, date, false, !stored);
+        }
+        container.innerHTML=html;
+        initDatePickers(document);
+    }
+
+    /**
+     * 拼装晚检总结卡片 HTML（今日/历史共用；历史重算时标注"只读"）。
+     * @param {object} sum - computeInspectionSummary 返回的总结数据
+     * @param {string} date - 总结日期
+     * @param {boolean} isToday - 是否今日
+     * @param {boolean} isRecomputed - 历史日期无存档、按记录重算
+     * @returns {string}
+     */
+    function buildInspectionSummaryHtml(sum, date, isToday, isRecomputed){
+        var floorNums=(sum.floors||[]).map(function(fid){ var f=getFloorById(fid); return f?f.sortOrder:fid; }).sort(function(a,b){return a-b;});
+        var building=sum.buildingName || '本楼';
+        function line(label,val,color){ return '<div style="display:flex;justify-content:space-between;padding:4px 0;font-size:1.02rem"><span>'+label+'</span><b style="color:'+(color||'var(--text)')+'">'+val+'人</b></div>'; }
+        function detailTable(title, list, columns, emptyText){
+            var h='<div style="margin-top:12px"><div style="font-weight:700;margin-bottom:6px">'+title+'（'+list.length+'人）</div>';
+            if(list.length===0){ h+='<div style="color:var(--gray-500);font-size:0.8571rem">'+(emptyText||'无')+'</div></div>'; return h; }
+            h+='<div style="overflow-x:auto"><table style="font-size:0.9rem"><thead><tr>'+columns.map(function(c){return '<th>'+c.label+'</th>';}).join('')+'</tr></thead><tbody>';
+            list.forEach(function(row){
+                h+='<tr>'+columns.map(function(c){ return '<td>'+escapeHtmlAttr(row[c.key]==null?'-':String(row[c.key]))+'</td>'; }).join('')+'</tr>';
+            });
+            return h+'</tbody></table></div></div>';
+        }
+        var html='<div class="card" style="margin-top:16px;border:2px solid var(--primary)">'
+            +'<div class="card-header">📊 '+(isToday?'今日晚检总结':'晚检总结（历史只读）')+'（'+formatInspectionDateTitle(date)+'）</div>'
+            +'<div class="card-body">'
+            +'<div style="font-weight:700;font-size:1.05rem">'+escapeHtmlAttr(building)+'：'+floorNums.join('、')+'楼</div>'
+            +'<div style="border-top:1px dashed var(--gray-200);margin:8px 0"></div>'
+            +line('入宿人数', sum.totalStudents)
+            +line('当天请假', sum.absenceCount, '#4f6ef7')
+            +line('退宿/停宿中', sum.leavePendingCount, '#ff9500')
+            +line('家长接走', sum.pickedUpCount, '#a855f7')
+            +line('无假条', sum.anomalyCount, '#ff3b30')
+            +line('实到人数', sum.actualCount, '#34c759')
+            +'<div style="margin-top:12px"><button class="btn btn-primary" onclick="exportInspectionSummary(\''+date+'\')">📥 导出 Excel</button></div>';
+        if(isRecomputed){
+            html+='<p style="color:var(--gray-500);font-size:0.8571rem;margin-top:8px">该日无存档总结，以上为按当日记录重新计算（历史数据不可修改）。</p>';
+        }
+        html+=detailTable('📋 退宿/停宿中学生详情', sum.leavePendingDetails||[], [
+                {key:'name',label:'姓名'},{key:'className',label:'班级'},{key:'bed',label:'床号'},{key:'dormitory',label:'宿舍'},{key:'type',label:'类型'},{key:'startDate',label:'开始'},{key:'endDate',label:'结束'}
+            ])
+            +detailTable('🚗 家长接走学生详情', sum.pickedUpDetails||[], [
+                {key:'name',label:'姓名'},{key:'className',label:'班级'},{key:'bed',label:'床号'},{key:'dormitory',label:'宿舍'},{key:'confirmedBy',label:'确认人'},{key:'note',label:'备注'}
+            ])
+            +detailTable('⚠️ 无假条学生详情', sum.anomalyDetails||[], [
+                {key:'name',label:'姓名'},{key:'className',label:'班级'},{key:'bed',label:'床号'},{key:'dormitory',label:'宿舍'},{key:'reportedBy',label:'上报人'},{key:'note',label:'备注'}
+            ]);
+        html+='</div></div>';
+        return html;
     }
 
     // ==================== 统计报表视图 ====================
@@ -1407,6 +1612,11 @@
                 + '<button class="btn btn-danger" id="btnResetCloud" onclick="resetCloudData()">🔁 重置云端数据（以下发为准）</button>'
                 + '<p style="color:var(--danger);margin-top:8px;font-size:0.8571rem">此操作会永久清空云端全部数据！执行时请让其它设备暂时不要点同步。</p></div></div>'
                 + '</div>';
+            // 账号管理 + 楼层分配管理（仅管理员）
+            html += '<div class="card"><div class="card-header">👤 账号管理</div><div class="card-body" id="accountManageBody">'
+                + buildAccountManageHtml() + '</div></div>';
+            html += '<div class="card"><div class="card-header">🏢 楼层分配管理（生活老师负责楼层）</div><div class="card-body" id="floorAssignBody">'
+                + buildFloorAssignHtml() + '</div></div>';
         }
 
         html += '<div id="queryResultArea" style="margin-top:16px;"></div>';
@@ -1415,6 +1625,92 @@
         // 初始化联动
         refreshExportSelects();
         initDatePickers(document); // 初始化导出筛选日期选择器
+    }
+
+    // ==================== 账号管理（仅管理员，数据管理视图内卡片） ====================
+    // 角色中文标签
+    var USER_ROLE_LABELS = { ADMIN:'管理员', STAFF:'生活老师', CLASS_ADMIN:'班主任' };
+    function userRoleLabel(role){ return USER_ROLE_LABELS[role] || role; }
+    // 负责楼层展示文案：STAFF 且 assignedFloors 非空 → "1、2楼"；空 → "全部楼层"；其他角色 → "-"
+    function userFloorsText(u){
+        if(u.role !== 'STAFF') return '-';
+        if(Array.isArray(u.assignedFloors) && u.assignedFloors.length > 0){
+            var nums = u.assignedFloors.slice().sort(function(a,b){ return a-b; })
+                .map(function(fid){ var f=getFloorById(fid); return f ? f.sortOrder : fid; });
+            return nums.join('、') + '楼';
+        }
+        return '全部楼层';
+    }
+    /**
+     * 账号管理卡片内容：全部用户列表（用户名/姓名/角色/负责楼层/操作）+ 新增账号按钮。
+     * 写操作（新增/编辑/删除/重置密码）统一在 app.js，落 DB 并 saveDB 同步。
+     * @returns {string}
+     */
+    function buildAccountManageHtml(){
+        if(!isAdmin()) return '<div class="empty-state">无权限</div>';
+        var rows = (DB.users||[]).map(function(u){
+            // 内置 admin/staff 账号受保护，不可删除（staff 为总生活老师）
+            var protectedAcct = (u.username === 'admin' || u.username === 'staff');
+            var isSelf = currentUser && String(u.id) === String(currentUser.id);
+            var ops = '<button class="btn btn-outline btn-xs" onclick="openAccountModal('+u.id+')">编辑</button> '
+                + '<button class="btn btn-outline btn-xs" onclick="resetUserPassword('+u.id+')">重置密码</button> '
+                + ((protectedAcct||isSelf)
+                    ? '<button class="btn btn-danger btn-xs" disabled style="opacity:.4" title="内置账号/当前登录账号不可删除">删除</button>'
+                    : '<button class="btn btn-danger btn-xs" onclick="deleteUser('+u.id+')">删除</button>');
+            return '<tr><td data-label="用户名">'+escapeHtmlAttr(u.username)+'</td>'
+                + '<td data-label="姓名">'+escapeHtmlAttr(u.realName||'')+'</td>'
+                + '<td data-label="角色">'+userRoleLabel(u.role)+'</td>'
+                + '<td data-label="负责楼层">'+userFloorsText(u)+(u.buildingName?'（'+escapeHtmlAttr(u.buildingName)+'）':'')+'</td>'
+                + '<td data-label="操作">'+ops+'</td></tr>';
+        }).join('');
+        return '<button class="btn btn-primary" onclick="openAccountModal(0)">➕ 新增账号</button>'
+            + '<div style="overflow-x:auto;margin-top:10px"><table><thead><tr><th>用户名</th><th>姓名</th><th>角色</th><th>负责楼层</th><th>操作</th></tr></thead><tbody>'+rows+'</tbody></table></div>'
+            + '<p style="color:var(--gray-500);font-size:0.8571rem;margin-top:8px">新增账号默认密码 123456；重置密码也会重置为 123456。</p>';
+    }
+
+    // ==================== 楼层分配管理（仅管理员） ====================
+    var floorAssignState = { staffId: null };  // 当前在卡片中选中的生活老师用户 ID
+    /**
+     * 楼层分配管理卡片内容：下拉选择 STAFF 用户 → 楼栋名称 + 楼层勾选 → 保存。
+     * @returns {string}
+     */
+    function buildFloorAssignHtml(){
+        if(!isAdmin()) return '<div class="empty-state">无权限</div>';
+        var staffList = (DB.users||[]).filter(function(u){ return u.role === 'STAFF'; });
+        if(staffList.length === 0) return '<div class="empty-state">暂无生活老师账号</div>';
+        if(!floorAssignState.staffId || !staffList.some(function(u){ return String(u.id)===String(floorAssignState.staffId); })){
+            floorAssignState.staffId = staffList[0].id;
+        }
+        var opts = staffList.map(function(u){
+            return '<option value="'+u.id+'" '+(String(u.id)===String(floorAssignState.staffId)?'selected':'')+'>'+escapeHtmlAttr(u.username)+'（'+escapeHtmlAttr(u.realName||'')+'）</option>';
+        }).join('');
+        var html = '<div class="form-group"><label>选择生活老师</label>'
+            + '<select id="assignStaffSelect" onchange="onAssignStaffChange()">'+opts+'</select></div>';
+        html += buildFloorAssignDetailHtml();
+        return html;
+    }
+    /**
+     * 楼层分配详情区（楼栋名称输入 + 8 个楼层勾选 + 保存按钮），切换老师时局部刷新。
+     * @returns {string}
+     */
+    function buildFloorAssignDetailHtml(){
+        var u = (DB.users||[]).find(function(x){ return String(x.id) === String(floorAssignState.staffId); });
+        if(!u) return '';
+        var assigned = {};
+        (u.assignedFloors||[]).forEach(function(fid){ assigned[fid] = true; });
+        var checks = DB.floors.map(function(f){
+            return '<label style="display:inline-flex;align-items:center;gap:4px;margin:4px 10px 4px 0;font-weight:500"><input type="checkbox" class="assign-floor-check" value="'+f.id+'" '+(assigned[f.id]?'checked':'')+'> '+f.name+'</label>';
+        }).join('');
+        return '<div class="form-group"><label>楼栋名称</label><input type="text" id="assignBuildingName" value="'+escapeHtmlAttr(u.buildingName||'')+'" placeholder="如：恩泽楼"></div>'
+            + '<div class="form-group"><label>负责楼层（不勾选 = 全部楼层）</label><div class="checkbox-group">'+checks+'</div></div>'
+            + '<button class="btn btn-primary" onclick="saveFloorAssign()">💾 保存分工配置</button>';
+    }
+    // 切换楼层分配卡片中的生活老师：更新状态并重绘详情区
+    function onAssignStaffChange(){
+        var sel = document.getElementById('assignStaffSelect');
+        if(sel) floorAssignState.staffId = parseInt(sel.value, 10);
+        var box = document.getElementById('floorAssignBody');
+        if(box) box.innerHTML = buildFloorAssignHtml();
     }
 
     // 切换数据类型：

@@ -57,12 +57,16 @@
         { type: 'deduction_item',   dbPath: ['deductionItems'],   idField: 'id',    isArray: false, specialItems: true },
         { type: 'deduction_record', dbPath: ['deductionRecords'], idField: 'id',    isArray: true  },
         { type: 'leave_record',     dbPath: ['leaveRecords'],     idField: 'id',    isArray: true  },
-        { type: 'absence_record',   dbPath: ['absenceRecords'],   idField: 'id',    isArray: true  }
+        { type: 'absence_record',   dbPath: ['absenceRecords'],   idField: 'id',    isArray: true  },
+        // —— 巡查核实模块（业务记录，多设备并发按 updated_at 合并）——
+        { type: 'inspection_confirmation', dbPath: ['inspectionConfirmations'],  idField: 'id', isArray: true }, // 巡查确认
+        { type: 'anomaly_report',          dbPath: ['anomalyReports'],           idField: 'id', isArray: true }, // 异常上报（家长接走/无假条）
+        { type: 'daily_summary',           dbPath: ['dailyInspectionSummaries'], idField: 'id', isArray: true }  // 每日晚检总结
     ];
     // 基础数据类型（管理员统一维护，云端为权威）——拉取时云端覆盖本地
     var V3_BASIC_TYPES = ['meta', 'floor', 'dormitory', 'student', 'user', 'deduction_item'];
     // 业务记录类型（多设备并发写入，按 updated_at 合并）
-    var V3_MUTABLE_TYPES = ['deduction_record', 'leave_record', 'absence_record'];
+    var V3_MUTABLE_TYPES = ['deduction_record', 'leave_record', 'absence_record', 'inspection_confirmation', 'anomaly_report', 'daily_summary'];
     // Supabase upsert 批量上限（保守值，实际约 500）
     var V3_UPSERT_CHUNK = 200;
     // 表结构版本：2 = 旧版整库压缩，3 = 新版按行存储
