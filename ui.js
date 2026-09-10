@@ -430,18 +430,18 @@
         }).join('');
         var studentHtml=students.map(function(s){
             var sr=records.filter(function(r){return r.studentId===s.id;});
-            var ss=getTotalScore(sr);
+            var ss=getNetScore(sr);
             var st=getStudentStatus(s.id);
             var ops = '';
             if(isAdmin()){
                 ops = '<td data-label="操作"><button class="btn btn-outline btn-xs" onclick="openTransferModal('+s.id+')">调宿</button> <button class="btn btn-danger btn-xs" onclick="moveOutStudent('+s.id+')">迁出</button></td>';
             }
-            return '<tr><td data-label="姓名"><b>'+s.name+'</b></td><td data-label="班级">'+(s.className||'-')+'</td><td data-label="床号">'+(s.bedNumber||'-')+'</td><td data-label="状态"><span class="status-tag '+st.cls+'">'+st.label+'</span></td><td data-label="个人扣分" class="'+(ss>0?'highlight-red':'')+'">'+ss+'</td>'+ops+'</tr>';
+            return '<tr><td data-label="姓名"><b>'+s.name+'</b></td><td data-label="班级">'+(s.className||'-')+'</td><td data-label="床号">'+(s.bedNumber||'-')+'</td><td data-label="状态"><span class="status-tag '+st.cls+'">'+st.label+'</span></td><td data-label="个人净分" class="'+(ss>0?'highlight-red':'')+'">'+ss+'</td>'+ops+'</tr>';
         }).join('')||'<tr><td colspan="5" style="text-align:center;color:#aaa">该宿舍暂无成员</td></tr>';
         // 移动端成员单行紧凑列表：姓名 + 彩色圆点状态（圆点与文字同色）+ 班级·床号，右侧个人扣分（0分绿色/有分红色）
         var memberCardHtml=students.map(function(s){
             var sr=records.filter(function(r){return r.studentId===s.id;});
-            var ss=getTotalScore(sr);
+            var ss=getNetScore(sr);
             var st=getStudentStatus(s.id);
             var dotColor=statusColorMap[st.label]||'#9ca3af';
             var memOps = '';
@@ -461,13 +461,18 @@
         // 单行历史记录 HTML（供分片渲染逐条调用）
         function historyRowHtml(r){
             var student=r.studentId?getStudentById(r.studentId):null;
-            var hyNames=(r.hygieneItemIds||[]).map(getItemNameByIdOrCustom).filter(Boolean).join('、');
-            var disNames=(r.disciplineItemIds||[]).map(getItemNameByIdOrCustom).filter(Boolean).join('、');
+            var isBonusRec = (r.recordMode === 'bonus');
+            var nameGetter = isBonusRec ? getBonusItemNameByIdOrCustom : getItemNameByIdOrCustom;
+            var hyNames=(r.hygieneItemIds||[]).map(nameGetter).filter(Boolean).join('、');
+            var disNames=(r.disciplineItemIds||[]).map(nameGetter).filter(Boolean).join('、');
+            var scorePrefix = isBonusRec ? '+' : '-';
+            var scoreColor = isBonusRec ? '#34c759' : '#ff3b30';
+            var modeTag = isBonusRec ? '<span class="badge-tag badge-primary" style="margin-right:4px">加分</span>' : '';
             // 操作列：管理员可删除，生活老师（STAFF）可修改，其他角色无操作（ID为字符串需加引号传参）
             var actionHtml='<td data-label="操作">-</td>';
             if(isAdmin()) actionHtml='<td data-label="操作"><button class="btn btn-danger btn-xs" onclick="deleteRecord(\''+r.id+'\')">删除</button></td>';
             else if(isStaff) actionHtml='<td data-label="操作"><button class="btn btn-primary btn-xs" onclick="editRecord(\''+r.id+'\')">修改</button></td>';
-            return '<tr><td data-label="日期">'+r.recordDate+'</td><td data-label="对象">'+(student?student.name:'宿舍集体')+'</td><td data-label="卫生项目">'+(hyNames||'-')+'</td><td data-label="卫生扣分">'+(r.hygieneScore||0)+'</td><td data-label="纪律项目">'+(disNames||'-')+'</td><td data-label="纪律扣分">'+(r.disciplineScore||0)+'</td><td data-label="备注">'+escapeHtmlAttr(r.remark||'-')+'</td>'+actionHtml+'</tr>';
+            return '<tr><td data-label="日期">'+r.recordDate+'</td><td data-label="对象">'+modeTag+(student?student.name:'宿舍集体')+'</td><td data-label="卫生项目">'+(hyNames||'-')+'</td><td data-label="卫生分值" style="color:'+scoreColor+'">'+scorePrefix+(r.hygieneScore||0)+'</td><td data-label="纪律项目">'+(disNames||'-')+'</td><td data-label="纪律分值" style="color:'+scoreColor+'">'+scorePrefix+(r.disciplineScore||0)+'</td><td data-label="备注">'+escapeHtmlAttr(r.remark||'-')+'</td>'+actionHtml+'</tr>';
         }
         // 手机端顶部导航卡：楼层芯片(每行4个均匀分布) + 宿舍横滑条，与扣分登记页交互一致；桌面端不渲染（侧边栏树保留）
         var topCard='';
@@ -488,7 +493,7 @@
                 return '<div class="chip'+(r.id===dorm.id?' active':'')+'" onclick="hierarchyPickDorm('+r.id+')">'+r.roomNumber+'</div>';
             }).join('')||'<span style="color:#aaa;font-size:0.9286rem">该楼层暂无宿舍</span>';
             topCard='<div class="card"><div class="card-body">'
-                +'<div class="form-group"><label>🏢 选择楼层</label><div class="chip-floors'+(classMode?' chip-floors-left':'')+'">'+floorChips+'</div></div>'
+                +'<div class="form-group"><label>🏢 选择楼层</label><div class="chip-floors chip-floors-left">'+floorChips+'</div></div>'
                 +'<div class="form-group" style="margin-bottom:0"><label>🚪 选择宿舍号 <span style="font-weight:400;font-size:0.8571rem;color:var(--gray-500)">左右滑动查看更多</span></label><div class="chip-dorms">'+dormChips+'</div></div>'
                 +'</div></div>';
         }
@@ -506,9 +511,9 @@
         var statThreeMobile='<div class="stat-cards-mobile"><div class="stat-item"><div class="number">'+students.length+'</div><div class="label">👥 宿舍人数</div></div><div class="stat-item"><div class="number" style="color:#f59e0b">'+records.length+'</div><div class="label">📋 扣分记录数</div></div><div class="stat-item"><div class="number" style="color:#ff3b30">'+total+'</div><div class="label">📊 累计扣分</div></div></div>';
         // 页头仅保留标题（登记扣分入口统一收敛到功能首页/侧边栏/底部导航，住宿信息页只读）
         var memberOpsTh = isAdmin() ? '<th>操作</th>' : '';
-        var membersCardPc='<div class="card"><div class="card-header">👥 宿舍成员</div><div style="overflow-x:auto"><table><thead><tr><th>姓名</th><th>班级</th><th>床号</th><th>状态</th><th>个人扣分</th>'+memberOpsTh+'</tr></thead><tbody>'+studentHtml+'</tbody></table></div></div>';
+        var membersCardPc='<div class="card"><div class="card-header">👥 宿舍成员</div><div style="overflow-x:auto"><table><thead><tr><th>姓名</th><th>班级</th><th>床号</th><th>状态</th><th>个人净分</th>'+memberOpsTh+'</tr></thead><tbody>'+studentHtml+'</tbody></table></div></div>';
         var membersCardMobile='<div class="card"><div class="card-header">👥 宿舍成员</div><div class="card-body" style="padding:2px 14px">'+memberCardHtml+'</div></div>';
-        var recordsCard='<div class="card"><div class="card-header">📜 历史扣分记录 <span class="badge-tag badge-danger">'+total+'分</span><span style="font-weight:400;font-size:0.8571rem;color:var(--gray-500);margin-left:6px">按日期倒序</span></div><div style="overflow-x:auto"><table><thead><tr><th>日期</th><th>对象</th><th>卫生扣分</th><th>分值</th><th>纪律扣分</th><th>分值</th><th>备注</th><th>操作</th></tr></thead><tbody id="historyTbody"></tbody></table></div></div>';
+        var recordsCard='<div class="card"><div class="card-header">📜 历史记录 <span class="badge-tag badge-danger">'+total+'分</span><span style="font-weight:400;font-size:0.8571rem;color:var(--gray-500);margin-left:6px">按日期倒序</span></div><div style="overflow-x:auto"><table><thead><tr><th>日期</th><th>对象</th><th>卫生项目</th><th>分值</th><th>纪律项目</th><th>分值</th><th>备注</th><th>操作</th></tr></thead><tbody id="historyTbody"></tbody></table></div></div>';
         // 移动端顺序：楼层/宿舍芯片 → 状态汇总 → 宿舍成员（单行紧凑）→ 三个统计卡片 → 历史扣分记录
         // PC 端顺序保持不变：统计大卡（状态+三卡片）→ 历史扣分记录 → 宿舍成员表
         container.innerHTML='<div class="content-header"><h2>📋 宿舍 '+dorm.roomNumber+'（'+floor.name+'）</h2></div>'+topCard+(isMobileH?(statusCard+membersCardMobile+statThreeMobile+recordsCard):(statsCard+recordsCard+membersCardPc));
@@ -527,7 +532,7 @@
     }
 
     // ==================== 扣分登记视图 ====================
-    var addFormState={floorId:null,dormitoryId:null,studentId:null,hygieneItemIds:[],disciplineItemIds:[],hygieneScore:0,disciplineScore:0,recordDate:getTodayLocalStr(),remark:''};
+    var addFormState={floorId:null,dormitoryId:null,studentId:null,hygieneItemIds:[],disciplineItemIds:[],hygieneScore:0,disciplineScore:0,recordDate:getTodayLocalStr(),remark:'',recordMode:'deduct',hygieneBonusItemIds:[],disciplineBonusItemIds:[],hygieneBonusScore:0,disciplineBonusScore:0};
     /**
      * 渲染「扣分登记」视图：班级/宿舍/床号联动选择、卫生/纪律扣分项勾选、
      * 实时扣分合计与提交按钮。PC 与移动端共用同一套数据、布局不同。
@@ -544,69 +549,112 @@
         if(dormitories.length>0&&!addFormState.dormitoryId) addFormState.dormitoryId=dormitories[0].id;
         if(addFormState.dormitoryId&&!getDormitoryById(addFormState.dormitoryId)) addFormState.dormitoryId=null;
         var students=getStudentsByDormitory(addFormState.dormitoryId);
-        var hyItems=DB.deductionItems.hygiene||[];
-        var disItems=DB.deductionItems.discipline||[];
-        var now = new Date();
-        var hour = now.getHours();
-        var showHygiene = true;
-        var showDiscipline = true;
-        if (currentUser && currentUser.role === 'STAFF') {
-            if (hour >= 5 && hour < 15) {
-                showDiscipline = false;
-            } else {
-                showHygiene = false;
-            }
+        var isBonus = (addFormState.recordMode === 'bonus');
+        // 时段规则：管理员不限，生活老师按账号配置
+        var timeCat = getCurrentTimeCategory(currentUser);
+        var showHygiene = (timeCat === 'both' || timeCat === 'hygiene');
+        var showDiscipline = (timeCat === 'both' || timeCat === 'discipline');
+        // 扣分模式项目
+        var hyItems = isBonus ? (DB.deductionItems.hygieneBonus||[]) : (DB.deductionItems.hygiene||[]);
+        var disItems = isBonus ? (DB.deductionItems.disciplineBonus||[]) : (DB.deductionItems.discipline||[]);
+        var hyCls = isBonus ? 'hy-bonus-checkbox' : 'hy-item-checkbox';
+        var disCls = isBonus ? 'dis-bonus-checkbox' : 'dis-item-checkbox';
+        var hyCustomCls = isBonus ? 'hy-bonus-custom-check' : 'hy-custom-check';
+        var disCustomCls = isBonus ? 'dis-bonus-custom-check' : 'dis-custom-check';
+        var hyCustomNameId = isBonus ? 'hyBonusCustomName' : 'hyCustomName';
+        var hyCustomWrapId = isBonus ? 'hyBonusCustomInputWrap' : 'hyCustomInputWrap';
+        var disCustomNameId = isBonus ? 'disBonusCustomName' : 'disCustomName';
+        var disCustomWrapId = isBonus ? 'disBonusCustomInputWrap' : 'disCustomInputWrap';
+        var hyScoreId = isBonus ? 'hyBonusScore' : 'hyScore';
+        var disScoreId = isBonus ? 'disBonusScore' : 'disScore';
+        var hyScoreRestoreKey = isBonus ? 'hygieneBonusScore' : 'hygieneScore';
+        var disScoreRestoreKey = isBonus ? 'disciplineBonusScore' : 'disciplineScore';
+        var scorePrefix = isBonus ? '+' : '-';
+        var scoreLabel = isBonus ? '加分' : '扣分';
+        var defaultHyCustom = isBonus ? 0.2 : 0.2;
+        var defaultDisCustom = isBonus ? 1 : 1;
+        // 模式切换 UI
+        var isMobile = window.innerWidth <= 768;
+        var modeSwitchHtml;
+        if(isMobile){
+            // 移动端：两个并列大芯片
+            modeSwitchHtml = '<div class="mode-chip-switch">'
+                + '<div class="mode-chip'+(!isBonus?' active':'')+'" onclick="switchRecordMode(\'deduct\')">📉 扣分模式</div>'
+                + '<div class="mode-chip'+(isBonus?' active':'')+'" onclick="switchRecordMode(\'bonus\')">📈 加分模式</div>'
+                + '</div>';
+        }else{
+            // PC 端：Tab 风格
+            modeSwitchHtml = '<div class="mode-tab-switch">'
+                + '<div class="mode-tab'+(!isBonus?' active':'')+'" onclick="switchRecordMode(\'deduct\')">📉 扣分模式</div>'
+                + '<div class="mode-tab'+(isBonus?' active':'')+'" onclick="switchRecordMode(\'bonus\')">📈 加分模式</div>'
+                + '</div>';
         }
         var hySection = '';
         var disSection = '';
         if (showHygiene) {
-            var hyCheckboxes=hyItems.map(function(i){return '<label><input type="checkbox" value="'+i.id+'" class="hy-item-checkbox"> '+i.name+' (-'+i.defaultScore+'分)</label>';}).join('');
-            hyCheckboxes+='<label><input type="checkbox" value="custom" class="hy-item-checkbox hy-custom-check"> ✏️ 自定义(0.2分)</label>';
-            hyCheckboxes+='<span id="hyCustomInputWrap" style="display:none;margin-left:8px;"><input type="text" id="hyCustomName" placeholder="自定义项目名称" style="padding:4px 8px;border:1px dashed #ccc;border-radius:4px;"></span>';
-            hySection = '<div class="form-group"><label>🧹 卫生加扣分（可多选）</label><div class="checkbox-group">'+hyCheckboxes+'</div><div style="margin-top:5px">卫生扣分合计：<input type="number" id="hyScore" value="0" min="0" step="0.1" inputmode="decimal" style="width:80px;padding:4px" onchange="addFormChange(\'hyScore\')"> 分</div></div>';
+            var hyCheckboxes=hyItems.map(function(i){return '<label><input type="checkbox" value="'+i.id+'" class="'+hyCls+'"> '+i.name+' ('+scorePrefix+i.defaultScore+'分)</label>';}).join('');
+            hyCheckboxes+='<label><input type="checkbox" value="custom" class="'+hyCls+' '+hyCustomCls+'"> ✏️ 自定义('+defaultHyCustom+'分)</label>';
+            hyCheckboxes+='<span id="'+hyCustomWrapId+'" style="display:none;margin-left:8px;"><input type="text" id="'+hyCustomNameId+'" placeholder="自定义项目名称" style="padding:4px 8px;border:1px dashed #ccc;border-radius:4px;"></span>';
+            hySection = '<div class="form-group"><label>🧹 卫生'+scoreLabel+'（可多选）</label><div class="checkbox-group">'+hyCheckboxes+'</div><div style="margin-top:5px">卫生'+scoreLabel+'合计：<input type="number" id="'+hyScoreId+'" value="'+(addFormState[hyScoreRestoreKey]||0)+'" min="0" step="0.1" inputmode="decimal" style="width:80px;padding:4px" onchange="addFormChange(\''+hyScoreRestoreKey+'\')"> 分</div></div>';
         }
         if (showDiscipline) {
-            var disCheckboxes=disItems.map(function(i){return '<label><input type="checkbox" value="'+i.id+'" class="dis-item-checkbox"> '+i.name+' (-'+i.defaultScore+'分)</label>';}).join('');
-            disCheckboxes+='<label><input type="checkbox" value="custom" class="dis-item-checkbox dis-custom-check"> ✏️ 自定义(1分)</label>';
-            disCheckboxes+='<span id="disCustomInputWrap" style="display:none;margin-left:8px;"><input type="text" id="disCustomName" placeholder="自定义项目名称" style="padding:4px 8px;border:1px dashed #ccc;border-radius:4px;"></span>';
-            disSection = '<div class="form-group"><label>📏 纪律加扣分（可多选）</label><div class="checkbox-group">'+disCheckboxes+'</div><div style="margin-top:5px">纪律扣分合计：<input type="number" id="disScore" value="0" min="0" step="0.1" inputmode="decimal" style="width:80px;padding:4px" onchange="addFormChange(\'disScore\')"> 分</div></div>';
+            var disCheckboxes=disItems.map(function(i){return '<label><input type="checkbox" value="'+i.id+'" class="'+disCls+'"> '+i.name+' ('+scorePrefix+i.defaultScore+'分)</label>';}).join('');
+            disCheckboxes+='<label><input type="checkbox" value="custom" class="'+disCls+' '+disCustomCls+'"> ✏️ 自定义('+defaultDisCustom+'分)</label>';
+            disCheckboxes+='<span id="'+disCustomWrapId+'" style="display:none;margin-left:8px;"><input type="text" id="'+disCustomNameId+'" placeholder="自定义项目名称" style="padding:4px 8px;border:1px dashed #ccc;border-radius:4px;"></span>';
+            disSection = '<div class="form-group"><label>📏 纪律'+scoreLabel+'（可多选）</label><div class="checkbox-group">'+disCheckboxes+'</div><div style="margin-top:5px">纪律'+scoreLabel+'合计：<input type="number" id="'+disScoreId+'" value="'+(addFormState[disScoreRestoreKey]||0)+'" min="0" step="0.1" inputmode="decimal" style="width:80px;padding:4px" onchange="addFormChange(\''+disScoreRestoreKey+'\')"> 分</div></div>';
         }
-        var tailHtml='<div class="form-group"><label>备注</label><input type="text" id="addRemark" placeholder="可填写具体原因..." onchange="addFormChange(\'remark\')" value="'+(addFormState.remark||'')+'"></div><div style="display:flex;gap:8px;margin-top:8px"><button class="btn btn-primary" onclick="submitDeduction()">✅ 提交扣分</button><button class="btn btn-outline" onclick="resetAddForm()">🔄 重置</button></div>';
-        if(window.innerWidth<=768){
-            // ===== 移动端芯片式布局：楼层4/行均布 → 宿舍横滑 → 对象换行标签 =====
+        var submitLabel = isBonus ? '✅ 提交加分' : '✅ 提交扣分';
+        var tailHtml='<div class="form-group"><label>备注</label><input type="text" id="addRemark" placeholder="可填写具体原因..." onchange="addFormChange(\'remark\')" value="'+(addFormState.remark||'')+'"></div><div style="display:flex;gap:8px;margin-top:8px"><button class="btn btn-primary" onclick="submitDeduction()">'+submitLabel+'</button><button class="btn btn-outline" onclick="resetAddForm()">🔄 重置</button></div>';
+        if(isMobile){
+            // ===== 移动端芯片式布局：楼层4/行均布 → 宿舍横滑 → 对象（加分模式仅宿舍集体） =====
             var floorChips=allowedFloors.map(function(f){
                 return '<div class="chip'+(f.id===addFormState.floorId?' active':'')+'" onclick="mobilePickFloor('+f.id+')">'+f.name+'</div>';
             }).join('');
             var dormChips=dormitories.map(function(d){
                 return '<div class="chip'+(d.id===addFormState.dormitoryId?' active':'')+'" onclick="mobilePickDorm('+d.id+')">'+d.roomNumber+'</div>';
             }).join('')||'<span style="color:#aaa;font-size:0.9286rem">该楼层暂无宿舍</span>';
-            var targetChips='<div class="chip'+(addFormState.studentId===null?' active':'')+'" onclick="mobilePickTarget(this,null)">🏠 宿舍集体</div>'
-                +students.map(function(s){
-                    return '<div class="chip'+(addFormState.studentId===s.id?' active':'')+'" onclick="mobilePickTarget(this,'+s.id+')">'+s.name+'</div>';
-                }).join('');
-            container.innerHTML='<div class="content-header"><h2>📝 扣分登记</h2></div><div class="card"><div class="card-header">填写扣分信息</div><div class="card-body">'
+            var targetChips;
+            if(isBonus){
+                // 加分模式：只显示宿舍集体
+                var dorm=getDormitoryById(addFormState.dormitoryId);
+                var dormLabel = dorm ? dorm.roomNumber : '';
+                targetChips='<div class="chip active">🏠 '+dormLabel+'宿舍集体</div>';
+            }else{
+                targetChips='<div class="chip'+(addFormState.studentId===null?' active':'')+'" onclick="mobilePickTarget(this,null)">🏠 宿舍集体</div>'
+                    +students.map(function(s){
+                        return '<div class="chip'+(addFormState.studentId===s.id?' active':'')+'" onclick="mobilePickTarget(this,'+s.id+')">'+s.name+'</div>';
+                    }).join('');
+            }
+            container.innerHTML='<div class="content-header"><h2>📝 '+(isBonus?'加分':'扣分')+'登记</h2></div><div class="card"><div class="card-header">'+modeSwitchHtml+'<span style="margin-top:8px;display:block">填写信息</span></div><div class="card-body">'
                 +'<div class="form-group"><label>🏢 选择楼层 *</label><div class="chip-floors">'+floorChips+'</div></div>'
                 +'<div class="form-group"><label>🚪 选择宿舍号 * <span style="font-weight:400;font-size:0.8571rem;color:var(--gray-500)">左右滑动查看更多</span></label><div class="chip-dorms">'+dormChips+'</div></div>'
-                +'<div class="form-group"><label>👤 扣分对象 *</label><div class="chip-targets">'+targetChips+'</div></div>'
-                +'<div class="form-group"><label>扣分日期 *</label><input type="text" class="date-picker" id="addDate" value="'+addFormState.recordDate+'" onchange="addFormChange(\'date\')"></div>'
+                +'<div class="form-group"><label>👤 '+(isBonus?'加分对象（宿舍集体）':'扣分对象 *')+'</label><div class="chip-targets">'+targetChips+'</div></div>'
+                +'<div class="form-group"><label>'+(isBonus?'加分':'扣分')+'日期 *</label><input type="text" class="date-picker" id="addDate" value="'+addFormState.recordDate+'" onchange="addFormChange(\'date\')"></div>'
                 +hySection+disSection+tailHtml
                 +'</div></div>';
         }else{
-            // ===== 桌面端：保持原有下拉框 + 复选框布局 =====
+            // ===== 桌面端：下拉框 + 复选框布局 =====
             var floorOpts=allowedFloors.map(function(f){return '<option value="'+f.id+'" '+(f.id===addFormState.floorId?'selected':'')+'>'+f.name+'</option>';}).join('');
             var dormOpts=dormitories.map(function(d){return '<option value="'+d.id+'" '+(d.id===addFormState.dormitoryId?'selected':'')+'>'+d.roomNumber+'</option>';}).join('');
-            var stuOpts='<option value="">🏠 宿舍集体</option>'+students.map(function(s){return '<option value="'+s.id+'">'+s.name+'（'+(s.className||'')+'）床号'+(s.bedNumber||'-')+'</option>';}).join('');
-            container.innerHTML='<div class="content-header"><h2>📝 扣分登记</h2></div><div class="card"><div class="card-header">填写扣分信息</div><div class="card-body"><div class="form-row"><div class="form-group"><label>楼层 *</label><select id="addFloor" onchange="addFormChange(\'floor\')">'+floorOpts+'</select></div><div class="form-group"><label>宿舍号 *</label><select id="addDormitory" onchange="addFormChange(\'dorm\')">'+dormOpts+'</select></div></div><div class="form-row"><div class="form-group"><label>扣分对象 *</label><select id="addStudent" onchange="addFormChange(\'student\')">'+stuOpts+'</select></div><div class="form-group"><label>扣分日期 *</label><input type="text" class="date-picker" id="addDate" value="'+addFormState.recordDate+'" onchange="addFormChange(\'date\')"></div></div>'+hySection+disSection+tailHtml+'</div></div>';
+            var stuOpts;
+            if(isBonus){
+                var dorm=getDormitoryById(addFormState.dormitoryId);
+                var dormLabel=dorm?dorm.roomNumber:'';
+                stuOpts='<option value="" selected>🏠 '+dormLabel+'宿舍集体</option>';
+            }else{
+                stuOpts='<option value="">🏠 宿舍集体</option>'+students.map(function(s){return '<option value="'+s.id+'" '+(addFormState.studentId===s.id?'selected':'')+'>'+s.name+'（'+(s.className||'')+'）床号'+(s.bedNumber||'-')+'</option>';}).join('');
+            }
+            container.innerHTML='<div class="content-header"><h2>📝 '+(isBonus?'加分':'扣分')+'登记</h2></div><div class="card"><div class="card-header">'+modeSwitchHtml+'</div><div class="card-body"><div class="form-row"><div class="form-group"><label>楼层 *</label><select id="addFloor" onchange="addFormChange(\'floor\')">'+floorOpts+'</select></div><div class="form-group"><label>宿舍号 *</label><select id="addDormitory" onchange="addFormChange(\'dorm\')">'+dormOpts+'</select></div></div><div class="form-row"><div class="form-group"><label>'+(isBonus?'加分对象':'扣分对象 *')+'</label><select id="addStudent" onchange="addFormChange(\'student\')" '+(isBonus?'disabled':'')+'>'+stuOpts+'</select></div><div class="form-group"><label>'+(isBonus?'加分':'扣分')+'日期 *</label><input type="text" class="date-picker" id="addDate" value="'+addFormState.recordDate+'" onchange="addFormChange(\'date\')"></div></div>'+hySection+disSection+tailHtml+'</div></div>';
         }
-        if (showHygiene) bindCheckboxEvents('hy');
-        if (showDiscipline) bindCheckboxEvents('dis');
-        if (showHygiene) bindCustomCheckboxEvents('hy');
-        if (showDiscipline) bindCustomCheckboxEvents('dis');
-        // 恢复切换楼层/宿舍前已勾选的扣分项目，并重算合计（避免频繁切换丢失选择）
+        // 绑定复选框事件（加分/扣分模式共用同一套类名逻辑）
+        if (showHygiene) bindCheckboxEventsGeneric(isBonus?'hy-bonus':'hy');
+        if (showDiscipline) bindCheckboxEventsGeneric(isBonus?'dis-bonus':'dis');
+        if (showHygiene) bindCustomCheckboxEventsGeneric(isBonus?'hy-bonus':'hy');
+        if (showDiscipline) bindCustomCheckboxEventsGeneric(isBonus?'dis-bonus':'dis');
+        // 恢复切换楼层/宿舍前已勾选的扣分项目，并重算合计
         restoreAddChecks();
         recomputeAddScores();
-        initDatePickers(document); // 初始化扣分日期选择器
-        // 宿舍横向条自动滚动到选中项
+        initDatePickers(document);
         var actChip=document.querySelector('.chip-dorms .chip.active');
         if(actChip&&actChip.scrollIntoView){try{actChip.scrollIntoView({inline:'center',block:'nearest'});}catch(e){}}
     }
@@ -661,11 +709,16 @@
             +'</div></div></div>';
 
         // —— 统计卡片 ——
-        html+='<div class="stat-cards-mobile">'
+        html+='<div class="stat-cards-mobile inspection-stat-cards">'
             +'<div class="stat-item"><div class="number" style="color:#4f6ef7">'+items.length+'</div><div class="label">📋 待核实总数</div></div>'
             +'<div class="stat-item"><div class="number" style="color:#34c759">'+confirmedCount+'</div><div class="label">✅ 已确认</div></div>'
             +'<div class="stat-item"><div class="number" style="color:#ff9500">'+pendingCount+'</div><div class="label">⏳ 待确认</div></div>'
             +'<div class="stat-item"><div class="number" style="color:#ff3b30">'+anomalies.length+'</div><div class="label">⚠️ 异常上报</div></div>'
+            +'<div class="stat-item stat-item-action" onclick="openAnomalyModal(0)" role="button" tabindex="0">'
+            +'<div class="number" style="color:#ff3b30;font-size:1.4286rem">⚠️</div>'
+            +'<div class="label" style="font-weight:700">异常上报</div>'
+            +'<div style="font-size:0.7857rem;color:#ff3b30;margin-top:2px">点击上报</div>'
+            +'</div>'
             +'</div>';
 
         // —— 按楼层→宿舍分组 ——
@@ -774,17 +827,19 @@
             +'<div class="card-body">'
             +'<div style="font-weight:700;font-size:1.05rem">'+escapeHtmlAttr(building)+'：'+floorNums.join('、')+'楼</div>'
             +'<div style="border-top:1px dashed var(--gray-200);margin:8px 0"></div>'
+            +'<div class="summary-split">'
+            +'<div class="summary-stats-col">'
             +line('入宿人数', sum.totalStudents)
             +line('当天请假', sum.absenceCount, '#4f6ef7')
             +line('退宿/停宿中', sum.leavePendingCount, '#ff9500')
             +line('家长接走', sum.pickedUpCount, '#a855f7')
             +line('无假条', sum.anomalyCount, '#ff3b30')
             +line('实到人数', sum.actualCount, '#34c759')
-            +'<div style="margin-top:12px"><button class="btn btn-primary" onclick="exportInspectionSummary(\''+date+'\')">📥 导出 Excel</button></div>';
-        if(isRecomputed){
-            html+='<p style="color:var(--gray-500);font-size:0.8571rem;margin-top:8px">该日无存档总结，以上为按当日记录重新计算（历史数据不可修改）。</p>';
-        }
-        html+=detailTable('📋 退宿/停宿中学生详情', sum.leavePendingDetails||[], [
+            +'<div style="margin-top:12px"><button class="btn btn-primary" onclick="copyInspectionSummary(\''+date+'\')">📋 一键复制总结</button></div>'
+            +(isRecomputed?'<p style="color:var(--gray-500);font-size:0.8571rem;margin-top:8px">该日无存档总结，以上为按当日记录重新计算（历史数据不可修改）。</p>':'')
+            +'</div>'
+            +'<div class="summary-detail-col">'
+            +detailTable('📋 退宿/停宿中学生详情', sum.leavePendingDetails||[], [
                 {key:'name',label:'姓名'},{key:'className',label:'班级'},{key:'bed',label:'床号'},{key:'dormitory',label:'宿舍'},{key:'type',label:'类型'},{key:'startDate',label:'开始'},{key:'endDate',label:'结束'}
             ])
             +detailTable('🚗 家长接走学生详情', sum.pickedUpDetails||[], [
@@ -792,8 +847,10 @@
             ])
             +detailTable('⚠️ 无假条学生详情', sum.anomalyDetails||[], [
                 {key:'name',label:'姓名'},{key:'className',label:'班级'},{key:'bed',label:'床号'},{key:'dormitory',label:'宿舍'},{key:'reportedBy',label:'上报人'},{key:'note',label:'备注'}
-            ]);
-        html+='</div></div>';
+            ])
+            +'</div>'
+            +'</div>'
+            +'</div></div>';
         return html;
     }
 
@@ -923,12 +980,45 @@
         }
         var topTitle = '🏠 全校宿舍排行榜' + (statsDormExpandAll ? '<span class="fold-sub">全部'+dormStatsAll.length+'个</span>' : '<span class="fold-sub">TOP20</span>');
         var topBody = '<div id="statsDormWrap">'+dormSectionHtml()+'</div>';
+        // 净分排行榜：净分 = 扣分 - 加分，从高到低
+        var netStatsAll = dormStatsAll.map(function(d){
+            var dormObj = DB.dormitories.find(function(dm){ return dm.roomNumber===d.roomNumber; });
+            var recs = dormObj ? getRecordsByDormitory(dormObj.id) : [];
+            var bonus = getTotalBonusScore(recs);
+            var deduct = getTotalDeductScore(recs);
+            var net = Math.round((deduct - bonus) * 10) / 10;
+            return { roomNumber: d.roomNumber, name: d.name, className: d.className, deduct: deduct, bonus: bonus, net: net, count: d.count };
+        });
+        netStatsAll.sort(function(a,b){ if(a.net !== b.net) return b.net - a.net; return a.roomNumber.localeCompare(b.roomNumber,'zh-Hans-CN',{numeric:true}); });
+        function netDormRowHtml(d, i){
+            var netCls = d.net > 0 ? 'highlight-red' : (d.net < 0 ? 'highlight-green' : '');
+            return '<tr><td data-label="排名">'+(i+1)+'</td><td data-label="宿舍"><b>'+d.name+'</b></td><td data-label="班级">'+(d.className||'-')+'</td><td data-label="扣分" class="highlight-red">'+d.deduct+'</td><td data-label="加分" class="highlight-green">'+d.bonus+'</td><td data-label="净分" class="'+netCls+'"><b>'+d.net+'</b></td><td data-label="记录数">'+d.count+'</td></tr>';
+        }
+        function netDormCardHtml(d, idx){
+            var netColor = d.net > 0 ? '#ff3b30' : (d.net < 0 ? '#34c759' : '#9ca3af');
+            return '<div class="dorm-row-mobile">'
+                + '<div class="rank-item rank-idx-1"><span class="rank-label">排名</span><span class="rank-value">#'+(idx+1)+'</span></div>'
+                + '<div class="rank-item rank-idx-2"><span class="rank-label">宿舍</span><span class="rank-value">'+d.roomNumber+'</span></div>'
+                + '<div class="rank-item rank-idx-3"><span class="rank-label">班级</span><span class="rank-value">'+(d.className||'—')+'</span></div>'
+                + '<div class="rank-item rank-idx-4"><span class="rank-label">扣分</span><span class="rank-value has">'+d.deduct+'分</span></div>'
+                + '<div class="rank-item rank-idx-5"><span class="rank-label">加分</span><span class="rank-value" style="color:#34c759">'+d.bonus+'分</span></div>'
+                + '<div class="rank-item rank-idx-6" style="flex:0 0 100%;border-right:none;border-top:1px dashed #e5e7eb;margin-top:4px;padding-top:6px"><span class="rank-label">净分</span><span class="rank-value" style="color:'+netColor+';font-size:1.2857rem"><b>'+d.net+'分</b></span></div>'
+                + '</div>';
+        }
+        var netList = netStatsAll.slice(0, 20);
+        var netBody;
+        if(window.innerWidth <= 768){
+            netBody = '<div id="statsNetCards">'+netList.map(netDormCardHtml).join('')+'</div>';
+        }else{
+            netBody = '<div style="overflow-x:auto"><table><thead><tr><th>排名</th><th>宿舍</th><th>班级</th><th>扣分</th><th>加分</th><th>净分</th><th>记录数</th></tr></thead><tbody>'+netList.map(netDormRowHtml).join('')+'</tbody></table></div>';
+        }
         var mobileDetailBody = '<div id="statsFloorDetailWrap">'+floorDetailHtml()+'</div>';
         var pcDetailBody = '<div style="padding:14px">'+floorDormLowTables+'</div>';
         container.innerHTML = '<div class="content-header"><h2>📊 统计报表</h2></div>'
             + '<div class="stat-cards"><div class="stat-card"><div class="number">'+allRecords.length+'</div><div class="label">总扣分记录</div></div><div class="stat-card warning"><div class="number">'+total+'</div><div class="label">总扣分</div></div><div class="stat-card danger"><div class="number">'+dormStatsAll.filter(function(d){return d.score>0;}).length+'</div><div class="label">有扣分宿舍</div></div></div>'
             + foldBlock('fold-stats-floor','🏆 楼层扣分排名','<div style="padding:18px">'+floorBarsHtml+'</div>')
             + foldBlock('fold-stats-top', topTitle, topBody)
+            + foldBlock('fold-stats-net','📊 净分排行榜 <span class="fold-sub">TOP20（净分=扣分-加分）</span>', netBody)
             + (window.innerWidth<=768
                 ? foldBlock('fold-stats-detail','📉 楼层扣分情况', mobileDetailBody)
                 : foldBlock('fold-stats-detail','📉 各楼层扣分详情', pcDetailBody));
@@ -1016,7 +1106,7 @@
         var isFiltered = (studentSearch.className || studentSearch.name || studentSearch.residence);
         var listTitle = isFiltered ? ('学生列表（筛选结果 '+filteredStudents.length+' / 共 '+DB.students.length+' 人）') : ('学生列表（'+DB.students.length+'人）');
         container.innerHTML='<div class="content-header"><h2>👥 学生名单管理</h2><button class="btn btn-outline btn-sm" onclick="openDormitoryManageModal()" style="margin-left:auto">🏠 宿舍号管理</button></div>'
-            +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">'
+            +'<div class="two-col-grid">'
             +'<div class="card"><div class="card-header">单个添加学生</div><div class="card-body">'
             +'<div class="form-row"><div class="form-group"><label>姓名 *</label><input type="text" id="newStuName" placeholder="学生姓名"></div>'
             +'<div class="form-group"><label>班级 *</label><input type="text" id="newStuClass" placeholder="如：高一1班" value="高一1班"></div></div>'
@@ -1093,17 +1183,32 @@
         if(!isAdmin()){container.innerHTML='<div class="empty-state">无权限</div>';return;}
         var hyItems=DB.deductionItems.hygiene||[];
         var disItems=DB.deductionItems.discipline||[];
-        var hyRows=hyItems.map(function(i){return '<div class="item-row"><span><b>'+i.name+'</b> <span class="badge-tag badge-danger">-'+i.defaultScore+'分</span></span><button class="btn btn-danger btn-xs" onclick="deleteHygieneItem('+i.id+')">删除</button></div>';}).join('');
-        var disRows=disItems.map(function(i){return '<div class="item-row"><span><b>'+i.name+'</b> <span class="badge-tag badge-danger">-'+i.defaultScore+'分</span></span><button class="btn btn-danger btn-xs" onclick="deleteDisciplineItem('+i.id+')">删除</button></div>';}).join('');
-        container.innerHTML='<div class="content-header"><h2>📋 扣分项目管理</h2></div>'
-            +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">'
-            +'<div class="card"><div class="card-header">🧹 卫生加扣分项目（'+hyItems.length+'项）</div><div class="card-body"><div class="item-list">'+(hyRows||'<div style="color:#aaa;text-align:center;padding:20px">暂无项目</div>')+'</div>'
-            +'<div style="display:flex;gap:8px;margin-top:12px"><input type="text" id="newHyItemName" placeholder="新项目名称" style="flex:1;padding:8px;border:1.5px solid #ddd;border-radius:6px"><input type="number" id="newHyItemScore" value="2" min="0.5" step="0.5" style="width:70px;padding:8px;border:1.5px solid #ddd;border-radius:6px"><button class="btn btn-primary btn-sm" onclick="addHygieneItem()">添加</button></div>'
-            +'<div style="margin-top:16px"><b>批量导入卫生项目：</b><textarea id="hyBatchImport" rows="4" style="width:100%;margin-top:4px;padding:8px;border:1.5px solid #ddd;border-radius:6px" placeholder="每行一个：项目名称,分值"></textarea><button class="btn btn-primary btn-sm" onclick="batchImportHygieneItems()">📥 批量导入</button></div>'
+        var hyBonusItems=DB.deductionItems.hygieneBonus||[];
+        var disBonusItems=DB.deductionItems.disciplineBonus||[];
+        function itemRows(items,delFn,prefix){
+            return items.map(function(i){return '<div class="item-row"><span><b>'+i.name+'</b> <span class="badge-tag '+(prefix==='+'?'badge-primary':'badge-danger')+'">'+prefix+i.defaultScore+'分</span></span><button class="btn btn-danger btn-xs" onclick="'+delFn+'('+i.id+')">删除</button></div>';}).join('');
+        }
+        function addForm(opts){
+            return '<div style="display:flex;gap:8px;margin-top:12px"><input type="text" id="'+opts.nameId+'" placeholder="新项目名称" style="flex:1;padding:8px;border:1.5px solid #ddd;border-radius:6px"><input type="number" id="'+opts.scoreId+'" value="'+opts.defaultScore+'" min="0.1" step="0.1" style="width:70px;padding:8px;border:1.5px solid #ddd;border-radius:6px"><button class="btn btn-primary btn-sm" onclick="'+opts.addFn+'()">添加</button></div>'
+                +'<div style="margin-top:16px"><b>批量导入：</b><textarea id="'+opts.batchId+'" rows="4" style="width:100%;margin-top:4px;padding:8px;border:1.5px solid #ddd;border-radius:6px" placeholder="每行一个：项目名称,分值"></textarea><button class="btn btn-primary btn-sm" onclick="'+opts.batchFn+'()">📥 批量导入</button></div>';
+        }
+        var hyRows=itemRows(hyItems,'deleteHygieneItem','-');
+        var disRows=itemRows(disItems,'deleteDisciplineItem','-');
+        var hyBonusRows=itemRows(hyBonusItems,'deleteHygieneBonusItem','+');
+        var disBonusRows=itemRows(disBonusItems,'deleteDisciplineBonusItem','+');
+        container.innerHTML='<div class="content-header"><h2>📋 加扣分项目管理</h2></div>'
+            +'<div class="two-col-grid">'
+            +'<div class="card"><div class="card-header">🧹 卫生扣分项目（'+hyItems.length+'项）</div><div class="card-body"><div class="item-list">'+(hyRows||'<div style="color:#aaa;text-align:center;padding:20px">暂无项目</div>')+'</div>'
+            +addForm({nameId:'newHyItemName',scoreId:'newHyItemScore',defaultScore:2,addFn:'addHygieneItem',batchId:'hyBatchImport',batchFn:'batchImportHygieneItems'})
             +'</div></div>'
-            +'<div class="card"><div class="card-header">📏 纪律加扣分项目（'+disItems.length+'项）</div><div class="card-body"><div class="item-list">'+(disRows||'<div style="color:#aaa;text-align:center;padding:20px">暂无项目</div>')+'</div>'
-            +'<div style="display:flex;gap:8px;margin-top:12px"><input type="text" id="newDisItemName" placeholder="新项目名称" style="flex:1;padding:8px;border:1.5px solid #ddd;border-radius:6px"><input type="number" id="newDisItemScore" value="1" min="0.5" step="0.5" style="width:70px;padding:8px;border:1.5px solid #ddd;border-radius:6px"><button class="btn btn-primary btn-sm" onclick="addDisciplineItem()">添加</button></div>'
-            +'<div style="margin-top:16px"><b>批量导入纪律项目：</b><textarea id="disBatchImport" rows="4" style="width:100%;margin-top:4px;padding:8px;border:1.5px solid #ddd;border-radius:6px" placeholder="每行一个：项目名称,分值"></textarea><button class="btn btn-primary btn-sm" onclick="batchImportDisciplineItems()">📥 批量导入</button></div>'
+            +'<div class="card"><div class="card-header">📏 纪律扣分项目（'+disItems.length+'项）</div><div class="card-body"><div class="item-list">'+(disRows||'<div style="color:#aaa;text-align:center;padding:20px">暂无项目</div>')+'</div>'
+            +addForm({nameId:'newDisItemName',scoreId:'newDisItemScore',defaultScore:1,addFn:'addDisciplineItem',batchId:'disBatchImport',batchFn:'batchImportDisciplineItems'})
+            +'</div></div>'
+            +'<div class="card"><div class="card-header">🧹 卫生加分项目（'+hyBonusItems.length+'项）</div><div class="card-body"><div class="item-list">'+(hyBonusRows||'<div style="color:#aaa;text-align:center;padding:20px">暂无项目</div>')+'</div>'
+            +addForm({nameId:'newHyBonusItemName',scoreId:'newHyBonusItemScore',defaultScore:0.2,addFn:'addHygieneBonusItem',batchId:'hyBonusBatchImport',batchFn:'batchImportHygieneBonusItems'})
+            +'</div></div>'
+            +'<div class="card"><div class="card-header">📏 纪律加分项目（'+disBonusItems.length+'项）</div><div class="card-body"><div class="item-list">'+(disBonusRows||'<div style="color:#aaa;text-align:center;padding:20px">暂无项目</div>')+'</div>'
+            +addForm({nameId:'newDisBonusItemName',scoreId:'newDisBonusItemScore',defaultScore:1,addFn:'addDisciplineBonusItem',batchId:'disBonusBatchImport',batchFn:'batchImportDisciplineBonusItems'})
             +'</div></div>'
             +'</div>';
     }
@@ -1583,9 +1688,11 @@
         defaultStart.setDate(defaultStart.getDate() - 30);
         var defaultStartStr = formatLocalDate(defaultStart);
 
+        var isAdminRole = isAdmin();
+        var summaryOption = isAdminRole ? '<option value="inspection_summary">巡查核实总结</option>' : '';
         var html = '<div class="content-header"><h2>📊 数据管理</h2></div>'
             + '<div class="card"><div class="card-header">筛选导出条件</div><div class="card-body"><div class="filter-section">'
-            + '<div class="form-group"><label>数据类型</label><select id="exportDataType" onchange="onExportDataTypeChange()"><option value="deduction">扣分记录</option><option value="leave">退宿记录</option><option value="stop">停宿记录</option><option value="absence">请假记录</option></select></div>'
+            + '<div class="form-group"><label>数据类型</label><select id="exportDataType" onchange="onExportDataTypeChange()"><option value="deduction">扣分记录</option><option value="leave">退宿记录</option><option value="stop">停宿记录</option><option value="absence">请假记录</option>'+summaryOption+'</select></div>'
             + '<div class="form-group"><label>开始日期</label><input type="text" class="date-picker" id="exportStartDate" value="'+defaultStartStr+'"></div>'
             + '<div class="form-group"><label>结束日期</label><input type="text" class="date-picker" id="exportEndDate" value="'+today+'"></div>'
             + '<div class="form-group"><label>班级</label><select id="exportClass" onchange="onExportClassChange()">'+classOptions+'</select></div>'
@@ -1722,19 +1829,22 @@
         var type=typeEl?typeEl.value:'deduction';
         var cards=document.getElementById('deductionOnlyCards');
         if(cards) cards.style.display=(type==='deduction'?'':'none');
+        var isSummary=(type==='inspection_summary');
         var isLeaveOrStop=(type==='leave'||type==='stop');
         var isAbsence=(type==='absence');
-        // 学生筛选：扣分显示，退宿/停宿隐藏，请假隐藏（用专用学生姓名）
-        var studentGrp=document.getElementById('grpExportStudent');
-        if(studentGrp) studentGrp.style.display=(type==='deduction')?'':'none';
-        // 宿舍号/床号：扣分/退宿/停宿显示，请假隐藏
-        ['grpExportDorm','grpExportBed'].forEach(function(id){
+        // 巡查核实总结：只保留日期范围，隐藏班级/学生/宿舍号/床号
+        ['grpExportStudent','grpExportDorm','grpExportBed','grpExportAbsenceName'].forEach(function(id){
             var el=document.getElementById(id);
-            if(el) el.style.display=isAbsence?'none':'';
+            if(el) el.style.display=isSummary?'none':(id==='grpExportStudent'?(type==='deduction'?'':'none'):(id==='grpExportAbsenceName'?(isAbsence?'':'none'):''));
         });
-        // 请假专用学生姓名：仅请假显示
-        var absNameGrp=document.getElementById('grpExportAbsenceName');
-        if(absNameGrp) absNameGrp.style.display=isAbsence?'':'none';
+        // 班级筛选：巡查核实总结隐藏
+        var classGrp=document.getElementById('exportClass');
+        if(classGrp) classGrp.closest('.form-group').style.display=isSummary?'none':'';
+        if(isSummary){
+            var resultArea=document.getElementById('queryResultArea');
+            if(resultArea) resultArea.innerHTML='';
+            return;
+        }
         if(isAbsence){ updateExportAbsenceNameList(); }
         else { refreshExportSelects(); }
         var resultArea=document.getElementById('queryResultArea');
@@ -1933,6 +2043,48 @@
         var resultArea = document.getElementById('queryResultArea');
         if (!resultArea) return;
 
+        // ===== 巡查核实总结 =====
+        if(f.dataType==='inspection_summary'){
+            if(!isAdmin()){toast('无权限','error');return;}
+            var summaries=(DB.dailyInspectionSummaries||[]).filter(function(s){
+                return s.summaryDate && s.summaryDate>=f.startDate && s.summaryDate<=f.endDate;
+            }).sort(function(a,b){ return a.summaryDate<b.summaryDate?-1:(a.summaryDate>b.summaryDate?1:0); });
+            if(summaries.length===0){
+                resultArea.innerHTML='<div class="card"><div class="card-header">查询结果</div><div class="card-body"><div class="empty-state">该日期范围内暂无已生成的巡查核实总结</div></div></div>';
+                return;
+            }
+            function floorText(sum){
+                var nums=(sum.floors||[]).map(function(fid){ var fl=getFloorById(fid); return fl?fl.sortOrder:fid; }).sort(function(a,b){return a-b;});
+                return nums.length?nums.join('、')+'楼':'-';
+            }
+            function summaryRowHtml(s){
+                var rowId='sumrow_'+s.id;
+                var detailId='sumdetail_'+s.id;
+                return '<tr class="sum-row" data-sid="'+s.id+'" onclick="toggleSummaryDetail(\''+s.id+'\')" style="cursor:pointer">'
+                    +'<td data-label="日期">'+s.summaryDate+'</td>'
+                    +'<td data-label="楼栋">'+escapeHtmlAttr(s.buildingName||'-')+'</td>'
+                    +'<td data-label="楼层">'+floorText(s)+'</td>'
+                    +'<td data-label="值班老师">'+escapeHtmlAttr(s.confirmedByName||'-')+'</td>'
+                    +'<td data-label="入宿人数">'+s.totalStudents+'</td>'
+                    +'<td data-label="当天请假">'+s.absenceCount+'</td>'
+                    +'<td data-label="退宿中">'+s.leavePendingCount+'</td>'
+                    +'<td data-label="家长接走">'+s.pickedUpCount+'</td>'
+                    +'<td data-label="无假条">'+s.anomalyCount+'</td>'
+                    +'<td data-label="实到人数">'+s.actualCount+'</td>'
+                    +'</tr>'
+                    +'<tr id="'+detailId+'" style="display:none"><td colspan="10" style="background:var(--gray-50);padding:12px">'+buildSummaryDetailHtml(s)+'</td></tr>';
+            }
+            resultArea.innerHTML='<div class="card">'
+                +'<div class="card-header">查询结果（巡查核实总结 '+summaries.length+' 条）<span style="font-weight:400;font-size:0.8571rem;color:var(--gray-500);margin-left:8px">点击行展开学生详情</span></div>'
+                +(isAdmin()?'<div style="padding:10px 14px;border-bottom:1px solid var(--gray-100)"><button class="btn btn-primary" onclick="exportInspectionSummariesRange()">📥 导出 Excel（每天一个 Sheet）</button></div>':'')
+                +'<div style="overflow-x:auto;"><table>'
+                +'<thead><tr><th>日期</th><th>楼栋</th><th>楼层</th><th>值班老师</th><th>入宿人数</th><th>当天请假</th><th>退宿中</th><th>家长接走</th><th>无假条</th><th>实到人数</th></tr></thead>'
+                +'<tbody id="querySummaryTbody"></tbody>'
+                +'</table></div></div>';
+            renderListInChunks(document.getElementById('querySummaryTbody'), summaries, summaryRowHtml, 50);
+            return;
+        }
+
         // ===== 退宿/停宿记录 =====
         if(f.dataType==='leave' || f.dataType==='stop'){
             var typeLabel=f.dataType==='leave'?'退宿':'停宿';
@@ -2056,6 +2208,37 @@
     }
 
     /**
+     * 构建巡查核实总结的学生详情 HTML（退宿中/家长接走/无假条三类列表）。
+     * @param {object} sum - dailyInspectionSummaries 记录
+     * @returns {string}
+     */
+    function buildSummaryDetailHtml(sum){
+        function block(title, list, cols){
+            var h='<div style="margin-top:10px"><div style="font-weight:700;margin-bottom:4px">'+title+'（'+(list||[]).length+'人）</div>';
+            if(!list||list.length===0){ h+='<div style="color:var(--gray-500);font-size:0.8571rem">（暂无）</div></div>'; return h; }
+            h+='<div style="overflow-x:auto"><table style="font-size:0.8571rem"><thead><tr>'+cols.map(function(c){return '<th>'+c.label+'</th>';}).join('')+'</tr></thead><tbody>';
+            list.forEach(function(r){
+                h+='<tr>'+cols.map(function(c){ return '<td>'+escapeHtmlAttr(r[c.key]==null?'-':String(r[c.key]))+'</td>'; }).join('')+'</tr>';
+            });
+            return h+'</tbody></table></div></div>';
+        }
+        return block('退宿中', sum.leavePendingDetails, [
+                {key:'name',label:'姓名'},{key:'className',label:'班级'},{key:'bed',label:'床号'},{key:'dormitory',label:'宿舍'},{key:'type',label:'类型'}
+            ])
+            +block('家长接走', sum.pickedUpDetails, [
+                {key:'name',label:'姓名'},{key:'className',label:'班级'},{key:'bed',label:'床号'},{key:'dormitory',label:'宿舍'},{key:'confirmedBy',label:'确认人'},{key:'note',label:'备注'}
+            ])
+            +block('无假条', sum.anomalyDetails, [
+                {key:'name',label:'姓名'},{key:'className',label:'班级'},{key:'bed',label:'床号'},{key:'dormitory',label:'宿舍'},{key:'reportedBy',label:'上报人'},{key:'note',label:'备注'}
+            ]);
+    }
+    /** 展开/收起巡查总结行的学生详情 */
+    function toggleSummaryDetail(sid){
+        var tr=document.getElementById('sumdetail_'+sid);
+        if(tr) tr.style.display=(tr.style.display==='none'?'':'none');
+    }
+
+    /**
      * 导出筛选后的数据为 XLSX 工作簿（SheetJS/xlsx）。
      * 按所选数据类型（扣分/退宿/请假）构建表头与行数据，导出文件名含本地日期。
      */
@@ -2064,6 +2247,12 @@
         var f=getExportFilterValues();
         if(!f.startDate||!f.endDate){toast('请选择日期范围','error');return;}
         if(f.startDate>f.endDate){toast('开始日期不能晚于结束日期','error');return;}
+
+        // ===== 巡查核实总结导出（仅 ADMIN，每天一个 Sheet） =====
+        if(f.dataType==='inspection_summary'){
+            exportInspectionSummariesRange();
+            return;
+        }
 
         // ===== 退宿/停宿记录导出（字段与原退宿停宿页导出保持一致） =====
         if(f.dataType==='leave' || f.dataType==='stop'){

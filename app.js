@@ -688,12 +688,31 @@
         var r=document.getElementById('addRemark'); if(r) addFormState.remark=r.value;
         var hs=document.getElementById('hyScore'); if(hs) addFormState.hygieneScore=parseFloat(hs.value)||0;
         var dsc=document.getElementById('disScore'); if(dsc) addFormState.disciplineScore=parseFloat(dsc.value)||0;
+        var hbs=document.getElementById('hyBonusScore'); if(hbs) addFormState.hygieneBonusScore=parseFloat(hbs.value)||0;
+        var dbsc=document.getElementById('disBonusScore'); if(dbsc) addFormState.disciplineBonusScore=parseFloat(dbsc.value)||0;
         addFormState.hygieneItemIds=Array.prototype.map.call(document.querySelectorAll('.hy-item-checkbox:checked'),function(c){return c.value;});
         addFormState.disciplineItemIds=Array.prototype.map.call(document.querySelectorAll('.dis-item-checkbox:checked'),function(c){return c.value;});
+        addFormState.hygieneBonusItemIds=Array.prototype.map.call(document.querySelectorAll('.hy-bonus-checkbox:checked'),function(c){return c.value;});
+        addFormState.disciplineBonusItemIds=Array.prototype.map.call(document.querySelectorAll('.dis-bonus-checkbox:checked'),function(c){return c.value;});
         var hn=document.getElementById('hyCustomName'); if(hn) addFormState.hyCustomName=hn.value;
         var dn=document.getElementById('disCustomName'); if(dn) addFormState.disCustomName=dn.value;
+        var hbn=document.getElementById('hyBonusCustomName'); if(hbn) addFormState.hyBonusCustomName=hbn.value;
+        var dbn=document.getElementById('disBonusCustomName'); if(dbn) addFormState.disBonusCustomName=dbn.value;
     }
-    // 依据状态重新勾选扣分项目（切层/切宿舍后恢复选择）
+    /** 切换加/扣分模式（重渲染表单，保留楼层/宿舍/日期选择） */
+    function switchRecordMode(mode){
+        syncAddFormInputs();
+        addFormState.recordMode = mode;
+        // 切模式时清空勾选项（两套项目不同）
+        if(mode==='bonus'){
+            addFormState.hygieneItemIds=[]; addFormState.disciplineItemIds=[];
+            addFormState.studentId=null;
+        }else{
+            addFormState.hygieneBonusItemIds=[]; addFormState.disciplineBonusItemIds=[];
+        }
+        renderAddView(document.getElementById('contentArea'));
+    }
+    // 依据状态重新勾选扣分/加分项目（切层/切宿舍后恢复选择）
     function restoreAddChecks(){
         function restore(cls,arr){
             (arr||[]).forEach(function(v){
@@ -703,27 +722,35 @@
         }
         restore('hy-item-checkbox',addFormState.hygieneItemIds);
         restore('dis-item-checkbox',addFormState.disciplineItemIds);
+        restore('hy-bonus-checkbox',addFormState.hygieneBonusItemIds);
+        restore('dis-bonus-checkbox',addFormState.disciplineBonusItemIds);
     }
     // 依据当前勾选重算合计并同步自定义输入框显隐/回填
     function recomputeAddScores(){
-        ['hy','dis'].forEach(function(t){
+        var isBonus = (addFormState.recordMode === 'bonus');
+        var types = isBonus ? [['hy','hy-bonus','hyBonusScore','hygieneBonusScore','hyBonusCustomName','hyBonusCustomInputWrap','hy-bonus-custom-check','getBonusItemById']
+                              ,['dis','dis-bonus','disBonusScore','disciplineBonusScore','disBonusCustomName','disBonusCustomInputWrap','dis-bonus-custom-check','getBonusItemById']]
+                            : [['hy','hy-item','hyScore','hygieneScore','hyCustomName','hyCustomInputWrap','hy-custom-check','getItemById']
+                              ,['dis','dis-item','disScore','disciplineScore','disCustomName','disCustomInputWrap','dis-custom-check','getItemById']];
+        types.forEach(function(cfg){
+            var t=cfg[0],cls=cfg[1],scoreId=cfg[2],stateKey=cfg[3],nameId=cfg[4],wrapId=cfg[5],customCls=cfg[6],getter=cfg[7];
             var total=0,any=false;
-            var checked=document.querySelectorAll('.'+t+'-item-checkbox:checked');
+            var checked=document.querySelectorAll('.'+cls+'-checkbox:checked');
             for(var i=0;i<checked.length;i++){
                 any=true;
                 if(checked[i].value==='custom') total+=(t==='hy'?0.2:1);
-                else{var it=getItemById(parseInt(checked[i].value));if(it) total+=it.defaultScore;}
+                else{ var it=getter==='getItemById'?getItemById(parseInt(checked[i].value)):getBonusItemById(parseInt(checked[i].value)); if(it) total+=it.defaultScore; }
             }
-            var input=document.getElementById(t==='hy'?'hyScore':'disScore');
+            var input=document.getElementById(scoreId);
             if(input) input.value=any?total:0;
-            if(t==='hy') addFormState.hygieneScore=any?total:0; else addFormState.disciplineScore=any?total:0;
-            var cc=document.querySelector('.'+t+'-custom-check');
-            var wrap=document.getElementById(t+'CustomInputWrap');
+            addFormState[stateKey]=any?total:0;
+            var cc=document.querySelector('.'+customCls);
+            var wrap=document.getElementById(wrapId);
             if(cc&&wrap) wrap.style.display=cc.checked?'inline-block':'none';
-            var nameInput=document.getElementById(t+'CustomName');
+            var nameInput=document.getElementById(nameId);
             if(nameInput){
-                if(cc.checked) nameInput.value=(t==='hy'?addFormState.hyCustomName:addFormState.disCustomName)||'';
-                else{ nameInput.value=''; if(t==='hy') addFormState.hyCustomName=''; else addFormState.disCustomName=''; }
+                if(cc&&cc.checked) nameInput.value=(addFormState[stateKey.replace('Score','Name')]||addFormState[t==='hy'?(isBonus?'hyBonusCustomName':'hyCustomName'):(isBonus?'disBonusCustomName':'disCustomName')]||'');
+                else{ nameInput.value=''; }
             }
         });
     }
@@ -749,54 +776,47 @@
         for(var i=0;i<chips.length;i++) chips[i].classList.remove('active');
         el.classList.add('active');
     }
-    function bindCheckboxEvents(type){
-        if(type==='hy'){
-            var hyChecks=document.querySelectorAll('.hy-item-checkbox');
-            for(var i=0;i<hyChecks.length;i++){
-                hyChecks[i].addEventListener('change',function(){
-                    var total=0;
-                    var checked=document.querySelectorAll('.hy-item-checkbox:checked');
-                    for(var j=0;j<checked.length;j++){
-                        if(checked[j].value==='custom') total+=0.2;
-                        else { var item=getItemById(parseInt(checked[j].value)); if(item) total+=item.defaultScore; }
+    function bindCheckboxEventsGeneric(type){
+        // type: 'hy' | 'dis' | 'hy-bonus' | 'dis-bonus'
+        var isBonus = type.indexOf('bonus') !== -1;
+        var base = type.replace('-bonus','');
+        var cls = type + '-checkbox';
+        var scoreId = isBonus ? (base==='hy'?'hyBonusScore':'disBonusScore') : (base==='hy'?'hyScore':'disScore');
+        var stateKey = isBonus ? (base==='hy'?'hygieneBonusScore':'disciplineBonusScore') : (base==='hy'?'hygieneScore':'disciplineScore');
+        var checks=document.querySelectorAll('.'+cls);
+        for(var i=0;i<checks.length;i++){
+            checks[i].addEventListener('change',function(){
+                var total=0;
+                var checked=document.querySelectorAll('.'+cls+':checked');
+                for(var j=0;j<checked.length;j++){
+                    if(checked[j].value==='custom') total+=(base==='hy'?0.2:1);
+                    else {
+                        var item = isBonus ? getBonusItemById(parseInt(checked[j].value)) : getItemById(parseInt(checked[j].value));
+                        if(item) total+=item.defaultScore;
                     }
-                    document.getElementById('hyScore').value=total;
-                    addFormState.hygieneScore=total;
-                });
-            }
-        } else {
-            var disChecks=document.querySelectorAll('.dis-item-checkbox');
-            for(var i=0;i<disChecks.length;i++){
-                disChecks[i].addEventListener('change',function(){
-                    var total=0;
-                    var checked=document.querySelectorAll('.dis-item-checkbox:checked');
-                    for(var j=0;j<checked.length;j++){
-                        if(checked[j].value==='custom') total+=1;
-                        else { var item=getItemById(parseInt(checked[j].value)); if(item) total+=item.defaultScore; }
-                    }
-                    document.getElementById('disScore').value=total;
-                    addFormState.disciplineScore=total;
-                });
-            }
+                }
+                var el=document.getElementById(scoreId);
+                if(el) el.value=total;
+                addFormState[stateKey]=total;
+            });
         }
     }
-    function bindCustomCheckboxEvents(type){
-        if(type==='hy'){
-            var hyCustom=document.querySelector('.hy-custom-check');
-            if(hyCustom){
-                hyCustom.addEventListener('change',function(){
-                    document.getElementById('hyCustomInputWrap').style.display=this.checked?'inline-block':'none';
-                    if(!this.checked) document.getElementById('hyCustomName').value='';
-                });
-            }
-        } else {
-            var disCustom=document.querySelector('.dis-custom-check');
-            if(disCustom){
-                disCustom.addEventListener('change',function(){
-                    document.getElementById('disCustomInputWrap').style.display=this.checked?'inline-block':'none';
-                    if(!this.checked) document.getElementById('disCustomName').value='';
-                });
-            }
+    function bindCustomCheckboxEventsGeneric(type){
+        var isBonus = type.indexOf('bonus') !== -1;
+        var base = type.replace('-bonus','');
+        var customCls = type + '-custom-check';
+        var wrapId = isBonus ? (base==='hy'?'hyBonusCustomInputWrap':'disBonusCustomInputWrap') : (base+'CustomInputWrap');
+        var nameId = isBonus ? (base==='hy'?'hyBonusCustomName':'disBonusCustomName') : (base+'CustomName');
+        var cc=document.querySelector('.'+customCls);
+        if(cc){
+            cc.addEventListener('change',function(){
+                var wrap=document.getElementById(wrapId);
+                if(wrap) wrap.style.display=this.checked?'inline-block':'none';
+                if(!this.checked){
+                    var ni=document.getElementById(nameId);
+                    if(ni) ni.value='';
+                }
+            });
         }
     }
     function addFormChange(type){
@@ -804,12 +824,14 @@
         else if(type==='dorm'){addFormState.dormitoryId=parseInt(document.getElementById('addDormitory').value);addFormState.studentId=null;renderAddView(document.getElementById('contentArea'));}
         else if(type==='student'){addFormState.studentId=document.getElementById('addStudent').value?parseInt(document.getElementById('addStudent').value):null;}
         else if(type==='date'){addFormState.recordDate=document.getElementById('addDate').value;}
-        else if(type==='hyScore'){addFormState.hygieneScore=parseFloat(document.getElementById('hyScore').value)||0;}
-        else if(type==='disScore'){addFormState.disciplineScore=parseFloat(document.getElementById('disScore').value)||0;}
+        else if(type==='hygieneScore'){addFormState.hygieneScore=parseFloat(document.getElementById('hyScore').value)||0;}
+        else if(type==='disciplineScore'){addFormState.disciplineScore=parseFloat(document.getElementById('disScore').value)||0;}
+        else if(type==='hygieneBonusScore'){addFormState.hygieneBonusScore=parseFloat(document.getElementById('hyBonusScore').value)||0;}
+        else if(type==='disciplineBonusScore'){addFormState.disciplineBonusScore=parseFloat(document.getElementById('disBonusScore').value)||0;}
         else if(type==='remark'){addFormState.remark=document.getElementById('addRemark').value;}
     }
     function resetAddForm(){
-        addFormState={floorId:DB.floors[0].id,dormitoryId:null,studentId:null,hygieneItemIds:[],disciplineItemIds:[],hygieneScore:0,disciplineScore:0,recordDate:getTodayLocalStr(),remark:''};
+        addFormState={floorId:DB.floors[0].id,dormitoryId:null,studentId:null,hygieneItemIds:[],disciplineItemIds:[],hygieneScore:0,disciplineScore:0,recordDate:getTodayLocalStr(),remark:'',recordMode:'deduct',hygieneBonusItemIds:[],disciplineBonusItemIds:[],hygieneBonusScore:0,disciplineBonusScore:0};
         renderAddView(document.getElementById('contentArea'));
     }
     /**
@@ -829,40 +851,70 @@
      */
     function submitDeductionImpl(){
         if(!addFormState.dormitoryId){toast('请选择宿舍','error');return;}
+        var isBonus = (addFormState.recordMode === 'bonus');
         var hygieneItemIds=[]; var disciplineItemIds=[];
         var hygieneScore=0; var disciplineScore=0;
-        var hySectionExists=document.getElementById('hyScore')!==null;
-        var disSectionExists=document.getElementById('disScore')!==null;
-        if(hySectionExists){
-            var hyChecked=document.querySelectorAll('.hy-item-checkbox:checked');
+        // 加分模式使用 bonus 系列元素 ID；扣分模式使用原有元素
+        var hyCls = isBonus ? '.hy-bonus-checkbox:checked' : '.hy-item-checkbox:checked';
+        var disCls = isBonus ? '.dis-bonus-checkbox:checked' : '.dis-item-checkbox:checked';
+        var hyScoreEl = isBonus ? document.getElementById('hyBonusScore') : document.getElementById('hyScore');
+        var disScoreEl = isBonus ? document.getElementById('disBonusScore') : document.getElementById('disScore');
+        var hyCustomNameId = isBonus ? 'hyBonusCustomName' : 'hyCustomName';
+        var disCustomNameId = isBonus ? 'disBonusCustomName' : 'disCustomName';
+        if(hyScoreEl){
+            var hyChecked=document.querySelectorAll(hyCls);
             for(var i=0;i<hyChecked.length;i++){
                 if(hyChecked[i].value==='custom'){
-                    var customName=document.getElementById('hyCustomName').value.trim();
+                    var customName=document.getElementById(hyCustomNameId).value.trim();
                     if(!customName){toast('请输入自定义卫生项目名称','error');return;}
                     hygieneItemIds.push('custom:'+customName);
                 } else hygieneItemIds.push(parseInt(hyChecked[i].value));
             }
-            hygieneScore=parseFloat(document.getElementById('hyScore').value)||0;
+            hygieneScore=parseFloat(hyScoreEl.value)||0;
         }
-        if(disSectionExists){
-            var disChecked=document.querySelectorAll('.dis-item-checkbox:checked');
+        if(disScoreEl){
+            var disChecked=document.querySelectorAll(disCls);
             for(var i=0;i<disChecked.length;i++){
                 if(disChecked[i].value==='custom'){
-                    var customName=document.getElementById('disCustomName').value.trim();
+                    var customName=document.getElementById(disCustomNameId).value.trim();
                     if(!customName){toast('请输入自定义纪律项目名称','error');return;}
                     disciplineItemIds.push('custom:'+customName);
                 } else disciplineItemIds.push(parseInt(disChecked[i].value));
             }
-            disciplineScore=parseFloat(document.getElementById('disScore').value)||0;
+            disciplineScore=parseFloat(disScoreEl.value)||0;
         }
-        if(hygieneItemIds.length===0 && disciplineItemIds.length===0){toast('请至少选择一个扣分项目','error');return;}
-        var newRecord={id:generateRecordId(),createdAt:Date.now(),dormitoryId:addFormState.dormitoryId,studentId:addFormState.studentId||null,hygieneItemIds:hygieneItemIds,hygieneScore:hygieneScore,disciplineItemIds:disciplineItemIds,disciplineScore:disciplineScore,recordDate:addFormState.recordDate,remark:addFormState.remark||''};
-        DB.deductionRecords.push(newRecord);
-        // V3 按行存储：标记为脏，新增记录首次上传
-        v3MarkDirty('deduction_record', newRecord.id);
-        saveDB();
-        toast('登记成功！');
-        addFormState.studentId=null; addFormState.hygieneItemIds=[]; addFormState.disciplineItemIds=[]; addFormState.remark='';
+        if(hygieneItemIds.length===0 && disciplineItemIds.length===0){toast('请至少选择一个项目','error');return;}
+        var mode = isBonus ? 'bonus' : 'deduct';
+        // 加分模式：生成宿舍集体记录 + 每个学生各一条个人记录
+        if(isBonus){
+            // 宿舍层面记录（studentId=null，recordMode='bonus'，记录生活老师实际输入分数）
+            var dormRecord={id:generateRecordId(),createdAt:Date.now(),dormitoryId:addFormState.dormitoryId,studentId:null,hygieneItemIds:hygieneItemIds,hygieneScore:hygieneScore,disciplineItemIds:disciplineItemIds,disciplineScore:disciplineScore,recordDate:addFormState.recordDate,remark:addFormState.remark||'',recordMode:mode};
+            DB.deductionRecords.push(dormRecord);
+            v3MarkDirty('deduction_record', dormRecord.id);
+            // 个人层面：为该宿舍每个学生各生成一条个人加分记录
+            // 卫生加分：每个学生个人 +1 分；纪律加分：每个学生个人 +1 分
+            var dormStudents = getStudentsByDormitory(addFormState.dormitoryId);
+            dormStudents.forEach(function(s){
+                var perHyScore = hygieneScore > 0 ? 1 : 0;
+                var perDisScore = disciplineScore > 0 ? 1 : 0;
+                var stuRecord={id:generateRecordId(),createdAt:Date.now(),dormitoryId:addFormState.dormitoryId,studentId:s.id,hygieneItemIds:hygieneItemIds,hygieneScore:perHyScore,disciplineItemIds:disciplineItemIds,disciplineScore:perDisScore,recordDate:addFormState.recordDate,remark:addFormState.remark||'',recordMode:mode};
+                DB.deductionRecords.push(stuRecord);
+                v3MarkDirty('deduction_record', stuRecord.id);
+            });
+            saveDB();
+            toast('加分成功！'+dormStudents.length+'名学生各获加分');
+        }else{
+            // 扣分模式：原有逻辑
+            var newRecord={id:generateRecordId(),createdAt:Date.now(),dormitoryId:addFormState.dormitoryId,studentId:addFormState.studentId||null,hygieneItemIds:hygieneItemIds,hygieneScore:hygieneScore,disciplineItemIds:disciplineItemIds,disciplineScore:disciplineScore,recordDate:addFormState.recordDate,remark:addFormState.remark||'',recordMode:'deduct'};
+            DB.deductionRecords.push(newRecord);
+            v3MarkDirty('deduction_record', newRecord.id);
+            saveDB();
+            toast('登记成功！');
+        }
+        addFormState.studentId=null;
+        addFormState.hygieneItemIds=[]; addFormState.disciplineItemIds=[];
+        addFormState.hygieneBonusItemIds=[]; addFormState.disciplineBonusItemIds=[];
+        addFormState.remark='';
         renderAddView(document.getElementById('contentArea'));
         renderTree();
     }
@@ -1269,6 +1321,79 @@
             imported++;
         }
         saveDB(); toast('成功导入'+imported+'个纪律项目'); renderItemsView(document.getElementById('contentArea'));
+    }
+    // ===== 加分项目管理（与扣分项逻辑一致，_subType 区分） =====
+    function addHygieneBonusItem(){
+        if(!isAdmin()){toast('无权限','error');return;}
+        var name=document.getElementById('newHyBonusItemName').value.trim();
+        var score=parseFloat(document.getElementById('newHyBonusItemScore').value);
+        if(!name||!score||score<=0){toast('请输入有效信息','error');return;}
+        if(!DB.deductionItems.hygieneBonus) DB.deductionItems.hygieneBonus=[];
+        var id = DB.nextIds.item++;
+        DB.deductionItems.hygieneBonus.push({id:id,name:name,defaultScore:score});
+        v3MarkDirty('deduction_item', id);
+        saveDB(); toast('✅ 卫生加分项目添加成功！'); renderItemsView(document.getElementById('contentArea'));
+    }
+    function deleteHygieneBonusItem(id){
+        if(!isAdmin()){toast('无权限','error');return;}
+        if(!confirm('确认删除？'))return;
+        DB.deductionItems.hygieneBonus=DB.deductionItems.hygieneBonus.filter(function(i){return i.id!==id;});
+        v3MarkDeleted('deduction_item', id);
+        saveDB(); toast('已删除'); renderItemsView(document.getElementById('contentArea'));
+    }
+    function batchImportHygieneBonusItems(){
+        if(!isAdmin()){toast('无权限','error');return;}
+        var text=document.getElementById('hyBonusBatchImport').value.trim();
+        if(!text){toast('请输入数据','error');return;}
+        var lines=text.split('\n'); var imported=0;
+        for(var i=0;i<lines.length;i++){
+            var line=lines[i].trim(); if(!line) continue;
+            var parts=line.split(/[,，\t]/); if(parts.length<2) continue;
+            var name=parts[0].trim(); var score=parseFloat(parts[1]);
+            if(!name||isNaN(score)||score<=0) continue;
+            if(!DB.deductionItems.hygieneBonus) DB.deductionItems.hygieneBonus=[];
+            var id = DB.nextIds.item++;
+            DB.deductionItems.hygieneBonus.push({id:id,name:name,defaultScore:score});
+            v3MarkDirty('deduction_item', id);
+            imported++;
+        }
+        saveDB(); toast('成功导入'+imported+'个卫生加分项目'); renderItemsView(document.getElementById('contentArea'));
+    }
+    function addDisciplineBonusItem(){
+        if(!isAdmin()){toast('无权限','error');return;}
+        var name=document.getElementById('newDisBonusItemName').value.trim();
+        var score=parseFloat(document.getElementById('newDisBonusItemScore').value);
+        if(!name||!score||score<=0){toast('请输入有效信息','error');return;}
+        if(!DB.deductionItems.disciplineBonus) DB.deductionItems.disciplineBonus=[];
+        var id = DB.nextIds.item++;
+        DB.deductionItems.disciplineBonus.push({id:id,name:name,defaultScore:score});
+        v3MarkDirty('deduction_item', id);
+        saveDB(); toast('✅ 纪律加分项目添加成功！'); renderItemsView(document.getElementById('contentArea'));
+    }
+    function deleteDisciplineBonusItem(id){
+        if(!isAdmin()){toast('无权限','error');return;}
+        if(!confirm('确认删除？'))return;
+        DB.deductionItems.disciplineBonus=DB.deductionItems.disciplineBonus.filter(function(i){return i.id!==id;});
+        v3MarkDeleted('deduction_item', id);
+        saveDB(); toast('已删除'); renderItemsView(document.getElementById('contentArea'));
+    }
+    function batchImportDisciplineBonusItems(){
+        if(!isAdmin()){toast('无权限','error');return;}
+        var text=document.getElementById('disBonusBatchImport').value.trim();
+        if(!text){toast('请输入数据','error');return;}
+        var lines=text.split('\n'); var imported=0;
+        for(var i=0;i<lines.length;i++){
+            var line=lines[i].trim(); if(!line) continue;
+            var parts=line.split(/[,，\t]/); if(parts.length<2) continue;
+            var name=parts[0].trim(); var score=parseFloat(parts[1]);
+            if(!name||isNaN(score)||score<=0) continue;
+            if(!DB.deductionItems.disciplineBonus) DB.deductionItems.disciplineBonus=[];
+            var id = DB.nextIds.item++;
+            DB.deductionItems.disciplineBonus.push({id:id,name:name,defaultScore:score});
+            v3MarkDirty('deduction_item', id);
+            imported++;
+        }
+        saveDB(); toast('成功导入'+imported+'个纪律加分项目'); renderItemsView(document.getElementById('contentArea'));
     }
 
     // ==================== 数据管理视图 (已移除) ====================
@@ -1835,25 +1960,77 @@
      */
     function openAnomalyModal(dormitoryId){
         if(!isStaff() && !isAdmin()){ toast('无权限','error'); return; }
-        var dorm=getDormitoryById(dormitoryId);
-        if(!dorm){ toast('宿舍信息缺失','error'); return; }
-        anomalyModalState.dormitoryId=dormitoryId;
-        var students=getStudentsByDormitory(dormitoryId);
+        anomalyModalState.dormitoryId=dormitoryId || null;
+        anomalyModalState.floorId=null;
+        var html;
+        if(dormitoryId){
+            // 指定宿舍模式（从宿舍卡片底部"异常上报"按钮进入）
+            var dorm=getDormitoryById(dormitoryId);
+            if(!dorm){ toast('宿舍信息缺失','error'); return; }
+            html='<div class="em-header"><span>⚠️ 异常上报（宿舍 '+escapeHtmlAttr(dorm.roomNumber)+'）</span><button class="em-close" aria-label="关闭" onclick="closeAnomalyModal()">✕</button></div>'
+                +'<div class="em-body">'+buildAnomalyStudentForm(dorm, false)+'</div>'
+                +'<div class="em-footer"><button class="btn btn-primary" onclick="submitAnomalyReport()">📤 提交上报</button><button class="btn btn-outline" onclick="closeAnomalyModal()">取消</button></div>';
+        }else{
+            // 通用模式（从顶部"异常上报"卡片进入）：楼层→宿舍→学生级联
+            var floorIds=getAssignedFloorIds();
+            var floorOpts='<option value="">— 请选择楼层 —</option>'
+                +floorIds.map(function(fid){ var f=getFloorById(fid); return f?'<option value="'+fid+'">'+escapeHtmlAttr(f.name)+'</option>':''; }).join('');
+            html='<div class="em-header"><span>⚠️ 异常上报</span><button class="em-close" aria-label="关闭" onclick="closeAnomalyModal()">✕</button></div>'
+                +'<div class="em-body">'
+                +'<div class="form-group"><label>楼层 *</label><select id="anomalyFloor" onchange="onAnomalyFloorChange()">'+floorOpts+'</select></div>'
+                +'<div class="form-group" id="anomalyDormWrap" style="display:none"><label>宿舍 *</label><select id="anomalyDorm" onchange="onAnomalyDormChange()"><option value="">— 请选择宿舍 —</option></select></div>'
+                +'<div id="anomalyStudentArea"></div>'
+                +'</div>'
+                +'<div class="em-footer"><button class="btn btn-primary" onclick="submitAnomalyReport()">📤 提交上报</button><button class="btn btn-outline" onclick="closeAnomalyModal()">取消</button></div>';
+        }
+        document.getElementById('anomalyModalBox').innerHTML=html;
+        document.getElementById('anomalyModal').classList.add('show');
+    }
+    /**
+     * 拼装异常上报的学生选择+类型+备注表单（指定宿舍模式或级联选定宿舍后复用）。
+     * @param {object} dorm - 宿舍对象
+     * @param {boolean} showDormLabel - 是否显示宿舍标题（级联模式选完宿舍后展示）
+     */
+    function buildAnomalyStudentForm(dorm, showDormLabel){
+        var students=getStudentsByDormitory(dorm.id);
         var stuOpts='<option value="">— 请选择学生 —</option>'
             +students.map(function(s){
                 return '<option value="'+s.id+'">'+escapeHtmlAttr(s.name)+'（'+escapeHtmlAttr(s.className||'')+' · 床号'+(s.bedNumber||'-')+'）</option>';
             }).join('')
             +'<option value="manual">✏️ 其他（手动输入姓名）</option>';
-        var html='<div class="em-header"><span>⚠️ 异常上报（宿舍 '+escapeHtmlAttr(dorm.roomNumber)+'）</span><button class="em-close" aria-label="关闭" onclick="closeAnomalyModal()">✕</button></div>'
-            +'<div class="em-body">'
+        var prefix=showDormLabel ? '<div class="form-group" style="color:var(--gray-500);font-size:0.9286rem">已选宿舍：<b>'+escapeHtmlAttr(dorm.roomNumber)+'</b></div>' : '';
+        return prefix
             +'<div class="form-group"><label>学生 *</label><select id="anomalyStudent" onchange="onAnomalyStudentChange()">'+stuOpts+'</select></div>'
             +'<div class="form-group" id="anomalyManualWrap" style="display:none"><label>学生姓名 *</label><input type="text" id="anomalyName" placeholder="手动输入学生姓名"></div>'
             +'<div class="form-group"><label>异常类型 *</label><select id="anomalyType"><option value="picked_up">🚗 家长接走（不扣分）</option><option value="no_note">⚠️ 无假条（自动生成纪律扣分：无请假信息 1分）</option></select></div>'
-            +'<div class="form-group"><label>备注</label><input type="text" id="anomalyNote" placeholder="可选：具体情况说明"></div>'
-            +'</div>'
-            +'<div class="em-footer"><button class="btn btn-primary" onclick="submitAnomalyReport()">📤 提交上报</button><button class="btn btn-outline" onclick="closeAnomalyModal()">取消</button></div>';
-        document.getElementById('anomalyModalBox').innerHTML=html;
-        document.getElementById('anomalyModal').classList.add('show');
+            +'<div class="form-group"><label>备注</label><input type="text" id="anomalyNote" placeholder="可选：具体情况说明"></div>';
+    }
+    /** 通用模式：楼层变化 → 加载该楼层宿舍列表 */
+    function onAnomalyFloorChange(){
+        var fid=parseInt(document.getElementById('anomalyFloor').value,10)||0;
+        anomalyModalState.floorId=fid||null;
+        anomalyModalState.dormitoryId=null;
+        var dormWrap=document.getElementById('anomalyDormWrap');
+        var stuArea=document.getElementById('anomalyStudentArea');
+        if(stuArea) stuArea.innerHTML='';
+        if(!fid){ if(dormWrap) dormWrap.style.display='none'; return; }
+        var dorms=getDormitoriesByFloor(fid).filter(function(d){ return !isDormitoryDeleted(d.roomNumber); })
+            .sort(function(a,b){ return String(a.roomNumber).localeCompare(String(b.roomNumber)); });
+        var opts='<option value="">— 请选择宿舍 —</option>'
+            +dorms.map(function(d){ return '<option value="'+d.id+'">'+escapeHtmlAttr(d.roomNumber)+'</option>'; }).join('');
+        var dormSel=document.getElementById('anomalyDorm');
+        if(dormSel){ dormSel.innerHTML=opts; dormWrap.style.display=''; }
+    }
+    /** 通用模式：宿舍变化 → 加载该宿舍学生表单 */
+    function onAnomalyDormChange(){
+        var did=parseInt(document.getElementById('anomalyDorm').value,10)||0;
+        anomalyModalState.dormitoryId=did||null;
+        var stuArea=document.getElementById('anomalyStudentArea');
+        if(!stuArea) return;
+        if(!did){ stuArea.innerHTML=''; return; }
+        var dorm=getDormitoryById(did);
+        if(!dorm){ stuArea.innerHTML=''; return; }
+        stuArea.innerHTML=buildAnomalyStudentForm(dorm, true);
     }
     /** 关闭异常上报模态框 */
     function closeAnomalyModal(){
@@ -1875,6 +2052,7 @@
      */
     function submitAnomalyReport(){
         var dormitoryId=anomalyModalState.dormitoryId;
+        if(!dormitoryId){ toast('请先选择楼层和宿舍','error'); return; }
         var dorm=getDormitoryById(dormitoryId);
         if(!dorm){ toast('宿舍信息缺失','error'); return; }
         var stuVal=document.getElementById('anomalyStudent').value;
@@ -2029,6 +2207,167 @@
         toast('已导出 Excel');
     }
 
+    /**
+     * 导出数据管理页所选日期范围内的全部巡查核实总结为 Excel。
+     * 每天一个 Sheet，Sheet 名用日期（如 2026-09-09）；每个 Sheet 内容为
+     * 巡查核实总结（标题/楼栋/楼层/值班老师 + 统计数字 + 三类学生详情）。
+     * 仅 ADMIN 可用。
+     */
+    function exportInspectionSummariesRange(){
+        if(!isAdmin()){toast('无权限','error');return;}
+        if(!window.XLSX){ toast('Excel 组件未加载','error'); return; }
+        var startEl=document.getElementById('exportStartDate');
+        var endEl=document.getElementById('exportEndDate');
+        var startDate=startEl?String(startEl.value).trim():'';
+        var endDate=endEl?String(endEl.value).trim():'';
+        if(!startDate||!endDate){toast('请选择日期范围','error');return;}
+        if(startDate>endDate){toast('开始日期不能晚于结束日期','error');return;}
+        var summaries=(DB.dailyInspectionSummaries||[]).filter(function(s){
+            return s.summaryDate && s.summaryDate>=startDate && s.summaryDate<=endDate;
+        }).sort(function(a,b){ return a.summaryDate<b.summaryDate?-1:(a.summaryDate>b.summaryDate?1:0); });
+        if(summaries.length===0){toast('该日期范围内暂无巡查总结','error');return;}
+        var wb=XLSX.utils.book_new();
+        // 同一天可能有多条总结（不同值班老师/楼层），Sheet 名需加序号避免冲突
+        var dateCount={};
+        summaries.forEach(function(sum){
+            var date=sum.summaryDate;
+            var baseName=date;
+            dateCount[baseName]=(dateCount[baseName]||0)+1;
+            var sheetName=dateCount[baseName]>1 ? baseName+'('+dateCount[baseName]+')' : baseName;
+            // 日期标题：9月9号（周三晚）
+            var title;
+            try{
+                var parts=String(date).split('-');
+                var d=new Date(parseInt(parts[0],10), parseInt(parts[1],10)-1, parseInt(parts[2],10));
+                var week='日一二三四五六'.charAt(d.getDay());
+                title=(d.getMonth()+1)+'月'+d.getDate()+'号（周'+week+'晚）';
+            }catch(e){ title=date; }
+            var floorNums=(sum.floors||[]).map(function(fid){ var f=getFloorById(fid); return f?f.sortOrder:fid; }).sort(function(a,b){return a-b;});
+            var building=sum.buildingName || '本楼';
+            var teacher=sum.confirmedByName || '';
+            var aoa=[
+                ['巡查核实总结'],
+                ['日期：'+title],
+                ['楼栋：'+building],
+                ['楼层：'+(floorNums.length?floorNums.join('、')+'楼':'-')],
+                ['值班老师：'+teacher],
+                ['————————————————'],
+                ['入宿人数：'+sum.totalStudents+'人'],
+                ['当天请假：'+sum.absenceCount+'人'],
+                ['退  宿  中：'+sum.leavePendingCount+'人'],
+                ['家长接走：'+sum.pickedUpCount+'人'],
+                ['无  假  条：'+sum.anomalyCount+'人'],
+                ['实到人数：'+sum.actualCount+'人'],
+                []
+            ];
+            // 退宿中
+            var lp=sum.leavePendingDetails||[];
+            aoa.push(['退宿中（'+lp.length+'人）：']);
+            if(lp.length===0){ aoa.push(['（暂无）']); }
+            else{
+                aoa.push(['姓名','班级','床号','宿舍','类型']);
+                lp.forEach(function(r){ aoa.push([r.name||'',r.className||'',r.bed||'',r.dormitory||'',r.type||'']); });
+            }
+            aoa.push([]);
+            // 家长接走
+            var pu=sum.pickedUpDetails||[];
+            aoa.push(['家长接走（'+pu.length+'人）：']);
+            if(pu.length===0){ aoa.push(['（暂无）']); }
+            else{
+                aoa.push(['姓名','班级','床号','宿舍','确认人','备注']);
+                pu.forEach(function(r){ aoa.push([r.name||'',r.className||'',r.bed||'',r.dormitory||'',r.confirmedBy||'',r.note||'']); });
+            }
+            aoa.push([]);
+            // 无假条
+            var nn=sum.anomalyDetails||[];
+            aoa.push(['无假条（'+nn.length+'人）：']);
+            if(nn.length===0){ aoa.push(['（暂无）']); }
+            else{
+                aoa.push(['姓名','班级','床号','宿舍','上报人','备注']);
+                nn.forEach(function(r){ aoa.push([r.name||'',r.className||'',r.bed||'',r.dormitory||'',r.reportedBy||'',r.note||'']); });
+            }
+            // Sheet 名取日期（Excel 限制 31 字符，日期格式安全；同日多条时带序号）
+            XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(aoa), sheetName);
+        });
+        var fileName='巡查核实总结_'+startDate+(startDate===endDate?'':'_至_'+endDate)+'.xlsx';
+        XLSX.writeFile(wb, fileName);
+        toast('已导出 '+summaries.length+' 天的巡查总结');
+    }
+
+    /**
+     * 一键复制某日晚检总结为纯文本（含楼栋、值班老师、统计数字与学生详情），
+     * 供生活老师直接粘贴到微信群。所有角色可用。
+     * 优先使用 navigator.clipboard.writeText，不支持时回退到 execCommand('copy')。
+     * @param {string} date - 日期 YYYY-MM-DD
+     */
+    function copyInspectionSummary(date){
+        var sum=getDailySummary(date, currentUser.id) || computeInspectionSummary(date, currentUser);
+        var floorNums=(sum.floors||[]).map(function(fid){ var f=getFloorById(fid); return f?f.sortOrder:fid; }).sort(function(a,b){return a-b;});
+        // 日期标题：9月9号（周三晚）
+        var title;
+        try{
+            var parts=String(date).split('-');
+            var d=new Date(parseInt(parts[0],10), parseInt(parts[1],10)-1, parseInt(parts[2],10));
+            var week='日一二三四五六'.charAt(d.getDay());
+            title=(d.getMonth()+1)+'月'+d.getDate()+'号（周'+week+'晚）';
+        }catch(e){ title=date; }
+        var building=sum.buildingName || '本楼';
+        var teacher=sum.confirmedByName || (currentUser?currentUser.realName:'') || '';
+        var sep='————————————';
+        // 统计数字（对齐空格，与微信排版习惯一致）
+        var pad=function(s){ while(s.length<6) s='\u3000'+s; return s; };
+        var lines=[];
+        lines.push(title);
+        lines.push(building+'：'+floorNums.join('、')+'楼');
+        lines.push('值班老师：'+teacher);
+        lines.push(sep);
+        lines.push('入宿人数：'+sum.totalStudents+'人');
+        lines.push('当天请假：'+sum.absenceCount+'人');
+        lines.push('退  宿  中：'+sum.leavePendingCount+'人');
+        lines.push('家长接走：'+sum.pickedUpCount+'人');
+        lines.push('无  假  条：'+sum.anomalyCount+'人');
+        lines.push('实到人数：'+sum.actualCount+'人');
+        // 学生详情
+        function detailBlock(title, list, extraKey){
+            lines.push('');
+            lines.push(title+'：'+list.length+'人');
+            lines.push('【学生具体信息】');
+            if(list.length===0){ lines.push('（暂无）'); return; }
+            list.forEach(function(r){
+                var info=(r.name||'')+'（'+(r.className||'-')+'） 床号：'+(r.bed||'-');
+                if(extraKey && r[extraKey]) info += '（'+r[extraKey]+'）';
+                lines.push(info);
+            });
+        }
+        detailBlock('退宿中', sum.leavePendingDetails||[]);
+        detailBlock('家长接走', sum.pickedUpDetails||[], 'confirmedBy');
+        detailBlock('无假条', sum.anomalyDetails||[], 'reportedBy');
+        var text=lines.join('\n');
+        // 复制
+        if(navigator.clipboard && navigator.clipboard.writeText){
+            navigator.clipboard.writeText(text).then(function(){
+                toast('总结已复制，可直接粘贴到微信群');
+            }).catch(function(){
+                fallbackCopy(text);
+            });
+        }else{
+            fallbackCopy(text);
+        }
+    }
+    /** execCommand 回退复制 */
+    function fallbackCopy(text){
+        try{
+            var ta=document.createElement('textarea');
+            ta.value=text; ta.style.position='fixed'; ta.style.left='-9999px';
+            document.body.appendChild(ta); ta.select();
+            document.execCommand('copy');
+            document.body.removeChild(ta);
+            toast('总结已复制，可直接粘贴到微信群');
+        }catch(e){
+            toast('复制失败，请手动选择文本复制','error');
+        }
+    }
+
     // ==================== 账号管理（仅管理员） ====================
     /**
      * 打开账号新增/编辑模态框（userId 为 0/空=新增）。
@@ -2040,6 +2379,10 @@
         var u=userId ? DB.users.find(function(x){ return String(x.id)===String(userId); }) : null;
         var isEdit=!!u;
         u=u || { id:0, username:'', realName:'', role:'STAFF', assignedFloors:[], buildingName:'' };
+        // 时段规则默认值（新建账号默认启用）
+        var enableTimeLimit = (typeof u.enableTimeLimit === 'boolean') ? u.enableTimeLimit : true;
+        var hyStartHour = (typeof u.hygieneStartHour === 'number') ? u.hygieneStartHour : 5;
+        var hyEndHour = (typeof u.hygieneEndHour === 'number') ? u.hygieneEndHour : 15;
         var roleOpts=[['STAFF','生活老师'],['CLASS_ADMIN','班主任'],['ADMIN','管理员']].map(function(r){
             return '<option value="'+r[0]+'" '+(u.role===r[0]?'selected':'')+'>'+r[1]+'</option>';
         }).join('');
@@ -2055,6 +2398,17 @@
             +'<div class="form-group"><label>角色</label><select id="acctRole" '+(isEdit?'disabled style="background:var(--gray-100)"':'')+'>'+roleOpts+'</select></div>'
             +'<div class="form-group"><label>楼栋名称（生活老师）</label><input type="text" id="acctBuilding" value="'+escapeHtmlAttr(u.buildingName||'')+'" placeholder="如：恩泽楼"></div>'
             +'<div class="form-group"><label>负责楼层（仅生活老师生效，不勾选=全部楼层）</label><div class="checkbox-group">'+floorChecks+'</div></div>'
+            +'<div style="border-top:1px dashed var(--gray-200);margin:12px 0;padding-top:12px"></div>'
+            +'<div class="form-group"><label style="font-weight:700">⏰ 时段限制（生活老师）</label>'
+            +'<label style="display:inline-flex;align-items:center;gap:4px;margin-bottom:8px;font-weight:500"><input type="checkbox" id="acctEnableTimeLimit" '+(enableTimeLimit?'checked':'')+'> 启用时段限制</label>'
+            +'<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">'
+            +'<span>卫生时段：</span>'
+            +'<select id="acctHyStartHour" style="width:80px">'+Array.from({length:24},function(_,i){return '<option value="'+i+'" '+(hyStartHour===i?'selected':'')+'>'+String(i).padStart(2,'0')+':00</option>';}).join('')+'</select>'
+            +'<span>至</span>'
+            +'<select id="acctHyEndHour" style="width:80px">'+Array.from({length:24},function(_,i){return '<option value="'+i+'" '+(hyEndHour===i?'selected':'')+'>'+String(i).padStart(2,'0')+':00</option>';}).join('')+'</select>'
+            +'</div>'
+            +'<p style="color:var(--gray-500);font-size:0.8571rem;margin-top:6px">卫生时段内只显示卫生加/扣分，时段外只显示纪律加/扣分。管理员不受限制。</p>'
+            +'</div>'
             +(isEdit?'<p style="color:var(--gray-500);font-size:0.8571rem">账号角色不可修改；如需变更角色请新建账号。</p>':'')
             +'</div>'
             +'<div class="em-footer"><button class="btn btn-primary" onclick="saveAccount()">💾 保存</button><button class="btn btn-outline" onclick="closeAccountModal()">取消</button></div>';
@@ -2083,6 +2437,13 @@
         var buildingName=String(document.getElementById('acctBuilding').value||'').trim();
         var floors=[];
         document.querySelectorAll('.acct-floor-check:checked').forEach(function(cb){ floors.push(parseInt(cb.value,10)); });
+        // 时段规则
+        var enableTimeLimit = document.getElementById('acctEnableTimeLimit');
+        enableTimeLimit = enableTimeLimit ? enableTimeLimit.checked : true;
+        var hyStartHourEl = document.getElementById('acctHyStartHour');
+        var hyEndHourEl = document.getElementById('acctHyEndHour');
+        var hyStartHour = hyStartHourEl ? parseInt(hyStartHourEl.value,10) : 5;
+        var hyEndHour = hyEndHourEl ? parseInt(hyEndHourEl.value,10) : 15;
         if(!username || !realName){ toast('请填写用户名和姓名','error'); return Promise.resolve(); }
         var target=DB.users.find(function(u){ return u.username===username; });
         function finishSave(){
@@ -2096,6 +2457,11 @@
             target.realName=realName;
             target.buildingName=buildingName;
             target.assignedFloors=(target.role==='STAFF') ? floors : [];
+            if(target.role==='STAFF'){
+                target.enableTimeLimit=enableTimeLimit;
+                target.hygieneStartHour=hyStartHour;
+                target.hygieneEndHour=hyEndHour;
+            }
             target.lastModified=Date.now();
             v3MarkDirty('user', target.id);
             if(password){
@@ -2122,6 +2488,9 @@
                 role: role,
                 buildingName: buildingName,
                 assignedFloors: (role==='STAFF') ? floors : [],
+                enableTimeLimit: (role==='STAFF') ? enableTimeLimit : undefined,
+                hygieneStartHour: (role==='STAFF') ? hyStartHour : undefined,
+                hygieneEndHour: (role==='STAFF') ? hyEndHour : undefined,
                 createdAt: nowTs, lastModified: nowTs
             };
             if(role==='CLASS_ADMIN') nu.className=username; // 班主任账号按用户名（班级名）隔离数据

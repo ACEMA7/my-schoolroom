@@ -253,6 +253,27 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
         .stat-card .label{font-size:0.8571rem;color:var(--gray-500);margin-top:4px}
         .stat-card.warning{border-top-color:var(--warning)}
         .stat-card.danger{border-top-color:var(--danger)}
+        /* 巡查核实页顶部统计卡片：PC 端一行横排 5 个，间距均匀 */
+        .inspection-stat-cards{display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin-bottom:16px}
+        .inspection-stat-cards .stat-item{background:#fff;border-radius:10px;padding:14px 8px;text-align:center;border:1px solid var(--gray-200);box-shadow:0 1px 3px rgba(0,0,0,.06)}
+        .inspection-stat-cards .stat-item .number{font-size:1.5714rem;font-weight:700;line-height:1.2}
+        .inspection-stat-cards .stat-item .label{font-size:0.8571rem;color:var(--gray-500);margin-top:4px}
+        .inspection-stat-cards .stat-item-action{cursor:pointer;border:2px dashed #ff3b30;background:#fff5f5;transition:all .15s}
+        .inspection-stat-cards .stat-item-action:hover{background:#ffe0e0;transform:translateY(-2px);box-shadow:0 4px 12px rgba(255,59,48,.18)}
+        .inspection-stat-cards .stat-item-action:active{transform:scale(.97)}
+        /* 巡查核实总结：PC 端左右分栏（左侧统计数字，右侧学生详情） */
+        .summary-split{display:flex;gap:24px;align-items:flex-start}
+        .summary-stats-col{flex:0 0 300px;min-width:0}
+        .summary-detail-col{flex:1;min-width:0}
+        /* 功能首页：PC 端 4 列色块网格 */
+        .home-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:16px;max-width:900px}
+        .home-card{border-radius:14px;padding:28px 16px;color:#fff;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;cursor:pointer;box-shadow:0 4px 14px rgba(0,0,0,.15);user-select:none;transition:transform .15s,box-shadow .15s}
+        .home-card:hover{transform:translateY(-3px);box-shadow:0 8px 22px rgba(0,0,0,.2)}
+        .home-card .hc-icon{font-size:2.5714rem;line-height:1}
+        .home-card .hc-name{font-size:1.1429rem;font-weight:700;letter-spacing:1px}
+        .home-welcome{margin:2px 0 18px;color:var(--gray-600);font-size:1rem}
+        /* 两列卡片网格：PC 端两列，移动端单列 */
+        .two-col-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
         #toast{position:fixed;top:70px;right:24px;z-index:9999}
         .toast-item{padding:12px 20px;border-radius:8px;color:#fff;font-weight:600;margin-bottom:8px;box-shadow:0 4px 12px rgba(0,0,0,.15)}
         .toast-item.success{background:var(--success)}
@@ -261,6 +282,13 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
         .toast-action-btn:hover{background:rgba(255,255,255,.4)}
         .toast-action-btn:active{background:rgba(255,255,255,.55)}
         .highlight-red{color:var(--danger);font-weight:700}
+        .highlight-green{color:#34c759;font-weight:700}
+        /* 加扣分模式切换 —— PC 端 Tab 风格（位于扣分登记卡片头部） */
+        .mode-tab-switch{display:inline-flex;gap:0;border:1.5px solid var(--gray-200);border-radius:10px;overflow:hidden;background:#fff}
+        .mode-tab{padding:8px 18px;cursor:pointer;user-select:none;font-size:0.9286rem;font-weight:600;color:var(--gray-600);transition:all .18s;border-right:1.5px solid var(--gray-200)}
+        .mode-tab:last-child{border-right:none}
+        .mode-tab:hover{background:#f8f9fc}
+        .mode-tab.active{background:#eef2ff;color:var(--primary);box-shadow:inset 0 -2px 0 var(--primary)}
         .badge-tag{display:inline-block;padding:2px 8px;border-radius:12px;font-size:0.7857rem;font-weight:600}
         .badge-danger{background:#fee2e2;color:var(--danger)}
         .badge-warning{background:#fef3c7;color:#b45309}
@@ -443,9 +471,14 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
             }
             .chip:active{transform:scale(.95)}
             .chip.active{border-color:var(--primary);background:#eef2ff;color:var(--primary);font-weight:700}
-            .chip-floors{display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px}
+            /* 加扣分模式切换 —— 移动端两个并列大芯片，占满卡片顶部一行 */
+            .mode-chip-switch{display:flex;gap:8px;margin-bottom:4px}
+            .mode-chip{flex:1 1 0;min-height:48px;display:flex;align-items:center;justify-content:center;border:1.5px solid var(--gray-200);border-radius:12px;background:#fff;font-size:1rem;font-weight:600;color:var(--gray-600);cursor:pointer;user-select:none;transition:all .18s}
+            .mode-chip:active{transform:scale(.96)}
+            .mode-chip.active{border-color:var(--primary);background:#eef2ff;color:var(--primary);font-weight:700;box-shadow:0 2px 8px rgba(79,110,247,.18)}
+            .chip-floors{display:flex;justify-content:flex-start;flex-wrap:wrap;gap:8px}
             .chip-floors .chip{flex:0 0 calc(25% - 6px);padding:11px 2px;font-size:1rem}
-            /* 班级账号住宿信息：楼层芯片左对齐紧凑排列（每行仍4个），楼层少时不再两端散开 */
+            /* 所有角色住宿信息：楼层芯片统一左对齐（每行仍4个），楼层少时不再两端散开 */
             .chip-floors.chip-floors-left{justify-content:flex-start}
             .chip-dorms{
                 display:flex;gap:8px;overflow-x:auto;-webkit-overflow-scrolling:touch;
@@ -538,6 +571,16 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
             .stat-cards-mobile .stat-item{background:#f8f9fc;border-radius:10px;padding:10px 4px;text-align:center;border:1px solid #e5e7eb}
             .stat-cards-mobile .stat-item .number{font-size:1.5714rem;font-weight:700;color:#4f6ef7;line-height:1.2}
             .stat-cards-mobile .stat-item .label{font-size:0.7857rem;color:#6b7280;margin-top:2px;white-space:nowrap}
+            /* 巡查核实页统计卡片：移动端 2×3 网格，异常上报卡片整行突出 */
+            .inspection-stat-cards{grid-template-columns:1fr 1fr 1fr;gap:8px}
+            .inspection-stat-cards .stat-item{padding:10px 4px}
+            .inspection-stat-cards .stat-item-action{grid-column:span 3;border-width:2px}
+            /* 巡查核实总结：移动端垂直堆叠（统计数字在上，学生详情在下） */
+            .summary-split{flex-direction:column;gap:12px}
+            .summary-stats-col{flex:none;width:100%}
+            .summary-detail-col{flex:none;width:100%}
+            /* 两列网格移动端单列 */
+            .two-col-grid{grid-template-columns:1fr;gap:12px}
 
             /* 扣分项改为半宽大触控芯片 */
             .checkbox-group{gap:8px;padding:0;border:none;min-height:0}

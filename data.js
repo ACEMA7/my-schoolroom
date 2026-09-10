@@ -261,6 +261,86 @@
         return item ? item.name : '';
     }
 
+    /**
+     * 按 ID 查询加分项目（在卫生加分项与纪律加分项两个数组中共同查找）。
+     * @param {number} id - 项目 ID
+     * @returns {{id:number,name:string,defaultScore:number}|null}
+     */
+    function getBonusItemById(id) {
+        if (!DB || !DB.deductionItems) return null;
+        var allBonus = (DB.deductionItems.hygieneBonus || []).concat(DB.deductionItems.disciplineBonus || []);
+        return allBonus.find(function(item) { return item.id === id; }) || null;
+    }
+    /**
+     * 获取加分项目名称；自定义项取冒号后文本。
+     */
+    function getBonusItemNameByIdOrCustom(id) {
+        if (typeof id === 'string' && id.startsWith('custom:')) return id.substring(7);
+        var item = getBonusItemById(id);
+        return item ? item.name : '';
+    }
+
+    /**
+     * 计算一组记录的累计加分（recordMode==='bonus' 的记录，卫生分 + 纪律分）。
+     * @param {Array} records
+     * @returns {number} 总加分（保留 1 位小数）
+     */
+    function getTotalBonusScore(records) {
+        if (!records) return 0;
+        var total = 0;
+        records.forEach(function(r) {
+            if (r.recordMode === 'bonus') {
+                total += (r.hygieneScore || 0) + (r.disciplineScore || 0);
+            }
+        });
+        return Math.round(total * 10) / 10;
+    }
+
+    /**
+     * 计算一组记录的累计扣分（recordMode!='bonus' 的记录，即扣分模式记录）。
+     * @param {Array} records
+     * @returns {number} 总扣分（保留 1 位小数）
+     */
+    function getTotalDeductScore(records) {
+        if (!records) return 0;
+        var total = 0;
+        records.forEach(function(r) {
+            if (r.recordMode !== 'bonus') {
+                total += (r.hygieneScore || 0) + (r.disciplineScore || 0);
+            }
+        });
+        return Math.round(total * 10) / 10;
+    }
+
+    /**
+     * 计算净分 = 扣分 - 加分（保留 1 位小数）。
+     * @param {Array} records
+     * @returns {number}
+     */
+    function getNetScore(records) {
+        return Math.round((getTotalDeductScore(records) - getTotalBonusScore(records)) * 10) / 10;
+    }
+
+    /**
+     * 判断当前时段应显示卫生类还是纪律类加/扣分项。
+     * 管理员不受限制（始终返回 'both'）。
+     * 生活老师按账号配置的时段规则判断。
+     * @param {object} user - 当前登录用户
+     * @returns {'hygiene'|'discipline'|'both'} 当前应显示的类别
+     */
+    function getCurrentTimeCategory(user) {
+        if (!user || user.role === 'ADMIN') return 'both';
+        // 非生活老师不受时段限制
+        if (user.role !== 'STAFF') return 'both';
+        // 时段限制关闭时同时显示
+        if (user.enableTimeLimit === false) return 'both';
+        var hyStart = (typeof user.hygieneStartHour === 'number') ? user.hygieneStartHour : 5;
+        var hyEnd = (typeof user.hygieneEndHour === 'number') ? user.hygieneEndHour : 15;
+        var hour = new Date().getHours();
+        if (hour >= hyStart && hour < hyEnd) return 'hygiene';
+        return 'discipline';
+    }
+
     // 班级名称排序：先按前缀（非数字部分）分组，再按数字升序（三1、三2……三31），
     // 兼容"三1"与"高一1班"等多种格式混排（纯数字提取会把不同年级的同号班级混在一起）
     function sortClassNames(list) {
@@ -608,6 +688,12 @@
                 { id: 203, name: '无请假信息', defaultScore: 1 },
                 { id: 204, name: '打铃后在宿舍走动', defaultScore: 1 },
                 { id: 205, name: '在阳台上洗漱', defaultScore: 1 }
+            ],
+            hygieneBonus: [
+                { id: 301, name: '卫生优秀', defaultScore: 0.2 }
+            ],
+            disciplineBonus: [
+                { id: 401, name: '表现良好', defaultScore: 1 }
             ]
         };
         var users = [
@@ -701,6 +787,13 @@
             if (json) {
                 DB = JSON.parse(json);
                 if (DB && DB.users && DB.floors && DB.dormitories && DB.students && DB.deductionItems && DB.deductionRecords && DB.leaveRecords && DB.nextIds) {
+                    // 迁移：确保加分项数组存在（旧库升级）
+                    if(!DB.deductionItems.hygieneBonus) DB.deductionItems.hygieneBonus = [];
+                    if(!DB.deductionItems.disciplineBonus) DB.deductionItems.disciplineBonus = [];
+                    // 迁移：确保已有扣分记录有 recordMode 字段（默认 'deduct'）
+                    if(Array.isArray(DB.deductionRecords)){
+                        DB.deductionRecords.forEach(function(r){ if(!r.recordMode) r.recordMode='deduct'; });
+                    }
                     checkStorageWarning();
                     return true;
                 }
@@ -923,12 +1016,16 @@
             return [{ id: 'main', dormitoryList: DB.dormitoryList || [], nextIds: DB.nextIds || {}, epoch: DB.syncEpoch || 0 }];
         }
         if(meta.specialItems){
-            // deductionItems: 扁平化 hygiene + discipline 为独立记录
+            // deductionItems: 扁平化 hygiene + discipline + hygieneBonus + disciplineBonus 为独立记录
             var arr = [];
             var hy = (DB.deductionItems&&DB.deductionItems.hygiene)||[];
             var dis = (DB.deductionItems&&DB.deductionItems.discipline)||[];
+            var hyB = (DB.deductionItems&&DB.deductionItems.hygieneBonus)||[];
+            var disB = (DB.deductionItems&&DB.deductionItems.disciplineBonus)||[];
             hy.forEach(function(x){ arr.push({ _subType:'hygiene', data:x }); });
             dis.forEach(function(x){ arr.push({ _subType:'discipline', data:x }); });
+            hyB.forEach(function(x){ arr.push({ _subType:'hygieneBonus', data:x }); });
+            disB.forEach(function(x){ arr.push({ _subType:'disciplineBonus', data:x }); });
             return arr;
         }
         return (DB[meta.dbPath[0]]) || [];
@@ -936,8 +1033,14 @@
     // 将一条云端 deduction_item 记录还原到 DB.deductionItems
     function v3RestoreDeductionItem(cloudRow){
         var st = (cloudRow.data && cloudRow.data._subType) || cloudRow._subType;
-        if(!DB.deductionItems) DB.deductionItems = { hygiene: [], discipline: [] };
-        var target = DB.deductionItems[st] || (st==='discipline' ? DB.deductionItems.discipline : DB.deductionItems.hygiene);
+        if(!DB.deductionItems) DB.deductionItems = { hygiene: [], discipline: [], hygieneBonus: [], disciplineBonus: [] };
+        if(!DB.deductionItems.hygieneBonus) DB.deductionItems.hygieneBonus = [];
+        if(!DB.deductionItems.disciplineBonus) DB.deductionItems.disciplineBonus = [];
+        var target = DB.deductionItems[st];
+        if(!target){
+            // 未知 subType 回退到 hygiene（兼容旧数据）
+            target = DB.deductionItems.hygiene;
+        }
         var itemData = cloudRow.data || cloudRow;
         // 移除辅助字段
         var clean = {};
@@ -998,11 +1101,15 @@
             return 1;
         }
         if(meta.specialItems){
-            // deductionItems：扁平化 hygiene + discipline
+            // deductionItems：扁平化 hygiene + discipline + hygieneBonus + disciplineBonus
             var hy = (DB.deductionItems&&DB.deductionItems.hygiene)||[];
             var dis = (DB.deductionItems&&DB.deductionItems.discipline)||[];
+            var hyB = (DB.deductionItems&&DB.deductionItems.hygieneBonus)||[];
+            var disB = (DB.deductionItems&&DB.deductionItems.disciplineBonus)||[];
             hy.forEach(function(x){ if(x && x.id!=null){ v3MarkDirty('deduction_item', x.id); count++; } });
             dis.forEach(function(x){ if(x && x.id!=null){ v3MarkDirty('deduction_item', x.id); count++; } });
+            hyB.forEach(function(x){ if(x && x.id!=null){ v3MarkDirty('deduction_item', x.id); count++; } });
+            disB.forEach(function(x){ if(x && x.id!=null){ v3MarkDirty('deduction_item', x.id); count++; } });
             return count;
         }
         // 普通数组类型
@@ -1214,7 +1321,9 @@
      * @returns {{id:number,name:string,defaultScore:number}} 扣分项目
      */
     function ensureNoNoteDeductionItem(){
-        if(!DB.deductionItems) DB.deductionItems = { hygiene: [], discipline: [] };
+        if(!DB.deductionItems) DB.deductionItems = { hygiene: [], discipline: [], hygieneBonus: [], disciplineBonus: [] };
+        if(!Array.isArray(DB.deductionItems.hygieneBonus)) DB.deductionItems.hygieneBonus = [];
+        if(!Array.isArray(DB.deductionItems.disciplineBonus)) DB.deductionItems.disciplineBonus = [];
         if(!Array.isArray(DB.deductionItems.discipline)) DB.deductionItems.discipline = [];
         var item = DB.deductionItems.discipline.find(function(i){ return i.name === '无请假信息'; });
         if(item) return item;

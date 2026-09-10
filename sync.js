@@ -164,13 +164,19 @@
             return null;
         }
         if(meta.specialItems){
-            // deductionItems：先搜 hygiene 再搜 discipline，附带 _subType
+            // deductionItems：搜 hygiene / discipline / hygieneBonus / disciplineBonus，附带 _subType
             var hy = (DB.deductionItems&&DB.deductionItems.hygiene)||[];
             var dis = (DB.deductionItems&&DB.deductionItems.discipline)||[];
+            var hyB = (DB.deductionItems&&DB.deductionItems.hygieneBonus)||[];
+            var disB = (DB.deductionItems&&DB.deductionItems.disciplineBonus)||[];
             var found = hy.find(function(x){ return String(x.id) === rid; });
             if(found) return Object.assign({}, found, { _subType: 'hygiene' });
             found = dis.find(function(x){ return String(x.id) === rid; });
             if(found) return Object.assign({}, found, { _subType: 'discipline' });
+            found = hyB.find(function(x){ return String(x.id) === rid; });
+            if(found) return Object.assign({}, found, { _subType: 'hygieneBonus' });
+            found = disB.find(function(x){ return String(x.id) === rid; });
+            if(found) return Object.assign({}, found, { _subType: 'disciplineBonus' });
             return null;
         }
         var arr = DB[meta.dbPath[0]] || [];
