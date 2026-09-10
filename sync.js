@@ -477,7 +477,9 @@
             });
             V3_MUTABLE_TYPES.forEach(function(type){ mergeArrayType(type); });
             DB.lastSyncTime = Date.now();
-            // 合并后重新校准账号
+            // 合并后先按 username 去重账号（跨设备同名不同 id 的重复账号，
+            // 保留最小 id 并打墓碑上行），再重新校准账号
+            dedupeUsersByUsername();
             ensureCorrectUsers();
             if(currentUser && currentUser.id != null){
                 var refreshed = DB.users.find(function(x){ return String(x.id) === String(currentUser.id); });

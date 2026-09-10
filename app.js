@@ -1458,6 +1458,31 @@
         toast('已删除全部退宿记录');
         renderView();
     }
+    // 删除全部巡查核实总结（每日晚检总结 DB.dailyInspectionSummaries）
+    // 注意：V3 同步类型名为 'daily_summary'（见 config.js V3_RECORD_TYPES）
+    function deleteAllInspectionSummaries(){
+        if(!isAdmin()){toast('无权限','error');return;}
+        if(!confirm('确认删除全部巡查核实总结吗？此操作不可恢复！')) return;
+        // V3 按行存储：逐条登记墓碑，确保云端与其它设备同步删除
+        (DB.dailyInspectionSummaries||[]).forEach(function(r){ if(r && r.id!=null) v3MarkDeleted('daily_summary', r.id); });
+        DB.dailyInspectionSummaries=[];
+        saveDB();
+        toast('已删除全部巡查核实总结');
+        renderView();
+    }
+    // 删除全部巡查确认记录 + 异常上报记录（两类业务数据同时清空）
+    function deleteAllConfirmationsAndAnomalies(){
+        if(!isAdmin()){toast('无权限','error');return;}
+        if(!confirm('确认删除全部确认记录和异常上报吗？此操作不可恢复！\n\n将同时清空：\n1) 巡查确认记录\n2) 异常上报记录')) return;
+        // V3 按行存储：逐条登记墓碑，确保云端与其它设备同步删除
+        (DB.inspectionConfirmations||[]).forEach(function(r){ if(r && r.id!=null) v3MarkDeleted('inspection_confirmation', r.id); });
+        DB.inspectionConfirmations=[];
+        (DB.anomalyReports||[]).forEach(function(r){ if(r && r.id!=null) v3MarkDeleted('anomaly_report', r.id); });
+        DB.anomalyReports=[];
+        saveDB();
+        toast('已删除全部确认记录和异常上报');
+        renderView();
+    }
 
     // 日期选择说明：所有日期输入框统一由内嵌 flatpickr 渲染（class="date-picker"），
     // initDatePickers 在视图渲染/色块展开/弹窗打开后自动初始化，选中后派发原生 change 事件，
@@ -1666,6 +1691,35 @@
             var opening=(t===type)&&!block.classList.contains('open');
             block.classList.toggle('open',opening);
             foldState['recFold-'+t]=opening;
+        });
+    }
+
+    /**
+     * 数据管理：账号管理 / 楼层分配管理 卡片互斥折叠（同时仅展开一个；
+     * 再次点击已展开的则收起）。foldState 跨重渲染保持。
+     * @param {string} id - 'fold-account-manage' | 'fold-floor-manage'
+     */
+    function toggleAccountOrFloor(id){
+        ['fold-account-manage','fold-floor-manage'].forEach(function(fid){
+            var block=document.getElementById(fid);
+            if(!block) return;
+            var opening=(fid===id)&&!block.classList.contains('open');
+            block.classList.toggle('open',opening);
+            foldState[fid]=opening;
+        });
+    }
+    /**
+     * PC 端学生管理：请假登记 / 停宿管理 / 退宿管理 三个表单卡片互斥折叠
+     * （同时仅展开一个；再次点击已展开的则收起）。移动端色块布局不受影响。
+     * @param {string} id - 'fold-leave-absence' | 'fold-leave-stop' | 'fold-leave-leave'
+     */
+    function toggleLeaveManageCard(id){
+        ['fold-leave-absence','fold-leave-stop','fold-leave-leave'].forEach(function(fid){
+            var block=document.getElementById(fid);
+            if(!block) return;
+            var opening=(fid===id)&&!block.classList.contains('open');
+            block.classList.toggle('open',opening);
+            foldState[fid]=opening;
         });
     }
 
@@ -1955,51 +2009,38 @@
     }
 
     /**
-     * 打开异常上报模态框（按宿舍上报）。
-     * @param {number} dormitoryId - 宿舍 ID
+     * 打开异常上报模态框（全站唯一入口：巡查核实页顶部"异常上报"卡片）。
+     * 固定为楼层→宿舍→学生三级联动模式；提交逻辑见 submitAnomalyReport。
      */
-    function openAnomalyModal(dormitoryId){
+    function openAnomalyModal(){
         if(!isStaff() && !isAdmin()){ toast('无权限','error'); return; }
-        anomalyModalState.dormitoryId=dormitoryId || null;
+        anomalyModalState.dormitoryId=null;
         anomalyModalState.floorId=null;
-        var html;
-        if(dormitoryId){
-            // 指定宿舍模式（从宿舍卡片底部"异常上报"按钮进入）
-            var dorm=getDormitoryById(dormitoryId);
-            if(!dorm){ toast('宿舍信息缺失','error'); return; }
-            html='<div class="em-header"><span>⚠️ 异常上报（宿舍 '+escapeHtmlAttr(dorm.roomNumber)+'）</span><button class="em-close" aria-label="关闭" onclick="closeAnomalyModal()">✕</button></div>'
-                +'<div class="em-body">'+buildAnomalyStudentForm(dorm, false)+'</div>'
-                +'<div class="em-footer"><button class="btn btn-primary" onclick="submitAnomalyReport()">📤 提交上报</button><button class="btn btn-outline" onclick="closeAnomalyModal()">取消</button></div>';
-        }else{
-            // 通用模式（从顶部"异常上报"卡片进入）：楼层→宿舍→学生级联
-            var floorIds=getAssignedFloorIds();
-            var floorOpts='<option value="">— 请选择楼层 —</option>'
-                +floorIds.map(function(fid){ var f=getFloorById(fid); return f?'<option value="'+fid+'">'+escapeHtmlAttr(f.name)+'</option>':''; }).join('');
-            html='<div class="em-header"><span>⚠️ 异常上报</span><button class="em-close" aria-label="关闭" onclick="closeAnomalyModal()">✕</button></div>'
-                +'<div class="em-body">'
-                +'<div class="form-group"><label>楼层 *</label><select id="anomalyFloor" onchange="onAnomalyFloorChange()">'+floorOpts+'</select></div>'
-                +'<div class="form-group" id="anomalyDormWrap" style="display:none"><label>宿舍 *</label><select id="anomalyDorm" onchange="onAnomalyDormChange()"><option value="">— 请选择宿舍 —</option></select></div>'
-                +'<div id="anomalyStudentArea"></div>'
-                +'</div>'
-                +'<div class="em-footer"><button class="btn btn-primary" onclick="submitAnomalyReport()">📤 提交上报</button><button class="btn btn-outline" onclick="closeAnomalyModal()">取消</button></div>';
-        }
+        var floorIds=getAssignedFloorIds();
+        var floorOpts='<option value="">— 请选择楼层 —</option>'
+            +floorIds.map(function(fid){ var f=getFloorById(fid); return f?'<option value="'+fid+'">'+escapeHtmlAttr(f.name)+'</option>':''; }).join('');
+        var html='<div class="em-header"><span>⚠️ 异常上报</span><button class="em-close" aria-label="关闭" onclick="closeAnomalyModal()">✕</button></div>'
+            +'<div class="em-body">'
+            +'<div class="form-group"><label>楼层 *</label><select id="anomalyFloor" onchange="onAnomalyFloorChange()">'+floorOpts+'</select></div>'
+            +'<div class="form-group" id="anomalyDormWrap" style="display:none"><label>宿舍 *</label><select id="anomalyDorm" onchange="onAnomalyDormChange()"><option value="">— 请选择宿舍 —</option></select></div>'
+            +'<div id="anomalyStudentArea"></div>'
+            +'</div>'
+            +'<div class="em-footer"><button class="btn btn-primary" onclick="submitAnomalyReport()">📤 提交上报</button><button class="btn btn-outline" onclick="closeAnomalyModal()">取消</button></div>';
         document.getElementById('anomalyModalBox').innerHTML=html;
         document.getElementById('anomalyModal').classList.add('show');
     }
     /**
-     * 拼装异常上报的学生选择+类型+备注表单（指定宿舍模式或级联选定宿舍后复用）。
+     * 拼装异常上报的学生选择+类型+备注表单（级联选定宿舍后调用）。
      * @param {object} dorm - 宿舍对象
-     * @param {boolean} showDormLabel - 是否显示宿舍标题（级联模式选完宿舍后展示）
      */
-    function buildAnomalyStudentForm(dorm, showDormLabel){
+    function buildAnomalyStudentForm(dorm){
         var students=getStudentsByDormitory(dorm.id);
         var stuOpts='<option value="">— 请选择学生 —</option>'
             +students.map(function(s){
                 return '<option value="'+s.id+'">'+escapeHtmlAttr(s.name)+'（'+escapeHtmlAttr(s.className||'')+' · 床号'+(s.bedNumber||'-')+'）</option>';
             }).join('')
             +'<option value="manual">✏️ 其他（手动输入姓名）</option>';
-        var prefix=showDormLabel ? '<div class="form-group" style="color:var(--gray-500);font-size:0.9286rem">已选宿舍：<b>'+escapeHtmlAttr(dorm.roomNumber)+'</b></div>' : '';
-        return prefix
+        return '<div class="form-group" style="color:var(--gray-500);font-size:0.9286rem">已选宿舍：<b>'+escapeHtmlAttr(dorm.roomNumber)+'</b></div>'
             +'<div class="form-group"><label>学生 *</label><select id="anomalyStudent" onchange="onAnomalyStudentChange()">'+stuOpts+'</select></div>'
             +'<div class="form-group" id="anomalyManualWrap" style="display:none"><label>学生姓名 *</label><input type="text" id="anomalyName" placeholder="手动输入学生姓名"></div>'
             +'<div class="form-group"><label>异常类型 *</label><select id="anomalyType"><option value="picked_up">🚗 家长接走（不扣分）</option><option value="no_note">⚠️ 无假条（自动生成纪律扣分：无请假信息 1分）</option></select></div>'
@@ -2030,7 +2071,7 @@
         if(!did){ stuArea.innerHTML=''; return; }
         var dorm=getDormitoryById(did);
         if(!dorm){ stuArea.innerHTML=''; return; }
-        stuArea.innerHTML=buildAnomalyStudentForm(dorm, true);
+        stuArea.innerHTML=buildAnomalyStudentForm(dorm);
     }
     /** 关闭异常上报模态框 */
     function closeAnomalyModal(){
@@ -2392,6 +2433,7 @@
         }).join('');
         var html='<div class="em-header"><span>'+(isEdit?'✏️ 编辑账号':'➕ 新增账号')+'</span><button class="em-close" aria-label="关闭" onclick="closeAccountModal()">✕</button></div>'
             +'<div class="em-body">'
+            +'<input type="hidden" id="acctEditId" value="'+(isEdit?u.id:0)+'">'
             +'<div class="form-group"><label>用户名 *</label><input type="text" id="acctUsername" value="'+escapeHtmlAttr(u.username)+'" '+(isEdit?'readonly style="background:var(--gray-100)"':'')+' placeholder="登录用户名（班主任账号通常与班级同名，如 三1）"></div>'
             +'<div class="form-group"><label>姓名 *</label><input type="text" id="acctRealName" value="'+escapeHtmlAttr(u.realName||'')+'"></div>'
             +'<div class="form-group"><label>'+(isEdit?'新密码（留空则不修改）':'初始密码')+'</label><input type="text" id="acctPassword" placeholder="'+(isEdit?'留空保持原密码':'留空默认 123456')+'"></div>'
@@ -2425,11 +2467,14 @@
         safeAsync(saveAccountImpl, '保存账号', { retry: true });
     }
     /**
-     * 保存账号实际逻辑：表单校验 → 同名用户存在则更新（姓名/楼栋/楼层/可选新密码），
-     * 否则新建（密码留空默认 123456，哈希后落库）；写 user 行并标脏，saveDB 同步。
+     * 保存账号实际逻辑：
+     *  - 编辑模式（acctEditId>0）：按 id 定位账号，更新姓名/楼栋/楼层/可选新密码；
+     *  - 新增模式：强制查重，用户名已存在则提示并中止（杜绝同名重复账号再次产生），
+     *    否则新建（密码留空默认 123456，哈希后落库）；写 user 行并标脏，saveDB 同步。
      * @returns {Promise}
      */
     function saveAccountImpl(){
+        var editId=parseInt((document.getElementById('acctEditId')||{}).value, 10) || 0;
         var username=String(document.getElementById('acctUsername').value||'').trim();
         var realName=String(document.getElementById('acctRealName').value||'').trim();
         var password=String(document.getElementById('acctPassword').value||'');
@@ -2445,7 +2490,14 @@
         var hyStartHour = hyStartHourEl ? parseInt(hyStartHourEl.value,10) : 5;
         var hyEndHour = hyEndHourEl ? parseInt(hyEndHourEl.value,10) : 15;
         if(!username || !realName){ toast('请填写用户名和姓名','error'); return Promise.resolve(); }
-        var target=DB.users.find(function(u){ return u.username===username; });
+        // 编辑模式按 id 定位（用户名只读）；新增模式 target 必须为空
+        var target = editId ? DB.users.find(function(u){ return String(u.id)===String(editId); }) : null;
+        if(editId && !target){ toast('账号不存在或已被删除','error'); return Promise.resolve(); }
+        // 新增强制查重：同名账号已存在则中止（防跨设备重复账号的根源之一）
+        if(!target && DB.users.some(function(u){ return u.username===username; })){
+            toast('用户名已存在','error');
+            return Promise.resolve();
+        }
         function finishSave(){
             saveDB();
             closeAccountModal();
@@ -2533,6 +2585,260 @@
             saveDB();
             toast('密码已重置为 123456');
         });
+    }
+
+    // ==================== 账号批量删除（仅管理员） ====================
+    /**
+     * 全选/取消全选账号复选框（跳过禁用的内置/当前登录账号）。
+     * @param {boolean} checked - 是否全选
+     */
+    function toggleAllUsers(checked){
+        document.querySelectorAll('.acct-check').forEach(function(cb){
+            if(!cb.disabled) cb.checked=checked;
+        });
+    }
+    /**
+     * 批量删除勾选的账号：二次确认后逐个移除并打 V3 墓碑。
+     * 双保险：即使复选框被绕过，内置 admin/staff 与当前登录账号也会被过滤掉。
+     */
+    function deleteSelectedUsers(){
+        if(!isAdmin()){ toast('无权限','error'); return; }
+        var ids=Array.from(document.querySelectorAll('.acct-check:checked')).map(function(cb){ return cb.getAttribute('data-user-id'); });
+        if(ids.length===0){ toast('请先勾选要删除的账号','error'); return; }
+        var removable=[], skipped=0;
+        ids.forEach(function(id){
+            var u=DB.users.find(function(x){ return String(x.id)===String(id); });
+            if(!u) return;
+            if(u.username==='admin' || u.username==='staff' || String(u.id)===String(currentUser.id)){ skipped++; return; }
+            removable.push(u);
+        });
+        if(removable.length===0){ toast('所选账号均不可删除（内置账号/当前登录账号）','error'); return; }
+        var msg='确认删除选中的 '+removable.length+' 个账号？此操作不可撤销';
+        if(skipped>0) msg+='（另有 '+skipped+' 个内置/当前登录账号将被跳过）';
+        if(!confirm(msg)) return;
+        removable.forEach(function(u){
+            DB.users=DB.users.filter(function(x){ return String(x.id)!==String(u.id); });
+            v3MarkDeleted('user', u.id);
+        });
+        saveDB();
+        toast('已删除 '+removable.length+' 个账号');
+        renderExportView(document.getElementById('contentArea'));
+    }
+
+    // ==================== 账号批量导入（仅管理员，文本 + Excel 两种方式） ====================
+    var batchUserState={ tab:'text', file:null, text:'' };  // 当前 Tab / 已选 Excel 文件 / 文本草稿（切 Tab 保留）
+    /**
+     * 打开批量新增账号模态框（Tab：文本导入 / Excel 导入）。
+     */
+    function openBatchUserModal(){
+        if(!isAdmin()){ toast('无权限','error'); return; }
+        batchUserState.tab='text';
+        batchUserState.file=null;
+        batchUserState.text='';
+        document.getElementById('batchUserModalBox').innerHTML=buildBatchUserModalHtml();
+        document.getElementById('batchUserModal').classList.add('show');
+    }
+    /** 关闭批量新增账号模态框 */
+    function closeBatchUserModal(){
+        var m=document.getElementById('batchUserModal');
+        if(m) m.classList.remove('show');
+    }
+    /**
+     * 拼装批量导入模态框内容（按当前 Tab 渲染文本框或文件选择）。
+     * @returns {string}
+     */
+    function buildBatchUserModalHtml(){
+        var t=batchUserState.tab;
+        var tabs='<div class="batch-tab-bar">'
+            +'<div class="batch-tab'+(t==='text'?' active':'')+'" onclick="switchBatchUserTab(\'text\')">📋 文本导入</div>'
+            +'<div class="batch-tab'+(t==='excel'?' active':'')+'" onclick="switchBatchUserTab(\'excel\')">📂 Excel导入</div>'
+            +'</div>';
+        var body;
+        if(t==='text'){
+            body='<div class="batch-hint">每行一个账号，格式：<b>用户名,姓名,密码,角色,负责楼层（生活老师）或 班级（班主任）</b><br>'
+                +'示例：<br>staff1,张老师,123456,STAFF,1,2,3<br>san5,三5班,123456,CLASS_ADMIN,三5<br>'
+                +'角色支持：STAFF（生活老师）/ CLASS_ADMIN（班主任）/ ADMIN（管理员）</div>'
+                +'<textarea id="batchUserText" rows="9" style="width:100%;padding:10px;border:1.5px solid var(--gray-200);border-radius:8px;font-size:0.9286rem" placeholder="staff1,张老师,123456,STAFF,1,2,3&#10;san5,三5班,123456,CLASS_ADMIN,三5"></textarea>';
+        }else{
+            body='<div class="batch-hint">请选择 Excel 文件（.xlsx / .xls），第一行表头自动跳过。<br>'
+                +'列顺序：<b>用户名 | 姓名 | 密码 | 角色 | 负责楼层 | 班级（可选）</b><br>'
+                +'负责楼层为多楼层逗号分隔（如 1,2,3，仅生活老师）；班级为班主任账号填写（如 三5）。</div>'
+                +'<div style="margin-bottom:10px"><span class="file-upload-wrapper"><span class="file-upload-btn">📂 选择Excel文件</span><input type="file" id="batchUserExcel" accept=".xlsx,.xls" onchange="onBatchUserExcelChange(this.files[0])"></span>'
+                +'<span id="batchUserFileName" style="margin-left:8px;color:var(--gray-600);font-size:0.8571rem">'+(batchUserState.file?escapeHtmlAttr(batchUserState.file.name):'未选择文件')+'</span></div>'
+                +'<button class="btn btn-outline btn-sm" onclick="downloadUserImportTemplate()">📥 下载导入模板</button>';
+        }
+        return '<div class="em-header"><span>📥 批量新增账号</span><button class="em-close" aria-label="关闭" onclick="closeBatchUserModal()">✕</button></div>'
+            +tabs
+            +'<div class="em-body">'+body+'</div>'
+            +'<div class="em-footer"><button class="btn btn-primary" onclick="submitBatchUsers()">✅ 确认导入</button><button class="btn btn-outline" onclick="closeBatchUserModal()">取消</button></div>';
+    }
+    /**
+     * 切换导入方式 Tab（保留文本草稿，避免误切换丢内容）。
+     * @param {string} tab - 'text' | 'excel'
+     */
+    function switchBatchUserTab(tab){
+        var textEl=document.getElementById('batchUserText');
+        if(textEl) batchUserState.text=textEl.value;
+        batchUserState.tab=(tab==='excel')?'excel':'text';
+        document.getElementById('batchUserModalBox').innerHTML=buildBatchUserModalHtml();
+        var ta=document.getElementById('batchUserText');
+        if(ta && batchUserState.text) ta.value=batchUserState.text;
+    }
+    /** Excel 文件选择回调：记录文件并显示文件名 */
+    function onBatchUserExcelChange(file){
+        if(!file) return;
+        batchUserState.file=file;
+        var el=document.getElementById('batchUserFileName');
+        if(el) el.textContent='已选择：'+file.name;
+    }
+    /** 批量导入入口：按当前 Tab 分发（Excel 走 safeAsync，可重试） */
+    function submitBatchUsers(){
+        if(!isAdmin()){ toast('无权限','error'); return; }
+        if(batchUserState.tab==='text'){
+            safeAsync(submitBatchUsersFromText, '批量导入账号（文本）', { retry: true });
+        }else{
+            if(!batchUserState.file){ toast('请先选择 Excel 文件','error'); return; }
+            safeAsync(function(){ return submitBatchUsersFromExcelImpl(batchUserState.file); }, '批量导入账号（Excel）', { retry: true });
+        }
+    }
+    /**
+     * 解析并校验单行账号数据：必填字段齐全、角色合法；楼层/班级按角色解析。
+     * @param {string[]} fields - [username, realName, password, role, floors|class]
+     * @returns {{user?:object, error?:string}}
+     */
+    function parseBatchUserFields(fields){
+        var username=String(fields[0]||'').trim();
+        var realName=String(fields[1]||'').trim();
+        var password=String(fields[2]||'').trim();
+        var role=String(fields[3]||'').trim().toUpperCase();
+        if(!username || !realName || !password || !role) return { error:'缺少必填字段（用户名/姓名/密码/角色）' };
+        if(['STAFF','CLASS_ADMIN','ADMIN'].indexOf(role)===-1) return { error:'角色非法：'+role };
+        var floors=[];
+        var className='';
+        if(role==='STAFF'){
+            // 第 5 列起为楼层编号（文本可多列，Excel 为一列逗号分隔），无效编号自动忽略
+            var floorStrs=(fields.length>4?fields.slice(4):[]).join(',').split(',');
+            floors=floorStrs.map(function(x){ return parseInt(String(x).trim(),10); })
+                .filter(function(fid){ return fid && getFloorById(fid); });
+        }else if(role==='CLASS_ADMIN'){
+            className=String(fields[4]||'').trim() || username; // 班主任班级名缺省用用户名
+        }
+        return { user:{ username:username, realName:realName, password:password, role:role, floors:floors, className:className } };
+    }
+    /** 文本导入：按行解析 → 查重 → 哈希 → 建号，toast 汇总结果 */
+    function submitBatchUsersFromText(){
+        var ta=document.getElementById('batchUserText');
+        var raw=ta?String(ta.value||''):'';
+        if(!raw.trim()){ toast('请先粘贴账号文本','error'); return Promise.resolve(); }
+        var parsed=[], failed=0, failMsgs=[];
+        raw.split(/\r?\n/).forEach(function(line, i){
+            var s=line.trim();
+            if(!s) return; // 空行跳过
+            var r=parseBatchUserFields(s.split(',').map(function(p){ return p.trim(); }));
+            if(r.error){ failed++; failMsgs.push('第'+(i+1)+'行：'+r.error); return; }
+            parsed.push(r.user);
+        });
+        return createBatchUsers(parsed).then(function(dupCount){
+            finishBatchImport(parsed.length, dupCount, failed, failMsgs);
+        });
+    }
+    /** Excel 导入：XLSX 解析（首行表头跳过）→ 查重 → 哈希 → 建号，toast 汇总结果 */
+    function submitBatchUsersFromExcelImpl(file){
+        return new Promise(function(resolve){
+            var reader=new FileReader();
+            reader.onerror=function(){ handleError(reader.error || new Error('文件读取失败'), '批量导入账号（Excel）'); resolve(); };
+            reader.onload=function(e){
+                try{
+                    var data=new Uint8Array(e.target.result);
+                    var workbook=XLSX.read(data, { type:'array' });
+                    var firstSheet=workbook.Sheets[workbook.SheetNames[0]];
+                    var rows=XLSX.utils.sheet_to_json(firstSheet, { header:1 });
+                    var parsed=[], failed=0, failMsgs=[];
+                    rows.forEach(function(row, i){
+                        if(i===0) return; // 首行表头跳过
+                        var cells=(row||[]).map(function(c){ return (c==null?'':String(c)).trim(); });
+                        if(cells.every(function(c){ return !c; })) return; // 空行跳过
+                        if(cells[0]==='用户名') return; // 无表头声明时的兜底：仍按表头行跳过
+                        var r=parseBatchUserFields(cells);
+                        if(r.error){ failed++; failMsgs.push('第'+(i+1)+'行：'+r.error); return; }
+                        parsed.push(r.user);
+                    });
+                    createBatchUsers(parsed).then(function(dupCount){
+                        finishBatchImport(parsed.length, dupCount, failed, failMsgs);
+                        resolve();
+                    });
+                }catch(err){
+                    handleError(err, '批量导入账号（Excel解析）', { silent: true });
+                    toast('Excel解析失败，请检查文件格式','error');
+                    resolve();
+                }
+            };
+            reader.readAsArrayBuffer(file);
+        });
+    }
+    /**
+     * 批量创建账号：过滤与 DB / 批内重复的用户名，密码按明文去重后统一哈希，
+     * 逐个落库并标脏（纳入 V3 同步），最后 saveDB。
+     * @param {Array<{username,realName,password,role,floors,className}>} list - 校验通过的账号
+     * @returns {Promise<number>} 跳过的重复账号数
+     */
+    function createBatchUsers(list){
+        var dupCount=0;
+        var seen={};
+        var unique=list.filter(function(r){
+            if(seen[r.username] || DB.users.some(function(u){ return u.username===r.username; })){ dupCount++; return false; }
+            seen[r.username]=true;
+            return true;
+        });
+        if(unique.length===0) return Promise.resolve(dupCount);
+        // 相同明文密码只哈希一次
+        var pwdHash={}, jobs=[];
+        unique.forEach(function(r){
+            if(!pwdHash[r.password]) jobs.push(hashPassword(r.password).then(function(h){ pwdHash[r.password]=h; }));
+        });
+        return Promise.all(jobs).then(function(){
+            var nowTs=Date.now();
+            unique.forEach(function(r){
+                var nu={
+                    id: DB.nextIds.user++,
+                    username: r.username,
+                    passwordHash: pwdHash[r.password],
+                    realName: r.realName,
+                    role: r.role,
+                    buildingName: '',
+                    assignedFloors: (r.role==='STAFF') ? r.floors.slice() : [],
+                    enableTimeLimit: (r.role==='STAFF') ? true : undefined,
+                    createdAt: nowTs, lastModified: nowTs
+                };
+                if(r.role==='CLASS_ADMIN') nu.className=r.className || r.username;
+                DB.users.push(nu);
+                v3MarkDirty('user', nu.id);
+            });
+            saveDB();
+            return dupCount;
+        });
+    }
+    /** 批量导入收尾：关闭模态框、刷新账号列表、toast 汇总（失败明细输出控制台） */
+    function finishBatchImport(valid, dupCount, failed, failMsgs){
+        closeBatchUserModal();
+        renderExportView(document.getElementById('contentArea'));
+        var imported=valid-dupCount;
+        if(failMsgs.length>0) console.warn('[批量导入账号] 失败明细：', failMsgs.join('；'));
+        if(imported===0 && dupCount===0 && failed===0){ toast('没有可导入的账号','error'); return; }
+        toast('成功导入 '+imported+' 个账号，跳过重复 '+dupCount+' 个，失败 '+failed+' 个', (failed>0?'error':''));
+        if(failed>0) toast('失败原因已记录到控制台（F12 查看）','error');
+    }
+    /** 下载账号导入 Excel 模板（表头 + 两行示例，XLSX 生成） */
+    function downloadUserImportTemplate(){
+        if(!window.XLSX){ toast('Excel 组件未加载','error'); return; }
+        var wb=XLSX.utils.book_new();
+        var aoa=[
+            ['用户名','姓名','密码','角色','负责楼层','班级'],
+            ['staff1','张老师','123456','STAFF','1,2,3',''],
+            ['san5','三5班','123456','CLASS_ADMIN','','三5']
+        ];
+        XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(aoa), '账号导入模板');
+        XLSX.writeFile(wb, '账号导入模板.xlsx');
     }
     /**
      * 保存楼层分工配置（楼层分配管理卡片）：更新所选生活老师的

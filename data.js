@@ -527,6 +527,52 @@
 
     // ==================== 初始化与同步 ====================
     /**
+     * 按 username 去重账号：同一用户名保留 id 最小（最早创建）的一条，
+     * 多余的打 V3 墓碑并从 DB.users 移除。
+     * 背景：跨设备同步场景下，ensureCorrectUsers 与 V3 合并各自按 id/username
+     * 单方面判断，可能产生两个同名不同 id 的账号，导致登录歧义与统计混乱。
+     * 去重策略跨设备确定性一致（永远保留最小 id），各设备收敛到同一条记录。
+     * 若当前登录会话恰好是被移除的重复账号，自动切换到保留记录（同名账号）。
+     * 幂等：无重复时零副作用。
+     * @returns {number} 清理的重复账号数
+     */
+    function dedupeUsersByUsername() {
+        if (!DB || !Array.isArray(DB.users) || DB.users.length === 0) return 0;
+        var seen = {};   // username -> 保留的用户记录
+        var kept = [];
+        var removedIds = {};
+        var removed = 0;
+        // 按 id 升序遍历，保证"保留最小 id"规则确定性生效
+        DB.users.slice().sort(function(a, b) { return (a && a.id || 0) - (b && b.id || 0); }).forEach(function(u) {
+            if (!u || !u.username) { kept.push(u); return; } // 异常数据不处理
+            if (seen[u.username]) {
+                removed++;
+                removedIds[String(u.id)] = true;
+                v3MarkDeleted('user', u.id); // 打墓碑通知其他设备删除同 id 重复行
+                return;
+            }
+            seen[u.username] = u;
+            kept.push(u);
+        });
+        if (removed === 0) return 0;
+        DB.users = kept;
+        // 当前登录账号若为被移除的重复账号：指向保留记录（同名），保持会话有效
+        try {
+            if (typeof currentUser !== 'undefined' && currentUser && removedIds[String(currentUser.id)]) {
+                var keeper = seen[currentUser.username];
+                if (keeper) {
+                    Object.keys(currentUser).forEach(function(k){ delete currentUser[k]; });
+                    Object.keys(keeper).forEach(function(k){ currentUser[k] = keeper[k]; });
+                    sessionStorage.setItem('currentUser', JSON.stringify(currentUser));
+                }
+            }
+        } catch(e) { /* 会话缓存修复失败不影响去重结果 */ }
+        saveDBToLocal();
+        console.log('[账号去重] 清理重复账号 ' + removed + ' 个');
+        return removed;
+    }
+
+    /**
      * 确保内置账号齐全（幂等，应用启动与云端重置后都会调用）。
      * 保证存在：admin/管理员（ADMIN，密码 admin123）、staff/总生活老师
      * （STAFF，密码 staff123，负责全部楼层）、staff1（STAFF，密码 123456，
@@ -538,6 +584,9 @@
      */
     function ensureCorrectUsers() {
         if (!DB || !DB.users) return Promise.resolve();
+        // 先按 username 去重：跨设备同步可能产生同名不同 id 账号，
+        // 不先去重会让下方"是否已存在"判断命中任一副本，重复行长期残留
+        dedupeUsersByUsername();
         var adminExists = false, staffExists = false;
         for (var i = 0; i < DB.users.length; i++) {
             if (DB.users[i].username === 'admin') { DB.users[i].role = 'ADMIN'; DB.users[i].realName = '管理人员'; adminExists = true; }

@@ -680,7 +680,7 @@
     /**
      * 渲染「巡查核实」视图（仅 STAFF/ADMIN）：
      * 顶部历史日期查询 + 四张统计卡（待核实总数/已确认/待确认/异常数）+
-     * 按楼层→宿舍分组的待核实学生列表（确认按钮/异常上报按钮）+
+     * 按楼层→宿舍分组的待核实学生列表（仅确认按钮；异常上报统一走顶部第五卡片入口）+
      * 晚检总结卡（今日待确认为 0 自动生成；历史日期只读，支持导出 Excel）。
      * @param {HTMLElement} container - contentArea 容器
      */
@@ -714,7 +714,7 @@
             +'<div class="stat-item"><div class="number" style="color:#34c759">'+confirmedCount+'</div><div class="label">✅ 已确认</div></div>'
             +'<div class="stat-item"><div class="number" style="color:#ff9500">'+pendingCount+'</div><div class="label">⏳ 待确认</div></div>'
             +'<div class="stat-item"><div class="number" style="color:#ff3b30">'+anomalies.length+'</div><div class="label">⚠️ 异常上报</div></div>'
-            +'<div class="stat-item stat-item-action" onclick="openAnomalyModal(0)" role="button" tabindex="0">'
+            +'<div class="stat-item stat-item-action" onclick="openAnomalyModal()" role="button" tabindex="0">'
             +'<div class="number" style="color:#ff3b30;font-size:1.4286rem">⚠️</div>'
             +'<div class="label" style="font-weight:700">异常上报</div>'
             +'<div style="font-size:0.7857rem;color:#ff3b30;margin-top:2px">点击上报</div>'
@@ -777,9 +777,6 @@
                         +'<div style="color:var(--gray-500);font-size:0.8571rem;margin-top:2px">'+escapeHtmlAttr(a.className||'-')+' · 床号'+escapeHtmlAttr(a.bed||'-')+' · 上报人：'+escapeHtmlAttr(a.reportedByName||'-')+(a.note?' · '+escapeHtmlAttr(a.note):'')+'</div></div>'
                         +'<div style="flex-shrink:0"><span class="status-tag status-red">⚠️ 异常</span></div></div>';
                 });
-                if(isToday){
-                    html+='<div style="margin-top:10px"><button class="btn btn-danger btn-xs" onclick="openAnomalyModal('+(bucket.dormitoryId||0)+')">⚠️ 异常上报</button></div>';
-                }
                 html+='</div></div>';
             });
         });
@@ -980,50 +977,76 @@
         }
         var topTitle = '🏠 全校宿舍排行榜' + (statsDormExpandAll ? '<span class="fold-sub">全部'+dormStatsAll.length+'个</span>' : '<span class="fold-sub">TOP20</span>');
         var topBody = '<div id="statsDormWrap">'+dormSectionHtml()+'</div>';
-        // 净分排行榜：净分 = 扣分 - 加分，从高到低
-        var netStatsAll = dormStatsAll.map(function(d){
-            var dormObj = DB.dormitories.find(function(dm){ return dm.roomNumber===d.roomNumber; });
-            var recs = dormObj ? getRecordsByDormitory(dormObj.id) : [];
-            var bonus = getTotalBonusScore(recs);
-            var deduct = getTotalDeductScore(recs);
-            var net = Math.round((deduct - bonus) * 10) / 10;
-            return { roomNumber: d.roomNumber, name: d.name, className: d.className, deduct: deduct, bonus: bonus, net: net, count: d.count };
-        });
-        netStatsAll.sort(function(a,b){ if(a.net !== b.net) return b.net - a.net; return a.roomNumber.localeCompare(b.roomNumber,'zh-Hans-CN',{numeric:true}); });
+        // 净分排行榜：净分 = 扣分 - 加分；楼层芯片切换（与"楼层扣分情况"同交互），按净分降序
+        if(!statsNetScorePickFloorId || !getFloorById(statsNetScorePickFloorId)) statsNetScorePickFloorId = DB.floors[0] ? DB.floors[0].id : null;
+        // 当前选中楼层的净分数据（含 0 分宿舍）
+        function getNetFloorList(){
+            var roomsInFloor = getDormitoriesByFloor(statsNetScorePickFloorId).filter(function(d){ return !isDormitoryDeleted(d.roomNumber); });
+            var dormList = roomsInFloor.map(function(d){
+                var r = getRecordsByDormitory(d.id);
+                var deduct = getTotalDeductScore(r);
+                var bonus = getTotalBonusScore(r);
+                return { roomNumber: d.roomNumber, className: getDormitoryClassName(d.id), deduct: deduct, bonus: bonus, net: Math.round((deduct-bonus)*10)/10, count: r.length };
+            });
+            // 净分从高到低（扣分多加分少在前），同分按宿舍号升序
+            dormList.sort(function(a,b){ if(a.net !== b.net) return b.net - a.net; return a.roomNumber.localeCompare(b.roomNumber,'zh-Hans-CN',{numeric:true}); });
+            return dormList;
+        }
+        // PC 端表格行（排名/宿舍/班级/扣分/加分/净分/记录数 7 列完整表格）
         function netDormRowHtml(d, i){
             var netCls = d.net > 0 ? 'highlight-red' : (d.net < 0 ? 'highlight-green' : '');
-            return '<tr><td data-label="排名">'+(i+1)+'</td><td data-label="宿舍"><b>'+d.name+'</b></td><td data-label="班级">'+(d.className||'-')+'</td><td data-label="扣分" class="highlight-red">'+d.deduct+'</td><td data-label="加分" class="highlight-green">'+d.bonus+'</td><td data-label="净分" class="'+netCls+'"><b>'+d.net+'</b></td><td data-label="记录数">'+d.count+'</td></tr>';
+            return '<tr><td data-label="排名">'+(i+1)+'</td><td data-label="宿舍"><b>'+d.roomNumber+'</b></td><td data-label="班级">'+(d.className||'-')+'</td><td data-label="扣分" class="highlight-red">'+d.deduct+'</td><td data-label="加分" class="highlight-green">'+d.bonus+'</td><td data-label="净分" class="'+netCls+'"><b>'+d.net+'</b></td><td data-label="记录数">'+d.count+'</td></tr>';
         }
+        // 移动端卡片行：核心 4 列（排名/宿舍/净分/记录数），班级/扣分/加分以小字提示，避免堆叠
         function netDormCardHtml(d, idx){
             var netColor = d.net > 0 ? '#ff3b30' : (d.net < 0 ? '#34c759' : '#9ca3af');
+            var rank = idx+1;
+            var topCls = rank<=3 ? ' top' : '';
             return '<div class="dorm-row-mobile">'
-                + '<div class="rank-item rank-idx-1"><span class="rank-label">排名</span><span class="rank-value">#'+(idx+1)+'</span></div>'
+                + '<div class="rank-item rank-idx-1'+topCls+'"><span class="rank-label">排名</span><span class="rank-value">#'+rank+'</span></div>'
                 + '<div class="rank-item rank-idx-2"><span class="rank-label">宿舍</span><span class="rank-value">'+d.roomNumber+'</span></div>'
-                + '<div class="rank-item rank-idx-3"><span class="rank-label">班级</span><span class="rank-value">'+(d.className||'—')+'</span></div>'
-                + '<div class="rank-item rank-idx-4"><span class="rank-label">扣分</span><span class="rank-value has">'+d.deduct+'分</span></div>'
-                + '<div class="rank-item rank-idx-5"><span class="rank-label">加分</span><span class="rank-value" style="color:#34c759">'+d.bonus+'分</span></div>'
-                + '<div class="rank-item rank-idx-6" style="flex:0 0 100%;border-right:none;border-top:1px dashed #e5e7eb;margin-top:4px;padding-top:6px"><span class="rank-label">净分</span><span class="rank-value" style="color:'+netColor+';font-size:1.2857rem"><b>'+d.net+'分</b></span></div>'
+                + '<div class="rank-item rank-idx-3"><span class="rank-label">净分</span><span class="rank-value" style="color:'+netColor+'"><b>'+d.net+'分</b></span></div>'
+                + '<div class="rank-item rank-idx-4"><span class="rank-label">记录数</span><span class="rank-value">'+d.count+'条</span></div>'
+                + '<div style="flex:0 0 100%;margin-top:4px;padding-top:6px;border-top:1px dashed #e5e7eb;font-size:0.7857rem;color:#6b7280;text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+(d.className||'—')+' · 扣'+d.deduct+'分 · 加'+d.bonus+'分</div>'
                 + '</div>';
         }
-        var netList = netStatsAll.slice(0, 20);
-        var netBody;
-        if(window.innerWidth <= 768){
-            netBody = '<div id="statsNetCards">'+netList.map(netDormCardHtml).join('')+'</div>';
-        }else{
-            netBody = '<div style="overflow-x:auto"><table><thead><tr><th>排名</th><th>宿舍</th><th>班级</th><th>扣分</th><th>加分</th><th>净分</th><th>记录数</th></tr></thead><tbody>'+netList.map(netDormRowHtml).join('')+'</tbody></table></div>';
+        // 净分榜骨架（楼层芯片 + 空容器，内容由 fillNetList 分片填充）
+        function netSectionHtml(){
+            var chips = DB.floors.map(function(f2){
+                return '<div class="chip'+(f2.id===statsNetScorePickFloorId?' active':'')+'" onclick="selectStatsNetFloor('+f2.id+')">'+f2.name+'</div>';
+            }).join('');
+            var listBody;
+            if(window.innerWidth<=768){
+                listBody = '<div id="statsNetCards" style="padding:2px 0"></div>';
+            }else{
+                listBody = '<div style="overflow-x:auto"><table><thead><tr><th>排名</th><th>宿舍</th><th>班级</th><th>扣分</th><th>加分</th><th>净分</th><th>记录数</th></tr></thead><tbody id="statsNetTbody"></tbody></table></div>';
+            }
+            return '<div style="padding:8px 2px 4px"><div class="net-floor-chips">'+chips+'</div></div>' + listBody;
         }
+        // 净分榜数据分片填充（初次渲染 / 切换楼层后调用）
+        function fillNetList(){
+            var list = getNetFloorList();
+            var tb = document.getElementById('statsNetTbody');
+            if(tb) renderListInChunks(tb, list, netDormRowHtml, 50, null, {emptyHtml:'<tr><td colspan="7" style="text-align:center;color:#aaa">该楼层暂无数据</td></tr>'});
+            var cd = document.getElementById('statsNetCards');
+            if(cd) renderListInChunks(cd, list, netDormCardHtml, 50, null, {emptyHtml:'<div class="empty-state" style="padding:24px">该楼层暂无宿舍</div>'});
+        }
+        statsCache.netSectionHtml = netSectionHtml;
+        statsCache.fillNetList = fillNetList;
+        var netBody = '<div id="statsNetWrap">'+netSectionHtml()+'</div>';
         var mobileDetailBody = '<div id="statsFloorDetailWrap">'+floorDetailHtml()+'</div>';
         var pcDetailBody = '<div style="padding:14px">'+floorDormLowTables+'</div>';
         container.innerHTML = '<div class="content-header"><h2>📊 统计报表</h2></div>'
             + '<div class="stat-cards"><div class="stat-card"><div class="number">'+allRecords.length+'</div><div class="label">总扣分记录</div></div><div class="stat-card warning"><div class="number">'+total+'</div><div class="label">总扣分</div></div><div class="stat-card danger"><div class="number">'+dormStatsAll.filter(function(d){return d.score>0;}).length+'</div><div class="label">有扣分宿舍</div></div></div>'
             + foldBlock('fold-stats-floor','🏆 楼层扣分排名','<div style="padding:18px">'+floorBarsHtml+'</div>')
             + foldBlock('fold-stats-top', topTitle, topBody)
-            + foldBlock('fold-stats-net','📊 净分排行榜 <span class="fold-sub">TOP20（净分=扣分-加分）</span>', netBody)
+            + foldBlock('fold-stats-net','📊 净分排行榜 <span class="fold-sub">净分=扣分-加分 · 按楼层查看</span>', netBody)
             + (window.innerWidth<=768
                 ? foldBlock('fold-stats-detail','📉 楼层扣分情况', mobileDetailBody)
                 : foldBlock('fold-stats-detail','📉 各楼层扣分详情', pcDetailBody));
-        // 列表分片填充：排行榜、楼层详情、各楼层详情卡（折叠状态不受影响，隐藏容器内照样填充）
+        // 列表分片填充：排行榜、净分榜、楼层详情、各楼层详情卡（折叠状态不受影响，隐藏容器内照样填充）
         fillStatsDormList();
+        fillNetList();
         fillStatsFloorDetail();
         var floorLowEmpty='<tr><td colspan="5" style="text-align:center;color:#aaa">暂无数据</td></tr>';
         floorLowFillJobs.forEach(function(job){
@@ -1033,9 +1056,10 @@
             }, 50, null, {emptyHtml:floorLowEmpty});
         });
     }
-    // 统计报表交互状态：排行榜展开全部 / 楼层扣分情况当前楼层（跨重渲染保持）
+    // 统计报表交互状态：排行榜展开全部 / 楼层扣分情况当前楼层 / 净分榜当前楼层（跨重渲染保持）
     var statsDormExpandAll=false;
     var statsFloorPickId=null;
+    var statsNetScorePickFloorId=null;
     var statsCache={};
     /**
      * 排行榜"展开/收起全部"切换：翻转展开标志、重写排行榜区块骨架并重新分片填充。
@@ -1064,6 +1088,17 @@
         if(w && statsCache.floorDetailHtml) w.innerHTML=statsCache.floorDetailHtml();
         // 骨架替换后重新分片填充楼层详情
         if(statsCache.fillFloorDetail) statsCache.fillFloorDetail();
+    }
+    /**
+     * 净分排行榜：切换选中楼层芯片，重写骨架并重新分片填充该楼层净分列表。
+     * @param {number} fid - 楼层 ID
+     */
+    function selectStatsNetFloor(fid){
+        statsNetScorePickFloorId=fid;
+        var w=document.getElementById('statsNetWrap');
+        if(w && statsCache.netSectionHtml) w.innerHTML=statsCache.netSectionHtml();
+        // 骨架替换后重新分片填充净分榜
+        if(statsCache.fillNetList) statsCache.fillNetList();
     }
 
     // ==================== 学生名单管理视图 ====================
@@ -1280,8 +1315,7 @@
             + '<div class="form-group"><label>姓名</label><input type="text" id="leaveFilterName" placeholder="输入姓名关键字" style="width:150px;"></div>'
             + '<button class="btn btn-primary" onclick="applyLeaveFilter()">🔍 查询</button>'
             + '</div></div></div>')
-            + '<div style="display:grid;grid-template-columns:1fr;gap:16px">'
-            + '<div class="card"><div class="card-header">📝 请假登记（即刻生效，到期自动销假）</div><div class="card-body">'
+            + '<div class="fold-block'+(foldState['fold-leave-absence']?' open':'')+'" id="fold-leave-absence"><div class="fold-header" onclick="toggleLeaveManageCard(\'fold-leave-absence\')">📝 请假登记（即刻生效，到期自动销假）<span class="fold-arrow">▶</span></div><div class="fold-body"><div class="card-body">'
             + '<div class="form-row"><div class="form-group">'
             + classFieldAbs
             + '</div>'
@@ -1293,8 +1327,8 @@
             + '<div class="form-row"><div class="form-group"><label>开始日期 *</label><input type="text" class="date-picker" id="absStartDate" value="'+today+'"></div>'
             + '<div class="form-group"><label>结束日期 *</label><input type="text" class="date-picker" id="absEndDate" value="'+today+'"></div></div>'
             + '<button class="btn btn-primary" onclick="addAbsenceRecord()">📝 登记请假</button>'
-            + '</div></div>'
-            + '<div class="card"><div class="card-header">停宿管理</div><div class="card-body">'
+            + '</div></div></div>'
+            + '<div class="fold-block'+(foldState['fold-leave-stop']?' open':'')+'" id="fold-leave-stop"><div class="fold-header" onclick="toggleLeaveManageCard(\'fold-leave-stop\')">🏠 停宿管理<span class="fold-arrow">▶</span></div><div class="fold-body"><div class="card-body">'
             + '<div class="form-row"><div class="form-group">'
             + classFieldStop
             + '</div>'
@@ -1306,8 +1340,8 @@
             + '<div class="form-group"><label>停宿时间段（自动生成）</label><input type="text" id="stopPeriod" readonly placeholder="选择日期后自动生成"></div>'
             + '<div class="form-group"><label>停宿原因 *</label><input type="text" id="stopReason" placeholder="原因"></div>'
             + '<button class="btn btn-primary" onclick="addLeaveRecord(\'stop\')">📝 登记停宿</button>'
-            + '</div></div>'
-            + '<div class="card"><div class="card-header">退宿管理</div><div class="card-body">'
+            + '</div></div></div>'
+            + '<div class="fold-block'+(foldState['fold-leave-leave']?' open':'')+'" id="fold-leave-leave"><div class="fold-header" onclick="toggleLeaveManageCard(\'fold-leave-leave\')">🚪 退宿管理<span class="fold-arrow">▶</span></div><div class="fold-body"><div class="card-body">'
             + '<div class="form-row"><div class="form-group">'
             + classFieldLeave
             + '</div>'
@@ -1317,8 +1351,7 @@
             + '<div class="form-row"><div class="form-group"><label>退宿时间 *</label><input type="text" class="date-picker" id="leaveDate" value="'+today+'"></div>'
             + '<div class="form-group"><label>退宿原因 *</label><input type="text" id="leaveReason" placeholder="原因"></div></div>'
             + '<button class="btn btn-primary" onclick="addLeaveRecord(\'leave\')">📝 登记退宿</button>'
-            + '</div></div>'
-            + '</div>'
+            + '</div></div></div>'
             + '<div class="fold-block" id="recFold-absence"><div class="fold-header" onclick="toggleRecFold(\'absence\')">📋 请假记录<span class="fold-sub" id="recCount-absence"></span><span class="fold-arrow">▶</span></div><div class="fold-body"><div id="absenceRecordsList"></div></div></div>'
             + '<div class="fold-block" id="recFold-stop"><div class="fold-header" onclick="toggleRecFold(\'stop\')">🛏 停宿记录<span class="fold-sub" id="recCount-stop"></span><span class="fold-arrow">▶</span></div><div class="fold-body"><div id="stopRecordsList"></div></div></div>'
             + '<div class="fold-block" id="recFold-leave"><div class="fold-header" onclick="toggleRecFold(\'leave\')">🚪 退宿记录<span class="fold-sub" id="recCount-leave"></span><span class="fold-arrow">▶</span></div><div class="fold-body"><div id="leaveRecordsList"></div></div></div>';
@@ -1707,23 +1740,24 @@
         if (!isClassAdmin) {
             // 扣分记录专属操作卡片：切换到退宿/停宿类型时自动隐藏（onExportDataTypeChange）
             html += '<div id="deductionOnlyCards">'
-                + '<div class="card"><div class="card-header">导出全部数据</div><div class="card-body"><button class="btn btn-primary" onclick="exportCSV()">📥 导出全部CSV</button></div></div>'
                 + '<div class="card"><div class="card-header">危险操作</div><div class="card-body">'
                 + '<button class="btn btn-danger" onclick="deleteAllRecords()">🗑️ 删除全部扣分记录</button>'
                 + '<button class="btn btn-danger" style="margin-left:8px" onclick="deleteAllAbsenceRecords()">🗑️ 删除全部请假记录</button>'
                 + '<button class="btn btn-danger" style="margin-left:8px" onclick="deleteAllStopRecords()">🗑️ 删除全部停宿记录</button>'
                 + '<button class="btn btn-danger" style="margin-left:8px" onclick="deleteAllLeaveRecords()">🗑️ 删除全部退宿记录</button>'
+                + '<button class="btn btn-danger" style="margin-left:8px;margin-top:8px" onclick="deleteAllInspectionSummaries()">🗑️ 删除全部巡查核实总结</button>'
+                + '<button class="btn btn-danger" style="margin-left:8px;margin-top:8px" onclick="deleteAllConfirmationsAndAnomalies()">🗑️ 删除全部确认和异常上报</button>'
                 + '<p style="color:var(--danger);margin-top:8px;font-size:0.8571rem">此操作将永久删除对应类型的全部记录，不可恢复！</p></div></div>'
                 + '<div class="card"><div class="card-header">☁️ 云端数据重置（新学期/数据清理）</div><div class="card-body">'
                 + '<p style="margin:0 0 8px;color:var(--text-light);font-size:0.9rem">先在本机把数据整理到正确状态（删除不要的学生、导入新名单），再点此按钮：云端将被清空并以本机数据为准重新建立；其它设备点一次同步即统一下载，旧数据不会再同步回来。</p>'
                 + '<button class="btn btn-danger" id="btnResetCloud" onclick="resetCloudData()">🔁 重置云端数据（以下发为准）</button>'
                 + '<p style="color:var(--danger);margin-top:8px;font-size:0.8571rem">此操作会永久清空云端全部数据！执行时请让其它设备暂时不要点同步。</p></div></div>'
                 + '</div>';
-            // 账号管理 + 楼层分配管理（仅管理员）
-            html += '<div class="card"><div class="card-header">👤 账号管理</div><div class="card-body" id="accountManageBody">'
-                + buildAccountManageHtml() + '</div></div>';
-            html += '<div class="card"><div class="card-header">🏢 楼层分配管理（生活老师负责楼层）</div><div class="card-body" id="floorAssignBody">'
-                + buildFloorAssignHtml() + '</div></div>';
+            // 账号管理 + 楼层分配管理（仅管理员）：互斥折叠，默认收起，节省纵向空间
+            html += '<div class="fold-block'+(foldState['fold-account-manage']?' open':'')+'" id="fold-account-manage"><div class="fold-header" onclick="toggleAccountOrFloor(\'fold-account-manage\')">👤 账号管理<span class="fold-arrow">▶</span></div><div class="fold-body"><div class="card-body" id="accountManageBody">'
+                + buildAccountManageHtml() + '</div></div></div>';
+            html += '<div class="fold-block'+(foldState['fold-floor-manage']?' open':'')+'" id="fold-floor-manage"><div class="fold-header" onclick="toggleAccountOrFloor(\'fold-floor-manage\')">🏢 楼层分配管理（生活老师负责楼层）<span class="fold-arrow">▶</span></div><div class="fold-body"><div class="card-body" id="floorAssignBody">'
+                + buildFloorAssignHtml() + '</div></div></div>';
         }
 
         html += '<div id="queryResultArea" style="margin-top:16px;"></div>';
@@ -1749,8 +1783,9 @@
         return '全部楼层';
     }
     /**
-     * 账号管理卡片内容：全部用户列表（用户名/姓名/角色/负责楼层/操作）+ 新增账号按钮。
-     * 写操作（新增/编辑/删除/重置密码）统一在 app.js，落 DB 并 saveDB 同步。
+     * 账号管理卡片内容：全部用户列表（选择/用户名/姓名/角色/负责楼层/操作）+
+     * 新增账号 / 批量导入 / 全选+批量删除按钮。
+     * 写操作（新增/编辑/删除/批量删除/批量导入/重置密码）统一在 app.js，落 DB 并 saveDB 同步。
      * @returns {string}
      */
     function buildAccountManageHtml(){
@@ -1759,20 +1794,32 @@
             // 内置 admin/staff 账号受保护，不可删除（staff 为总生活老师）
             var protectedAcct = (u.username === 'admin' || u.username === 'staff');
             var isSelf = currentUser && String(u.id) === String(currentUser.id);
+            var delable = !(protectedAcct || isSelf);
             var ops = '<button class="btn btn-outline btn-xs" onclick="openAccountModal('+u.id+')">编辑</button> '
                 + '<button class="btn btn-outline btn-xs" onclick="resetUserPassword('+u.id+')">重置密码</button> '
-                + ((protectedAcct||isSelf)
-                    ? '<button class="btn btn-danger btn-xs" disabled style="opacity:.4" title="内置账号/当前登录账号不可删除">删除</button>'
-                    : '<button class="btn btn-danger btn-xs" onclick="deleteUser('+u.id+')">删除</button>');
-            return '<tr><td data-label="用户名">'+escapeHtmlAttr(u.username)+'</td>'
+                + (delable
+                    ? '<button class="btn btn-danger btn-xs" onclick="deleteUser('+u.id+')">删除</button>'
+                    : '<button class="btn btn-danger btn-xs" disabled style="opacity:.4" title="内置账号/当前登录账号不可删除">删除</button>');
+            var check = delable
+                ? '<input type="checkbox" class="acct-check" data-user-id="'+u.id+'">'
+                : '<input type="checkbox" disabled style="opacity:.3" title="内置账号/当前登录账号不可删除">';
+            return '<tr><td data-label="选择">'+check+'</td>'
+                + '<td data-label="用户名">'+escapeHtmlAttr(u.username)+'</td>'
                 + '<td data-label="姓名">'+escapeHtmlAttr(u.realName||'')+'</td>'
                 + '<td data-label="角色">'+userRoleLabel(u.role)+'</td>'
                 + '<td data-label="负责楼层">'+userFloorsText(u)+(u.buildingName?'（'+escapeHtmlAttr(u.buildingName)+'）':'')+'</td>'
                 + '<td data-label="操作">'+ops+'</td></tr>';
         }).join('');
-        return '<button class="btn btn-primary" onclick="openAccountModal(0)">➕ 新增账号</button>'
-            + '<div style="overflow-x:auto;margin-top:10px"><table><thead><tr><th>用户名</th><th>姓名</th><th>角色</th><th>负责楼层</th><th>操作</th></tr></thead><tbody>'+rows+'</tbody></table></div>'
-            + '<p style="color:var(--gray-500);font-size:0.8571rem;margin-top:8px">新增账号默认密码 123456；重置密码也会重置为 123456。</p>';
+        return '<div style="display:flex;gap:8px;flex-wrap:wrap">'
+            + '<button class="btn btn-primary" onclick="openAccountModal(0)">➕ 新增账号</button>'
+            + '<button class="btn btn-outline" onclick="openBatchUserModal()">📥 批量导入</button>'
+            + '</div>'
+            + '<div style="display:flex;gap:10px;align-items:center;margin-top:10px;flex-wrap:wrap">'
+            + '<label style="display:flex;align-items:center;gap:4px;font-weight:400;cursor:pointer"><input type="checkbox" id="selectAllUsers" onchange="toggleAllUsers(this.checked)"> 全选</label>'
+            + '<button class="btn btn-danger btn-sm" onclick="deleteSelectedUsers()">🗑️ 批量删除</button>'
+            + '</div>'
+            + '<div style="overflow-x:auto;margin-top:10px"><table><thead><tr><th>选择</th><th>用户名</th><th>姓名</th><th>角色</th><th>负责楼层</th><th>操作</th></tr></thead><tbody>'+rows+'</tbody></table></div>'
+            + '<p style="color:var(--gray-500);font-size:0.8571rem;margin-top:8px">新增账号默认密码 123456；重置密码也会重置为 123456。内置 admin/staff 与当前登录账号不可删除。</p>';
     }
 
     // ==================== 楼层分配管理（仅管理员） ====================

@@ -359,6 +359,20 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
         .dorm-chip.active{background:var(--primary);color:#fff;border-color:var(--primary)}
         .custom-item-input{margin-left:8px;padding:4px 8px;border:1px dashed #ccc;border-radius:4px;display:inline-block}
 
+        /* 净分排行榜楼层芯片：PC 端一行铺满 8 个楼层（移动端媒体查询内改为每行 4 个）；
+           .chip 基础样式提升为全局（原仅移动端定义），供统计页 PC/移动共用 */
+        .chip{border:1.5px solid var(--gray-200);border-radius:10px;background:#fff;text-align:center;cursor:pointer;user-select:none;color:var(--gray-700)}
+        .chip:active{transform:scale(.95)}
+        .chip.active{border-color:var(--primary);background:#eef2ff;color:var(--primary);font-weight:700}
+        .net-floor-chips{display:flex;flex-wrap:wrap;gap:8px;padding:4px 0 6px}
+        .net-floor-chips .chip{flex:1 1 0;min-width:0;padding:9px 2px;font-size:0.9286rem}
+
+        /* 批量导入模态框：Tab 切换条（文本/Excel） */
+        .batch-tab-bar{display:flex;gap:4px;border-bottom:1.5px solid var(--gray-200);padding:10px 16px 0;flex-shrink:0}
+        .batch-tab{padding:10px 14px;cursor:pointer;font-weight:600;color:var(--gray-500);border-bottom:2px solid transparent;user-select:none;font-size:0.9286rem;white-space:nowrap}
+        .batch-tab.active{color:var(--primary);border-bottom-color:var(--primary)}
+        .batch-hint{background:var(--gray-50);border:1px solid var(--gray-200);border-radius:8px;padding:10px 12px;font-size:0.8571rem;color:var(--gray-600);margin-bottom:12px;line-height:1.7}
+
         /* ========== 记录修改模态框 ========== */
         .modal-overlay{display:none;position:fixed;inset:0;background:rgba(17,24,39,.5);z-index:2000;align-items:center;justify-content:center;padding:16px}
         .modal-overlay.show{display:flex}
@@ -489,6 +503,8 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
             /* 统计报表楼层芯片：每行4个固定网格（复用 chip-floors 的成熟 wrap 模式），共8个标签两行全部可见 */
             .chip-floors-scroll{display:flex;flex-wrap:wrap;gap:8px;padding:4px 0 6px}
             .chip-floors-scroll .chip{flex:0 0 calc(25% - 6px);padding:11px 2px;font-size:1rem;text-align:center}
+            /* 净分排行榜楼层芯片：移动端每行 4 个（PC 端一行铺满，样式在全局区） */
+            .net-floor-chips .chip{flex:0 0 calc(25% - 6px);padding:11px 2px;font-size:1rem}
             /* 楼层扣分情况：每个宿舍一张卡片，内部5列垂直堆叠（标签在上、值在下） */
             .dorm-row-mobile{display:flex;align-items:stretch;gap:0;padding:12px 6px;background:#f8f9fc;border-radius:10px;margin-bottom:8px;border:1px solid #e5e7eb}
             .dorm-row-mobile .rank-item{flex:1;min-width:0;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:2px 4px;border-right:1px dashed #e5e7eb}
@@ -730,6 +746,9 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
     </div>
     <div class="modal-overlay" id="accountModal" onclick="if(event.target===this) closeAccountModal()">
         <div class="edit-modal" id="accountModalBox" role="dialog" aria-label="账号编辑"></div>
+    </div>
+    <div class="modal-overlay" id="batchUserModal" onclick="if(event.target===this) closeBatchUserModal()">
+        <div class="edit-modal" id="batchUserModalBox" role="dialog" aria-label="批量新增账号"></div>
     </div>
 
     <!-- 业务逻辑模块化拆分：config -> data -> sync -> ui -> app（经典脚本，全局作用域） -->

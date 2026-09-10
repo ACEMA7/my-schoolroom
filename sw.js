@@ -1,7 +1,7 @@
 // Service Worker 缓存配置
 // 同源业务资源 cache-first；第三方 CDN 资源预缓存 + cache-first（cors 模式可校验）；
 // Supabase 数据接口仅网络不缓存；页面导航请求离线时回退缓存的 index.html
-var CACHE_NAME = 'dormitory-cache-v12';
+var CACHE_NAME = 'dormitory-cache-v14';
 
 // 同源核心资源（任一失败都会阻断安装，保证离线可用的最小集合）
 var LOCAL_ASSETS = [
