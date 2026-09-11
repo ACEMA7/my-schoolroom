@@ -268,6 +268,8 @@
      */
     function renderHomeView(container){
         var role = currentUser ? currentUser.role : 'STAFF';
+        // 移动端生活老师：与侧边栏/底栏口径一致，隐藏"统计报表"和"学生管理"两个色块
+        var hideStaffMobile = (role === 'STAFF' && window.innerWidth <= 768);
         // 权限与侧边栏菜单可见性保持一致：ADMIN全部 / CLASS_ADMIN层级(仅本班)+退宿+数据 / STAFF为层级+登记+统计+退宿
         var all = [
             {view:'hierarchy',  icon:'🌳', name:'住宿信息',     color:'#4f6ef7', roles:['ADMIN','STAFF','CLASS_ADMIN']},
@@ -279,7 +281,11 @@
             {view:'leavemanage',icon:'🏠', name:'学生管理', color:'#0891b2', roles:['ADMIN','STAFF','CLASS_ADMIN']},
             {view:'export',     icon:'📊', name:'数据管理',     color:'#eab308', roles:['ADMIN','CLASS_ADMIN']}
         ];
-        var cards = all.filter(function(it){ return it.roles.indexOf(role) !== -1; }).map(function(it){
+        var cards = all.filter(function(it){
+            if (it.roles.indexOf(role) === -1) return false;
+            if (hideStaffMobile && (it.view === 'stats' || it.view === 'leavemanage')) return false;
+            return true;
+        }).map(function(it){
             return '<div class="home-card" style="background:'+it.color+'" onclick="switchView(\''+it.view+'\')"><span class="hc-icon">'+it.icon+'</span><span class="hc-name">'+it.name+'</span></div>';
         }).join('');
         var welcome = currentUser ? ('你好，' + currentUser.realName + '，请选择要使用的功能') : '请选择要使用的功能';
@@ -457,7 +463,9 @@
             if(ta!==tb) return tb-ta;
             return String(b.id)<String(a.id)?-1:(String(b.id)>String(a.id)?1:0);
         });
-        var isStaff=currentUser&&currentUser.role==='STAFF';
+        // 注意：局部变量不可命名为 isStaff，否则会因 var 提升遮蔽 data.js 的全局
+        // 函数 isStaff()，导致本函数上方第397行调用时抛 "isStaff is not a function"
+        var staffMode=currentUser&&currentUser.role==='STAFF';
         // 单行历史记录 HTML（供分片渲染逐条调用）
         function historyRowHtml(r){
             var student=r.studentId?getStudentById(r.studentId):null;
@@ -471,7 +479,7 @@
             // 操作列：管理员可删除，生活老师（STAFF）可修改，其他角色无操作（ID为字符串需加引号传参）
             var actionHtml='<td data-label="操作">-</td>';
             if(isAdmin()) actionHtml='<td data-label="操作"><button class="btn btn-danger btn-xs" onclick="deleteRecord(\''+r.id+'\')">删除</button></td>';
-            else if(isStaff) actionHtml='<td data-label="操作"><button class="btn btn-primary btn-xs" onclick="editRecord(\''+r.id+'\')">修改</button></td>';
+            else if(staffMode) actionHtml='<td data-label="操作"><button class="btn btn-primary btn-xs" onclick="editRecord(\''+r.id+'\')">修改</button></td>';
             return '<tr><td data-label="日期">'+r.recordDate+'</td><td data-label="对象">'+modeTag+(student?student.name:'宿舍集体')+'</td><td data-label="卫生项目">'+(hyNames||'-')+'</td><td data-label="卫生分值" style="color:'+scoreColor+'">'+scorePrefix+(r.hygieneScore||0)+'</td><td data-label="纪律项目">'+(disNames||'-')+'</td><td data-label="纪律分值" style="color:'+scoreColor+'">'+scorePrefix+(r.disciplineScore||0)+'</td><td data-label="备注">'+escapeHtmlAttr(r.remark||'-')+'</td>'+actionHtml+'</tr>';
         }
         // 手机端顶部导航卡：楼层芯片(每行4个均匀分布) + 宿舍横滑条，与扣分登记页交互一致；桌面端不渲染（侧边栏树保留）
@@ -533,6 +541,86 @@
 
     // ==================== 扣分登记视图 ====================
     var addFormState={floorId:null,dormitoryId:null,studentId:null,hygieneItemIds:[],disciplineItemIds:[],hygieneScore:0,disciplineScore:0,recordDate:getTodayLocalStr(),remark:'',recordMode:'deduct',hygieneBonusItemIds:[],disciplineBonusItemIds:[],hygieneBonusScore:0,disciplineBonusScore:0};
+
+    // ---- 扣分/加分复选框：合计计算与事件绑定（纯 UI 逻辑，原位于 app.js，
+    //      因调用方 renderAddView 在 ui.js，为降低跨文件依赖，统一迁移至此）----
+    /**
+     * 按某类复选框（卫生/纪律 × 扣分/加分）的当前勾选计算合计（唯一计算入口）。
+     * 预设项取 defaultScore，自定义项卫生 0.2/纪律 1；统一 roundScore1 消除浮点尾差。
+     * @param {string} cls - 复选框 class：hy-item-checkbox / dis-item-checkbox / hy-bonus-checkbox / dis-bonus-checkbox
+     * @param {string} base - 'hy' 或 'dis'
+     * @param {boolean} isBonus - 是否加分模式
+     * @returns {number} 合计分值（1 位小数）
+     */
+    function calcCheckboxTotal(cls, base, isBonus){
+        var total=0;
+        var checked=document.querySelectorAll('.'+cls+':checked');
+        for(var j=0;j<checked.length;j++){
+            if(checked[j].value==='custom') total+=(base==='hy'?0.2:1);
+            else {
+                // 复选框 value 恒为字符串，parseInt 归一化；getItemById 内部用 String 比较兼容两种 id
+                var item = isBonus ? getBonusItemById(parseInt(checked[j].value, 10)) : getItemById(parseInt(checked[j].value, 10));
+                if(item) total+=(parseFloat(item.defaultScore)||0);
+            }
+        }
+        return roundScore1(total);
+    }
+    /**
+     * 为某类全部复选框绑定 change 事件：勾选/取消后立即重算该类合计。
+     * @param {string} type - 'hy' | 'dis' | 'hy-bonus' | 'dis-bonus'
+     */
+    function bindCheckboxEventsGeneric(type){
+        var isBonus = type.indexOf('bonus') !== -1;
+        var base = type.replace('-bonus','');
+        // 复选框实际 class：扣分=hy-item-checkbox/dis-item-checkbox；加分=hy-bonus-checkbox/dis-bonus-checkbox
+        var cls = isBonus ? (base + '-bonus-checkbox') : (base + '-item-checkbox');
+        var scoreId = isBonus ? (base==='hy'?'hyBonusScore':'disBonusScore') : (base==='hy'?'hyScore':'disScore');
+        var stateKey = isBonus ? (base==='hy'?'hygieneBonusScore':'disciplineBonusScore') : (base==='hy'?'hygieneScore':'disciplineScore');
+        var checks=document.querySelectorAll('.'+cls);
+        if(checks.length === 0){
+            // 静默失败会让"勾选不计分"难以排查：找不到复选框时明确告警
+            console.warn('[扣分登记] 未找到可绑定的复选框：', cls);
+            return;
+        }
+        for(var i=0;i<checks.length;i++){
+            checks[i].addEventListener('change',function(){
+                // 用户主动勾选/取消：按当前勾选全量重算（含自定义项，已统一消除浮点尾差）
+                var total=calcCheckboxTotal(cls, base, isBonus);
+                var el=document.getElementById(scoreId);
+                if(el){
+                    el.value=total;
+                } else {
+                    console.warn('[扣分登记] 合计输入框不存在，无法更新分数：', scoreId);
+                }
+                addFormState[stateKey]=total;
+            });
+        }
+    }
+    /**
+     * 为某类"自定义"复选框绑定显隐自定义名称输入框的事件。
+     * @param {string} type - 'hy' | 'dis' | 'hy-bonus' | 'dis-bonus'
+     */
+    function bindCustomCheckboxEventsGeneric(type){
+        var isBonus = type.indexOf('bonus') !== -1;
+        var base = type.replace('-bonus','');
+        var customCls = type + '-custom-check';
+        var wrapId = isBonus ? (base==='hy'?'hyBonusCustomInputWrap':'disBonusCustomInputWrap') : (base+'CustomInputWrap');
+        var nameId = isBonus ? (base==='hy'?'hyBonusCustomName':'disBonusCustomName') : (base+'CustomName');
+        var cc=document.querySelector('.'+customCls);
+        if(!cc){
+            console.warn('[扣分登记] 未找到自定义复选框：', customCls);
+            return;
+        }
+        cc.addEventListener('change',function(){
+            var wrap=document.getElementById(wrapId);
+            if(wrap) wrap.style.display=this.checked?'inline-block':'none';
+            if(!this.checked){
+                var ni=document.getElementById(nameId);
+                if(ni) ni.value='';
+            }
+        });
+    }
+
     /**
      * 渲染「扣分登记」视图：班级/宿舍/床号联动选择、卫生/纪律扣分项勾选、
      * 实时扣分合计与提交按钮。PC 与移动端共用同一套数据、布局不同。
@@ -647,13 +735,20 @@
             container.innerHTML='<div class="content-header"><h2>📝 '+(isBonus?'加分':'扣分')+'登记</h2></div><div class="card"><div class="card-header">'+modeSwitchHtml+'</div><div class="card-body"><div class="form-row"><div class="form-group"><label>楼层 *</label><select id="addFloor" onchange="addFormChange(\'floor\')">'+floorOpts+'</select></div><div class="form-group"><label>宿舍号 *</label><select id="addDormitory" onchange="addFormChange(\'dorm\')">'+dormOpts+'</select></div></div><div class="form-row"><div class="form-group"><label>'+(isBonus?'加分对象':'扣分对象 *')+'</label><select id="addStudent" onchange="addFormChange(\'student\')" '+(isBonus?'disabled':'')+'>'+stuOpts+'</select></div><div class="form-group"><label>'+(isBonus?'加分':'扣分')+'日期 *</label><input type="text" class="date-picker" id="addDate" value="'+addFormState.recordDate+'" onchange="addFormChange(\'date\')"></div></div>'+hySection+disSection+tailHtml+'</div></div>';
         }
         // 绑定复选框事件（加分/扣分模式共用同一套类名逻辑）
-        if (showHygiene) bindCheckboxEventsGeneric(isBonus?'hy-bonus':'hy');
-        if (showDiscipline) bindCheckboxEventsGeneric(isBonus?'dis-bonus':'dis');
-        if (showHygiene) bindCustomCheckboxEventsGeneric(isBonus?'hy-bonus':'hy');
-        if (showDiscipline) bindCustomCheckboxEventsGeneric(isBonus?'dis-bonus':'dis');
-        // 恢复切换楼层/宿舍前已勾选的扣分项目，并重算合计
+        // typeof 保护：万一某次脚本加载不完整，给出明确告警而不是静默失败（勾选不计分）
+        if (typeof bindCheckboxEventsGeneric !== 'function' || typeof bindCustomCheckboxEventsGeneric !== 'function') {
+            console.warn('[扣分登记] 复选框绑定函数未就绪（脚本是否全部加载？），本次勾选合计不会自动更新');
+        } else {
+            if (showHygiene) bindCheckboxEventsGeneric(isBonus?'hy-bonus':'hy');
+            if (showDiscipline) bindCheckboxEventsGeneric(isBonus?'dis-bonus':'dis');
+            if (showHygiene) bindCustomCheckboxEventsGeneric(isBonus?'hy-bonus':'hy');
+            if (showDiscipline) bindCustomCheckboxEventsGeneric(isBonus?'dis-bonus':'dis');
+        }
+        // 恢复切换楼层/宿舍前已勾选的扣分项目；仅同步自定义名称框显隐，
+        // 合计输入框已按状态渲染，不覆盖用户手动修改过的分值（勾选时才自动重算）
         restoreAddChecks();
-        recomputeAddScores();
+        if (typeof recomputeAddScores === 'function') recomputeAddScores(false);
+        else console.warn('[扣分登记] recomputeAddScores 未就绪（脚本是否全部加载？）');
         initDatePickers(document);
         var actChip=document.querySelector('.chip-dorms .chip.active');
         if(actChip&&actChip.scrollIntoView){try{actChip.scrollIntoView({inline:'center',block:'nearest'});}catch(e){}}
@@ -1275,8 +1370,6 @@
         var classSelectOpts='<option value="">请选择班级</option>';
         classList.forEach(function(c){ classSelectOpts+='<option value="'+c+'">'+c+'</option>'; });
         var today=getTodayLocalStr();
-        var defaultStart=new Date(); defaultStart.setDate(defaultStart.getDate()-30);
-        var defaultStartStr=formatLocalDate(defaultStart);
         // 班级账号（移动端）：姓名改为原生 <select> 下拉框，选项 = 本班级当前全部学生姓名
         // （原生 select 选择后选项列表始终完整保留，可随时切换其他学生；名单为空时显示提示项）
         var studentSelectOpts='';
@@ -1717,16 +1810,14 @@
         }
 
         var today = getTodayLocalStr();
-        var defaultStart = new Date();
-        defaultStart.setDate(defaultStart.getDate() - 30);
-        var defaultStartStr = formatLocalDate(defaultStart);
+        // 导出开始/结束日期默认均为当天（原"开始日期=今天往前30天"已统一为当天）
 
         var isAdminRole = isAdmin();
         var summaryOption = isAdminRole ? '<option value="inspection_summary">巡查核实总结</option>' : '';
         var html = '<div class="content-header"><h2>📊 数据管理</h2></div>'
             + '<div class="card"><div class="card-header">筛选导出条件</div><div class="card-body"><div class="filter-section">'
             + '<div class="form-group"><label>数据类型</label><select id="exportDataType" onchange="onExportDataTypeChange()"><option value="deduction">扣分记录</option><option value="leave">退宿记录</option><option value="stop">停宿记录</option><option value="absence">请假记录</option>'+summaryOption+'</select></div>'
-            + '<div class="form-group"><label>开始日期</label><input type="text" class="date-picker" id="exportStartDate" value="'+defaultStartStr+'"></div>'
+            + '<div class="form-group"><label>开始日期</label><input type="text" class="date-picker" id="exportStartDate" value="'+today+'"></div>'
             + '<div class="form-group"><label>结束日期</label><input type="text" class="date-picker" id="exportEndDate" value="'+today+'"></div>'
             + '<div class="form-group"><label>班级</label><select id="exportClass" onchange="onExportClassChange()">'+classOptions+'</select></div>'
             + '<div class="form-group" id="grpExportStudent"><label>学生</label><select id="exportStudent" onchange="onExportStudentChange()"></select></div>'

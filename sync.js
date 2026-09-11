@@ -256,6 +256,23 @@
                 byType[r.record_type].push(r);
             });
             var result = { added:0, updated:0, removed:0, rescued:0, basicChanged:false, total:rows.length };
+            // 云端下行记录的数字型主键/外键归一化（防御 JSONB 或历史数据把 id 存成字符串，
+            // 导致本地 getItemById 等严格相等比较失效）。仅处理核心 5 类；
+            // 业务记录（deduction_record 等）id 为字符串时间戳，绝不能 parseInt。
+            function toIdNum(v){
+                if(typeof v === 'number') return v;
+                if(typeof v === 'string' && /^\d+$/.test(v)) return parseInt(v, 10);
+                return v;
+            }
+            function normalizeCloudIds(type, obj){
+                if(!obj || typeof obj !== 'object') return obj;
+                if(type === 'floor'){ obj.id = toIdNum(obj.id); }
+                else if(type === 'dormitory'){ obj.id = toIdNum(obj.id); obj.floorId = toIdNum(obj.floorId); }
+                else if(type === 'student'){ obj.id = toIdNum(obj.id); obj.dormitoryId = toIdNum(obj.dormitoryId); }
+                else if(type === 'user'){ obj.id = toIdNum(obj.id); }
+                else if(type === 'deduction_item'){ obj.id = toIdNum(obj.id); }
+                return obj;
+            }
             // 把某类型的云端行拆成 活行 map（record_id → row）与 墓碑 set（record_id → true）
             function splitRows(type){
                 var typeRows = byType[type] || [];
@@ -308,7 +325,7 @@
                 ['floor','dormitory','student','user','deduction_record','leave_record','absence_record','inspection_confirmation','anomaly_report','daily_summary'].forEach(function(type){
                     var tMeta = V3_RECORD_TYPES.find(function(m){ return m.type === type; });
                     if(!tMeta) return;
-                    var liveRows = (grouped[type] || []).filter(function(r){ return !r.deleted; }).map(function(r){ return r.data; });
+                    var liveRows = (grouped[type] || []).filter(function(r){ return !r.deleted; }).map(function(r){ return normalizeCloudIds(type, r.data); });
                     DB[tMeta.dbPath[0]] = liveRows;
                     resetCount += liveRows.length;
                 });
@@ -319,6 +336,7 @@
                     var st = (r.data && r.data._subType) || ((r.data && r.data.defaultScore <= 0.5) ? 'hygiene' : 'discipline');
                     var clean = {};
                     Object.keys(r.data || {}).forEach(function(k){ if(k !== '_subType') clean[k] = r.data[k]; });
+                    normalizeCloudIds('deduction_item', clean);
                     if(st === 'discipline') DB.deductionItems.discipline.push(clean);
                     else DB.deductionItems.hygiene.push(clean);
                 });
@@ -408,6 +426,7 @@
                         if(st !== sub) return;
                         var clean = {};
                         Object.keys(r.data || {}).forEach(function(k){ if(k !== '_subType') clean[k] = r.data[k]; });
+                        normalizeCloudIds('deduction_item', clean);
                         kept.push(clean);
                         result.added++;
                     });
@@ -434,8 +453,9 @@
                 // 1) 云端活行、本地无 → 新增
                 Object.keys(split.live).forEach(function(rid){
                     if(!localMap[rid] && !deletedSet[rid]){
-                        arr.push(split.live[rid].data);
-                        localMap[rid] = split.live[rid].data;
+                        var incoming = normalizeCloudIds(type, split.live[rid].data);
+                        arr.push(incoming);
+                        localMap[rid] = incoming;
                         result.added++;
                     }
                 });
@@ -449,6 +469,7 @@
                     if(cloudTime >= localTime && JSON.stringify(local) !== JSON.stringify(cloud)){
                         Object.keys(local).forEach(function(k){ delete local[k]; });
                         Object.keys(cloud).forEach(function(k){ local[k] = cloud[k]; });
+                        normalizeCloudIds(type, local); // 覆盖后同样归一化主键/外键
                         result.updated++;
                     }
                 });

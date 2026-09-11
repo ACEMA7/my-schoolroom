@@ -223,6 +223,17 @@
     }
 
     /**
+     * 分数统一取整：保留 1 位小数，消除 0.2 等小数累加产生的浮点尾差
+     * （如 0.2+0.2+0.2=0.6000000000000001 → 0.6）。
+     * 全系统所有扣/加分合计均通过本函数处理，保证显示与入库口径一致。
+     * @param {number} v - 原始分数
+     * @returns {number} 取整后的分数（1 位小数）
+     */
+    function roundScore1(v) {
+        return Math.round((Number(v) || 0) * 10) / 10;
+    }
+
+    /**
      * 计算一组扣分记录的累计扣分（卫生分 + 纪律分）。
      * @param {Array} records - 扣分记录数组
      * @returns {number} 总扣分（保留 1 位小数，已消除浮点尾差）
@@ -234,7 +245,7 @@
             total += (r.hygieneScore || 0) + (r.disciplineScore || 0);
         });
         // 消除 0.2 分自定义项累加产生的浮点尾差（如 14.600000000000001）
-        return Math.round(total * 10) / 10;
+        return roundScore1(total);
     }
 
     /**
@@ -245,7 +256,9 @@
     function getItemById(id) {
         if (!DB || !DB.deductionItems) return null;
         var allItems = (DB.deductionItems.hygiene || []).concat(DB.deductionItems.discipline || []);
-        return allItems.find(function(item) { return item.id === id; }) || null;
+        // 用 String 比较：复选框 value 恒为字符串，云端历史数据 id 也可能是字符串，
+        // 严格相等 === 会导致数字 1 与字符串 "1" 匹配失败而返回 null（合计漏算该项）
+        return allItems.find(function(item) { return String(item.id) === String(id); }) || null;
     }
 
     /**
@@ -269,7 +282,8 @@
     function getBonusItemById(id) {
         if (!DB || !DB.deductionItems) return null;
         var allBonus = (DB.deductionItems.hygieneBonus || []).concat(DB.deductionItems.disciplineBonus || []);
-        return allBonus.find(function(item) { return item.id === id; }) || null;
+        // 同 getItemById：String 比较，兼容数字/字符串两种 id 形态
+        return allBonus.find(function(item) { return String(item.id) === String(id); }) || null;
     }
     /**
      * 获取加分项目名称；自定义项取冒号后文本。
@@ -293,7 +307,7 @@
                 total += (r.hygieneScore || 0) + (r.disciplineScore || 0);
             }
         });
-        return Math.round(total * 10) / 10;
+        return roundScore1(total);
     }
 
     /**
@@ -309,7 +323,7 @@
                 total += (r.hygieneScore || 0) + (r.disciplineScore || 0);
             }
         });
-        return Math.round(total * 10) / 10;
+        return roundScore1(total);
     }
 
     /**
@@ -318,7 +332,7 @@
      * @returns {number}
      */
     function getNetScore(records) {
-        return Math.round((getTotalDeductScore(records) - getTotalBonusScore(records)) * 10) / 10;
+        return roundScore1(getTotalDeductScore(records) - getTotalBonusScore(records));
     }
 
     /**
@@ -1094,6 +1108,8 @@
         // 移除辅助字段
         var clean = {};
         Object.keys(itemData).forEach(function(k){ if(k !== '_subType') clean[k] = itemData[k]; });
+        // id 归一化：云端还原的扣分项目 id 必须为数字型（防御 JSONB/历史数据存成字符串）
+        if(typeof clean.id === 'string' && /^\d+$/.test(clean.id)) clean.id = parseInt(clean.id, 10);
         // 检查是否已存在（同 id）
         var idx = target.findIndex(function(x){ return String(x.id) === String(clean.id); });
         if(idx >= 0) target[idx] = clean;
@@ -1391,3 +1407,4 @@ window.hashPassword = hashPassword;
 window.migrateUserPasswords = migrateUserPasswords;
 window.formatLocalDate = formatLocalDate;
 window.getTodayLocalStr = getTodayLocalStr;
+window.roundScore1 = roundScore1;

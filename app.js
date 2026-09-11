@@ -113,11 +113,13 @@
             document.getElementById('navExport').style.display = 'flex';
         } else {
             // 普通生活老师（staff）：住宿信息 + 扣分登记 + 统计报表 + 巡查核实 + 学生管理
+            // 移动端（<=768px）额外隐藏"统计报表"和"学生管理"，侧边栏/底栏更聚焦日常操作；桌面端保持不变
+            var staffMobile = window.innerWidth <= 768;
             document.getElementById('navHierarchy').style.display = 'flex';
             document.getElementById('navAdd').style.display = 'flex';
-            document.getElementById('navStats').style.display = 'flex';
+            document.getElementById('navStats').style.display = staffMobile ? 'none' : 'flex';
             document.getElementById('navInspection').style.display = 'flex';
-            document.getElementById('navLeaveManage').style.display = 'flex';
+            document.getElementById('navLeaveManage').style.display = staffMobile ? 'none' : 'flex';
             // 数据管理菜单对 staff 隐藏
             document.getElementById('navExport').style.display = 'none';
         }
@@ -371,6 +373,8 @@
                 // 桌面端无色块首页，切回住宿信息
                 if (currentView === 'home') currentView = 'hierarchy';
             }
+            // 端型切换后按当前屏宽重算侧边栏菜单与底栏（移动端生活老师隐藏统计报表/学生管理）
+            if (currentUser) updateHeaderForUser(currentUser);
             renderTree();
             updateNavActive(currentView);
             renderView();
@@ -597,16 +601,16 @@
         }
         updateEditScores();
     }
-    // 依据勾选项目实时重算合计（预设取 defaultScore，卫生自定义0.2/纪律自定义1）
+    // 依据勾选项目实时重算合计（预设取 defaultScore，卫生自定义0.2/纪律自定义1；统一消除浮点尾差）
     function updateEditScores(){
         function sum(prefix,customScore){
             var total=0;
             var checked=document.querySelectorAll('.'+prefix+'-item:checked');
             for(var i=0;i<checked.length;i++){
                 if(checked[i].value==='custom') total+=customScore;
-                else{var it=getItemById(parseInt(checked[i].value));if(it) total+=it.defaultScore;}
+                else{var it=getItemById(parseInt(checked[i].value));if(it) total+=(parseFloat(it.defaultScore)||0);}
             }
-            return total;
+            return roundScore1(total);
         }
         var hy=sum('em-hy',0.2), dis=sum('em-dis',1);
         var hyEl=document.getElementById('emHyScore'); if(hyEl) hyEl.textContent=hy;
@@ -645,10 +649,10 @@
                     var v=parseInt(checked[i].value);
                     ids.push(v);
                     var it=getItemById(v);
-                    if(it) score+=it.defaultScore;
+                    if(it) score+=(parseFloat(it.defaultScore)||0);
                 }
             }
-            return {ids:ids,score:score};
+            return {ids:ids,score:roundScore1(score)}; // 入库前消除浮点尾差
         }
         var hy=collectItems('em-hy',0.2);
         if(hy===null){toast('请输入自定义卫生项目名称','error');return;}
@@ -690,10 +694,16 @@
         var dsc=document.getElementById('disScore'); if(dsc) addFormState.disciplineScore=parseFloat(dsc.value)||0;
         var hbs=document.getElementById('hyBonusScore'); if(hbs) addFormState.hygieneBonusScore=parseFloat(hbs.value)||0;
         var dbsc=document.getElementById('disBonusScore'); if(dbsc) addFormState.disciplineBonusScore=parseFloat(dbsc.value)||0;
-        addFormState.hygieneItemIds=Array.prototype.map.call(document.querySelectorAll('.hy-item-checkbox:checked'),function(c){return c.value;});
-        addFormState.disciplineItemIds=Array.prototype.map.call(document.querySelectorAll('.dis-item-checkbox:checked'),function(c){return c.value;});
-        addFormState.hygieneBonusItemIds=Array.prototype.map.call(document.querySelectorAll('.hy-bonus-checkbox:checked'),function(c){return c.value;});
-        addFormState.disciplineBonusItemIds=Array.prototype.map.call(document.querySelectorAll('.dis-bonus-checkbox:checked'),function(c){return c.value;});
+        // 仅同步当前 DOM 中实际存在的复选框组：扣分/加分模式的复选框不同时出现，
+        // 避免把另一模式已选项目误清空（例如扣分模式下切宿舍不应清掉加分模式的选择）
+        function syncChecks(cls,stateKeyName){
+            var boxes=document.querySelectorAll('.'+cls);
+            if(boxes.length) addFormState[stateKeyName]=Array.prototype.map.call(document.querySelectorAll('.'+cls+':checked'),function(c){return c.value;});
+        }
+        syncChecks('hy-item-checkbox','hygieneItemIds');
+        syncChecks('dis-item-checkbox','disciplineItemIds');
+        syncChecks('hy-bonus-checkbox','hygieneBonusItemIds');
+        syncChecks('dis-bonus-checkbox','disciplineBonusItemIds');
         var hn=document.getElementById('hyCustomName'); if(hn) addFormState.hyCustomName=hn.value;
         var dn=document.getElementById('disCustomName'); if(dn) addFormState.disCustomName=dn.value;
         var hbn=document.getElementById('hyBonusCustomName'); if(hbn) addFormState.hyBonusCustomName=hbn.value;
@@ -703,12 +713,15 @@
     function switchRecordMode(mode){
         syncAddFormInputs();
         addFormState.recordMode = mode;
-        // 切模式时清空勾选项（两套项目不同）
+        // 切模式时清空被切走模式的勾选项与合计（两套项目不同；分数一并清零，
+        // 避免重渲染后"无勾选却残留旧分数"）
         if(mode==='bonus'){
             addFormState.hygieneItemIds=[]; addFormState.disciplineItemIds=[];
+            addFormState.hygieneScore=0; addFormState.disciplineScore=0;
             addFormState.studentId=null;
         }else{
             addFormState.hygieneBonusItemIds=[]; addFormState.disciplineBonusItemIds=[];
+            addFormState.hygieneBonusScore=0; addFormState.disciplineBonusScore=0;
         }
         renderAddView(document.getElementById('contentArea'));
     }
@@ -725,31 +738,34 @@
         restore('hy-bonus-checkbox',addFormState.hygieneBonusItemIds);
         restore('dis-bonus-checkbox',addFormState.disciplineBonusItemIds);
     }
+    // calcCheckboxTotal 已迁移至 ui.js（与 renderAddView 同文件，降低跨文件依赖）；
+    // 全局作用域共享，本文件的 recomputeAddScores 仍可直接调用。
     // 依据当前勾选重算合计并同步自定义输入框显隐/回填
-    function recomputeAddScores(){
+    // overwriteScore：
+    //   true  = 用户主动勾选触发，按勾选结果覆盖合计输入框（正常自动计算）；
+    //   false = 仅表单重渲染后的恢复（切楼层/宿舍/模式），合计输入框已按状态渲染，
+    //           不覆盖用户可能手动修改过的分值，只同步自定义名称框的显隐与回填。
+    function recomputeAddScores(overwriteScore){
         var isBonus = (addFormState.recordMode === 'bonus');
-        var types = isBonus ? [['hy','hy-bonus','hyBonusScore','hygieneBonusScore','hyBonusCustomName','hyBonusCustomInputWrap','hy-bonus-custom-check','getBonusItemById']
-                              ,['dis','dis-bonus','disBonusScore','disciplineBonusScore','disBonusCustomName','disBonusCustomInputWrap','dis-bonus-custom-check','getBonusItemById']]
-                            : [['hy','hy-item','hyScore','hygieneScore','hyCustomName','hyCustomInputWrap','hy-custom-check','getItemById']
-                              ,['dis','dis-item','disScore','disciplineScore','disCustomName','disCustomInputWrap','dis-custom-check','getItemById']];
+        var types = isBonus ? [['hy','hy-bonus-checkbox','hyBonusScore','hygieneBonusScore','hyBonusCustomName','hyBonusCustomInputWrap','hy-bonus-custom-check']
+                              ,['dis','dis-bonus-checkbox','disBonusScore','disciplineBonusScore','disBonusCustomName','disBonusCustomInputWrap','dis-bonus-custom-check']]
+                            : [['hy','hy-item-checkbox','hyScore','hygieneScore','hyCustomName','hyCustomInputWrap','hy-custom-check']
+                              ,['dis','dis-item-checkbox','disScore','disciplineScore','disCustomName','disCustomInputWrap','dis-custom-check']];
         types.forEach(function(cfg){
-            var t=cfg[0],cls=cfg[1],scoreId=cfg[2],stateKey=cfg[3],nameId=cfg[4],wrapId=cfg[5],customCls=cfg[6],getter=cfg[7];
-            var total=0,any=false;
-            var checked=document.querySelectorAll('.'+cls+'-checkbox:checked');
-            for(var i=0;i<checked.length;i++){
-                any=true;
-                if(checked[i].value==='custom') total+=(t==='hy'?0.2:1);
-                else{ var it=getter==='getItemById'?getItemById(parseInt(checked[i].value)):getBonusItemById(parseInt(checked[i].value)); if(it) total+=it.defaultScore; }
+            var t=cfg[0],cls=cfg[1],scoreId=cfg[2],stateKey=cfg[3],nameId=cfg[4],wrapId=cfg[5],customCls=cfg[6];
+            if(overwriteScore!==false){
+                var total=calcCheckboxTotal(cls,t,isBonus);
+                var input=document.getElementById(scoreId);
+                if(input) input.value=total;
+                else console.warn('[扣分登记] recompute 找不到合计输入框：', scoreId);
+                addFormState[stateKey]=total;
             }
-            var input=document.getElementById(scoreId);
-            if(input) input.value=any?total:0;
-            addFormState[stateKey]=any?total:0;
             var cc=document.querySelector('.'+customCls);
             var wrap=document.getElementById(wrapId);
             if(cc&&wrap) wrap.style.display=cc.checked?'inline-block':'none';
             var nameInput=document.getElementById(nameId);
             if(nameInput){
-                if(cc&&cc.checked) nameInput.value=(addFormState[stateKey.replace('Score','Name')]||addFormState[t==='hy'?(isBonus?'hyBonusCustomName':'hyCustomName'):(isBonus?'disBonusCustomName':'disCustomName')]||'');
+                if(cc&&cc.checked) nameInput.value=(addFormState[nameId]||'');
                 else{ nameInput.value=''; }
             }
         });
@@ -776,52 +792,11 @@
         for(var i=0;i<chips.length;i++) chips[i].classList.remove('active');
         el.classList.add('active');
     }
-    function bindCheckboxEventsGeneric(type){
-        // type: 'hy' | 'dis' | 'hy-bonus' | 'dis-bonus'
-        var isBonus = type.indexOf('bonus') !== -1;
-        var base = type.replace('-bonus','');
-        var cls = type + '-checkbox';
-        var scoreId = isBonus ? (base==='hy'?'hyBonusScore':'disBonusScore') : (base==='hy'?'hyScore':'disScore');
-        var stateKey = isBonus ? (base==='hy'?'hygieneBonusScore':'disciplineBonusScore') : (base==='hy'?'hygieneScore':'disciplineScore');
-        var checks=document.querySelectorAll('.'+cls);
-        for(var i=0;i<checks.length;i++){
-            checks[i].addEventListener('change',function(){
-                var total=0;
-                var checked=document.querySelectorAll('.'+cls+':checked');
-                for(var j=0;j<checked.length;j++){
-                    if(checked[j].value==='custom') total+=(base==='hy'?0.2:1);
-                    else {
-                        var item = isBonus ? getBonusItemById(parseInt(checked[j].value)) : getItemById(parseInt(checked[j].value));
-                        if(item) total+=item.defaultScore;
-                    }
-                }
-                var el=document.getElementById(scoreId);
-                if(el) el.value=total;
-                addFormState[stateKey]=total;
-            });
-        }
-    }
-    function bindCustomCheckboxEventsGeneric(type){
-        var isBonus = type.indexOf('bonus') !== -1;
-        var base = type.replace('-bonus','');
-        var customCls = type + '-custom-check';
-        var wrapId = isBonus ? (base==='hy'?'hyBonusCustomInputWrap':'disBonusCustomInputWrap') : (base+'CustomInputWrap');
-        var nameId = isBonus ? (base==='hy'?'hyBonusCustomName':'disBonusCustomName') : (base+'CustomName');
-        var cc=document.querySelector('.'+customCls);
-        if(cc){
-            cc.addEventListener('change',function(){
-                var wrap=document.getElementById(wrapId);
-                if(wrap) wrap.style.display=this.checked?'inline-block':'none';
-                if(!this.checked){
-                    var ni=document.getElementById(nameId);
-                    if(ni) ni.value='';
-                }
-            });
-        }
-    }
+    // bindCheckboxEventsGeneric / bindCustomCheckboxEventsGeneric 已迁移至 ui.js
+    // （由 renderAddView 在渲染后直接绑定，同文件调用更稳；全局共享，无调用差异）
     function addFormChange(type){
-        if(type==='floor'){addFormState.floorId=parseInt(document.getElementById('addFloor').value);addFormState.dormitoryId=null;renderAddView(document.getElementById('contentArea'));}
-        else if(type==='dorm'){addFormState.dormitoryId=parseInt(document.getElementById('addDormitory').value);addFormState.studentId=null;renderAddView(document.getElementById('contentArea'));}
+        if(type==='floor'){syncAddFormInputs();addFormState.floorId=parseInt(document.getElementById('addFloor').value);addFormState.dormitoryId=null;renderAddView(document.getElementById('contentArea'));}
+        else if(type==='dorm'){syncAddFormInputs();addFormState.dormitoryId=parseInt(document.getElementById('addDormitory').value);addFormState.studentId=null;renderAddView(document.getElementById('contentArea'));}
         else if(type==='student'){addFormState.studentId=document.getElementById('addStudent').value?parseInt(document.getElementById('addStudent').value):null;}
         else if(type==='date'){addFormState.recordDate=document.getElementById('addDate').value;}
         else if(type==='hygieneScore'){addFormState.hygieneScore=parseFloat(document.getElementById('hyScore').value)||0;}
@@ -831,7 +806,15 @@
         else if(type==='remark'){addFormState.remark=document.getElementById('addRemark').value;}
     }
     function resetAddForm(){
-        addFormState={floorId:DB.floors[0].id,dormitoryId:null,studentId:null,hygieneItemIds:[],disciplineItemIds:[],hygieneScore:0,disciplineScore:0,recordDate:getTodayLocalStr(),remark:'',recordMode:'deduct',hygieneBonusItemIds:[],disciplineBonusItemIds:[],hygieneBonusScore:0,disciplineBonusScore:0};
+        // 必须原地更新（Object.assign），不可整体重新赋值 addFormState = {...}：
+        // 该对象由 ui.js 声明、跨文件共享引用，整体换对象会让 ui.js 侧闭包仍指向旧对象，造成状态错位
+        Object.assign(addFormState,{
+            floorId:DB.floors[0].id,dormitoryId:null,studentId:null,
+            hygieneItemIds:[],disciplineItemIds:[],hygieneScore:0,disciplineScore:0,
+            hygieneBonusItemIds:[],disciplineBonusItemIds:[],hygieneBonusScore:0,disciplineBonusScore:0,
+            recordDate:getTodayLocalStr(),remark:'',recordMode:'deduct',
+            hyCustomName:'',disCustomName:'',hyBonusCustomName:'',disBonusCustomName:''
+        });
         renderAddView(document.getElementById('contentArea'));
     }
     /**
@@ -870,7 +853,7 @@
                     hygieneItemIds.push('custom:'+customName);
                 } else hygieneItemIds.push(parseInt(hyChecked[i].value));
             }
-            hygieneScore=parseFloat(hyScoreEl.value)||0;
+            hygieneScore=roundScore1(parseFloat(hyScoreEl.value)||0);
         }
         if(disScoreEl){
             var disChecked=document.querySelectorAll(disCls);
@@ -881,7 +864,7 @@
                     disciplineItemIds.push('custom:'+customName);
                 } else disciplineItemIds.push(parseInt(disChecked[i].value));
             }
-            disciplineScore=parseFloat(disScoreEl.value)||0;
+            disciplineScore=roundScore1(parseFloat(disScoreEl.value)||0);
         }
         if(hygieneItemIds.length===0 && disciplineItemIds.length===0){toast('请至少选择一个项目','error');return;}
         var mode = isBonus ? 'bonus' : 'deduct';
@@ -914,6 +897,11 @@
         addFormState.studentId=null;
         addFormState.hygieneItemIds=[]; addFormState.disciplineItemIds=[];
         addFormState.hygieneBonusItemIds=[]; addFormState.disciplineBonusItemIds=[];
+        // 合计与自定义名称随勾选一起清零（重渲染不再强制覆盖分数，需在此显式重置）
+        addFormState.hygieneScore=0; addFormState.disciplineScore=0;
+        addFormState.hygieneBonusScore=0; addFormState.disciplineBonusScore=0;
+        addFormState.hyCustomName=''; addFormState.disCustomName='';
+        addFormState.hyBonusCustomName=''; addFormState.disBonusCustomName='';
         addFormState.remark='';
         renderAddView(document.getElementById('contentArea'));
         renderTree();
@@ -1783,10 +1771,12 @@
         toast(status==='pending'?'登记成功，待管理员审核':'登记成功！');
         // 班级账号的班级字段只读锁定，重置时保留本班；其他角色清空回"请选择班级"
         var resetClassVal=isClassAdmin()?currentUser.className:'';
+        var resetToday=getTodayLocalStr(); // 登记成功后日期恢复为当天，方便连续登记（不再清空）
         if(type==='leave'){
-            document.getElementById('leaveClass').value=resetClassVal; document.getElementById('leaveName').value=''; document.getElementById('leaveDorm').value=''; document.getElementById('leaveBed').value=''; setDateValue('leaveDate',''); document.getElementById('leaveReason').value='';
+            document.getElementById('leaveClass').value=resetClassVal; document.getElementById('leaveName').value=''; document.getElementById('leaveDorm').value=''; document.getElementById('leaveBed').value=''; setDateValue('leaveDate',resetToday); document.getElementById('leaveReason').value='';
         } else {
-            document.getElementById('stopClass').value=resetClassVal; document.getElementById('stopName').value=''; document.getElementById('stopDorm').value=''; document.getElementById('stopBed').value=''; setDateValue('stopStartDate',''); setDateValue('stopEndDate',''); document.getElementById('stopPeriod').value=''; document.getElementById('stopReason').value='';
+            document.getElementById('stopClass').value=resetClassVal; document.getElementById('stopName').value=''; document.getElementById('stopDorm').value=''; document.getElementById('stopBed').value=''; setDateValue('stopStartDate',resetToday); setDateValue('stopEndDate',resetToday); document.getElementById('stopReason').value='';
+            updateStopPeriod(); // 按恢复后的当天日期重新生成"停宿时间段"
         }
         if(window.innerWidth>768){ initPcSelects(); } // PC 端：重置后重建各下拉为初始联动状态
         applyLeaveFilter();
