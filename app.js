@@ -47,8 +47,9 @@
     // ==================== 登录状态保持 ====================
     /**
      * 恢复登录会话：sessionStorage 中有 currentUser 且账号仍存在则直接进入主应用；
-     * 同时处理"记住密码"回填——新格式回填 passwordHash（登录走哈希直比），
-     * 旧明文凭证最后一次回填并后台升级为哈希存储。
+     * 同时处理"记住账号/记住密码"回填——rememberedPassword 存的是 passwordHash
+     * （登录走哈希直比），旧版 rememberedCredentials 一次性拆分迁移；
+     * 更早期的明文凭证最后一次回填并后台升级为哈希存储。
      */
     function checkSavedLogin() {
         var savedUser = sessionStorage.getItem('currentUser');
@@ -66,26 +67,52 @@
                 }
             } catch(e) {}
         }
-        var remembered = localStorage.getItem('rememberedCredentials');
-        if (remembered) {
+        // 旧版 rememberedCredentials 一次性迁移：拆分写入 rememberedUsername / rememberedPassword
+        var oldCred = localStorage.getItem('rememberedCredentials');
+        if (oldCred) {
             try {
-                var cred = JSON.parse(remembered);
-                document.getElementById('loginUsername').value = cred.username;
-                document.getElementById('rememberMe').checked = true;
-                if (cred.passwordHash) {
-                    // 新格式：回填哈希，登录时走直比分支（不再二次哈希）
-                    document.getElementById('loginPassword').value = cred.passwordHash;
-                } else if (cred.password) {
-                    // 旧格式（明文凭证）：最后一次回填明文，同时后台升级为哈希存储，本机不再保留明文
-                    document.getElementById('loginPassword').value = cred.password;
-                    if (typeof hashPassword === 'function') {
-                        hashPassword(cred.password).then(function(h){
-                            localStorage.setItem('rememberedCredentials', JSON.stringify({username: cred.username, passwordHash: h}));
+                var oc = JSON.parse(oldCred);
+                if (oc && oc.username) {
+                    localStorage.setItem('rememberedUsername', oc.username);
+                }
+                var oldPw = oc ? (oc.passwordHash || oc.password || '') : '';
+                if (oldPw) {
+                    localStorage.setItem('rememberedPassword', oldPw);
+                    // 旧明文凭证：最后一次回填后后台升级为哈希，本机不再保留明文
+                    if (oc.password && typeof hashPassword === 'function') {
+                        hashPassword(oc.password).then(function(h){
+                            if (localStorage.getItem('rememberedPassword') === oc.password) {
+                                localStorage.setItem('rememberedPassword', h);
+                            }
                         });
                     }
                 }
             } catch(e) {}
+            localStorage.removeItem('rememberedCredentials');
         }
+        // 新格式：账号、密码分别独立存储（rememberedPassword 存的是密码哈希，回填后走哈希直比登录）
+        var savedUsername = localStorage.getItem('rememberedUsername');
+        var savedPassword = localStorage.getItem('rememberedPassword');
+        if (savedUsername) {
+            document.getElementById('loginUsername').value = savedUsername;
+            document.getElementById('rememberUsername').checked = true;
+        }
+        if (savedPassword) {
+            document.getElementById('loginPassword').value = savedPassword;
+            document.getElementById('rememberPassword').checked = true;
+        }
+    }
+    // 复选框联动：密码必须与账号绑定——勾"记住密码"自动勾"记住账号"；
+    // 取消"记住账号"时自动取消"记住密码"，避免出现"记住了密码却不知道是哪个账号"
+    function onRememberPasswordChange(){
+        var rp = document.getElementById('rememberPassword');
+        var ru = document.getElementById('rememberUsername');
+        if (rp.checked) ru.checked = true;
+    }
+    function onRememberUsernameChange(){
+        var rp = document.getElementById('rememberPassword');
+        var ru = document.getElementById('rememberUsername');
+        if (!ru.checked && rp.checked) rp.checked = false;
     }
     function updateHeaderForUser(user) {
         document.getElementById('userNameDisplay').textContent = user.realName;
@@ -194,10 +221,18 @@
     function completeLogin(user, username, passwordHash){
         currentUser=user;
         sessionStorage.setItem('currentUser', JSON.stringify({id:user.id, username:user.username, role:user.role, realName:user.realName}));
-        if(document.getElementById('rememberMe').checked){
-            localStorage.setItem('rememberedCredentials', JSON.stringify({username:username, passwordHash:passwordHash}));
+        // 账号、密码分别按复选框状态独立保存/清除（密码只存哈希，本机不落明文）
+        var rememberUsername = document.getElementById('rememberUsername').checked;
+        var rememberPassword = document.getElementById('rememberPassword').checked;
+        if (rememberUsername) {
+            localStorage.setItem('rememberedUsername', username);
         } else {
-            localStorage.removeItem('rememberedCredentials');
+            localStorage.removeItem('rememberedUsername');
+        }
+        if (rememberPassword) {
+            localStorage.setItem('rememberedPassword', passwordHash);
+        } else {
+            localStorage.removeItem('rememberedPassword');
         }
         document.getElementById('loginPage').style.display='none';
         document.getElementById('mainApp').style.display='flex';
@@ -216,27 +251,27 @@
         document.body.classList.remove('staff-font-scale');
         var panel=document.getElementById('fontScalePanel');
         if(panel) panel.classList.remove('show');
-        // 仅清除 sessionStorage 中的登录状态，保留 localStorage 中的"记住密码"凭证
+        // 仅清除 sessionStorage 中的登录状态，保留 localStorage 中已记住的账号/密码
         sessionStorage.removeItem('currentUser');
         document.getElementById('mainApp').style.display='none';
         document.getElementById('loginPage').style.display='flex';
-        // 若已勾选"记住账号密码"，保留账号密码输入框内容（localStorage 中的凭证不清除）；
-        // 未勾选时清空输入框，避免敏感信息残留。
-        var rememberEl = document.getElementById('rememberMe');
-        if (!rememberEl || !rememberEl.checked) {
-            document.getElementById('loginUsername').value='';
-            document.getElementById('loginPassword').value='';
+        // localStorage 中的 rememberedUsername / rememberedPassword 保留不动；
+        // 输入框按各自复选框状态决定保留（用存储值回填，避免明文残留在页面）或清空。
+        // 复选框状态本身保持登出前不变。
+        var rememberUsernameEl = document.getElementById('rememberUsername');
+        var rememberPasswordEl = document.getElementById('rememberPassword');
+        if (rememberUsernameEl && rememberUsernameEl.checked) {
+            var savedName = localStorage.getItem('rememberedUsername');
+            if (savedName !== null) document.getElementById('loginUsername').value = savedName;
         } else {
-            // 勾选记住密码时，用存储的哈希回填替换输入框中刚输入的明文，避免明文残留在页面
-            try {
-                var cred = JSON.parse(localStorage.getItem('rememberedCredentials') || 'null');
-                if (cred && cred.passwordHash) {
-                    document.getElementById('loginUsername').value = cred.username;
-                    document.getElementById('loginPassword').value = cred.passwordHash;
-                }
-            } catch(e) {}
+            document.getElementById('loginUsername').value = '';
         }
-        // rememberMe 复选框状态保持不变（用户主动取消勾选时，handleLogin 会清除 localStorage 凭证）
+        if (rememberPasswordEl && rememberPasswordEl.checked) {
+            var savedPw = localStorage.getItem('rememberedPassword');
+            if (savedPw !== null) document.getElementById('loginPassword').value = savedPw;
+        } else {
+            document.getElementById('loginPassword').value = '';
+        }
     }
 
     // ==================== 字体缩放（仅STAFF移动端） ====================

@@ -4,7 +4,7 @@
 //
 // 【版本管理约定】每次修改任意 JS（或其他被缓存的静态资源）后，必须把下面的版本号 +1，
 // 否则客户端会继续使用旧缓存，导致"代码已改但不生效"。例如 v20 → v21。
-var CACHE_NAME = 'dormitory-cache-v20';
+var CACHE_NAME = 'dormitory-cache-v21';
 
 // 同源核心资源（任一失败都会阻断安装，保证离线可用的最小集合）
 var LOCAL_ASSETS = [

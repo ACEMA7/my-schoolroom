@@ -188,6 +188,9 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
         .login-box input:focus{border-color:var(--primary)}
         .login-btn{width:100%;padding:13px;background:var(--primary);color:#fff;border:none;border-radius:8px;font-size:1.1429rem;font-weight:700;cursor:pointer;letter-spacing:2px}
         .login-btn:hover{background:var(--primary-dark)}
+        .remember-row{display:flex;align-items:center;justify-content:center;gap:24px;margin-bottom:14px}
+        .remember-row label{display:flex;align-items:center;gap:6px;font-size:0.9286rem;color:#555;cursor:pointer}
+        .remember-row input[type="checkbox"]{width:16px;height:16px;margin-bottom:0;flex:none;cursor:pointer}
         .login-error{color:var(--danger);font-size:0.9286rem;margin-top:10px;display:none}
         #mainApp{display:none;height:100vh;height:100dvh;flex-direction:column}
         .header{height:60px;background:#fff;border-bottom:1px solid var(--gray-200);display:flex;align-items:center;justify-content:space-between;padding:0 20px;flex-shrink:0}
@@ -554,6 +557,9 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
             /* 登录页 */
             .login-box{padding:24px 20px;width:92vw}
             .login-btn{padding:14px;font-size:1.1429rem}
+            /* 移动端复选框触控目标至少 44px 高，两个并排居中 */
+            .remember-row{gap:16px}
+            .remember-row label{min-height:44px}
 
             /* 表单控件：16px字号防止iOS聚焦自动放大 */
             input[type="text"],input[type="password"],input[type="date"],input[type="number"],
@@ -678,9 +684,10 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
             <p class="subtitle">德育处管理平台</p>
             <input type="text" id="loginUsername" placeholder="请输入用户名" autocomplete="username" autocapitalize="off" autocorrect="off">
             <input type="password" id="loginPassword" placeholder="请输入密码" autocomplete="current-password">
-            <label style="display:flex;align-items:center;gap:6px;margin-bottom:14px;font-size:0.9286rem;color:#555;cursor:pointer;">
-                <input type="checkbox" id="rememberMe" style="width:16px;height:16px;"> 记住账号密码
-            </label>
+            <div class="remember-row">
+                <label><input type="checkbox" id="rememberUsername" onchange="onRememberUsernameChange()"> 记住账号</label>
+                <label><input type="checkbox" id="rememberPassword" onchange="onRememberPasswordChange()"> 记住密码</label>
+            </div>
             <button class="login-btn" onclick="handleLogin()">登 录</button>
             <div class="login-error" id="loginError">用户名或密码错误，请重试</div>
         </div>
