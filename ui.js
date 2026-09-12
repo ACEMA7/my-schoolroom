@@ -566,7 +566,7 @@
         var memberOpsTh = isAdmin() ? '<th>操作</th>' : '';
         var membersCardPc='<div class="card"><div class="card-header">👥 宿舍成员</div><div style="overflow-x:auto"><table><thead><tr><th>姓名</th><th>班级</th><th>床号</th><th>状态</th><th>个人净分</th>'+memberOpsTh+'</tr></thead><tbody>'+studentHtml+'</tbody></table></div></div>';
         var membersCardMobile='<div class="card"><div class="card-header">👥 宿舍成员</div><div class="card-body" style="padding:2px 14px">'+memberCardHtml+'</div></div>';
-        var recordsCard='<div class="card"><div class="card-header">📜 历史记录 <span class="badge-tag badge-danger">'+total+'分</span><span style="font-weight:400;font-size:0.8571rem;color:var(--gray-500);margin-left:6px">按日期倒序</span></div><div style="overflow-x:auto"><table><thead><tr><th>日期</th><th>对象</th><th>卫生项目</th><th>分值</th><th>纪律项目</th><th>分值</th><th>备注</th><th>操作</th></tr></thead><tbody id="historyTbody"></tbody></table></div></div>';
+        var recordsCard='<div class="card"><div class="card-header">📜 历史记录 <span class="badge-tag badge-danger">'+total+'分</span><span style="font-weight:400;font-size:0.8571rem;color:var(--gray-500);margin-left:6px">按日期倒序</span></div><div style="overflow-x:auto"><table class="mobile-h-table"><thead><tr><th>日期</th><th>对象</th><th>卫生项目</th><th>分值</th><th>纪律项目</th><th>分值</th><th>备注</th><th>操作</th></tr></thead><tbody id="historyTbody"></tbody></table></div></div>';
         // 移动端顺序：楼层/宿舍芯片 → 状态汇总 → 宿舍成员（单行紧凑）→ 三个统计卡片 → 历史扣分记录
         // PC 端顺序保持不变：统计大卡（状态+三卡片）→ 历史扣分记录 → 宿舍成员表
         container.innerHTML='<div class="content-header"><h2>📋 宿舍 '+dorm.roomNumber+'（'+floor.name+'）</h2></div>'+topCard+(isMobileH?(statusCard+membersCardMobile+statThreeMobile+recordsCard):(statsCard+recordsCard+membersCardPc));
@@ -1336,7 +1336,7 @@
             +'<input type="checkbox" id="selectAllStudents" onchange="toggleAllStudents(this.checked)"> <label for="selectAllStudents" style="font-weight:400;cursor:pointer">全选</label>'
             +'<button class="btn btn-danger btn-sm" onclick="deleteSelectedStudents()">🗑️ 删除选中</button>'
             +'</div>'
-            +'</div><div style="overflow-x:auto;max-height:500px;overflow-y:auto"><table><thead><tr><th style="width:30px"></th><th>姓名</th><th>班级</th><th>住宿状态</th><th>床号</th><th>宿舍</th><th>楼层</th><th>操作</th></tr></thead><tbody id="studentsTbody"></tbody></table></div></div>';
+            +'</div><div style="overflow-x:auto;max-height:500px;overflow-y:auto"><table class="mobile-h-table"><thead><tr><th style="width:30px"></th><th>姓名</th><th>班级</th><th>住宿状态</th><th>床号</th><th>宿舍</th><th>楼层</th><th>操作</th></tr></thead><tbody id="studentsTbody"></tbody></table></div></div>';
         // 学生列表分片渲染：checkbox 事件改在 tbody 上委托（逐行绑定在分批插入时会漏绑）
         var stuTbody=document.getElementById('studentsTbody');
         if(stuTbody) stuTbody.addEventListener('change', updateSelectedCount);
@@ -2103,7 +2103,7 @@
             return;
         }
         // 表格骨架 + 分片填充（大量请假记录时不卡顿；删除按钮为内联 onclick，逐批插入即生效）
-        container.innerHTML='<div style="overflow-x:auto"><table><thead><tr><th>班级</th><th>姓名</th><th>住宿状态</th><th>宿舍号</th><th>床号</th><th>请假类型</th><th>说明</th><th>开始日期</th><th>结束日期</th><th>状态</th>'+(isAdm?'<th>操作</th>':'')+'</tr></thead><tbody id="absenceTbody"></tbody></table></div>';
+        container.innerHTML='<div style="overflow-x:auto"><table class="mobile-h-table"><thead><tr><th>班级</th><th>姓名</th><th>住宿状态</th><th>宿舍号</th><th>床号</th><th>请假类型</th><th>说明</th><th>开始日期</th><th>结束日期</th><th>状态</th>'+(isAdm?'<th>操作</th>':'')+'</tr></thead><tbody id="absenceTbody"></tbody></table></div>';
         renderListInChunks(document.getElementById('absenceTbody'), records, absenceRowHtml, 50);
     }
 
@@ -2549,7 +2549,7 @@
             resultArea.innerHTML='<div class="card">'
                 +'<div class="card-header">查询结果（巡查核实总结 '+summaries.length+' 条）<span style="font-weight:400;font-size:0.8571rem;color:var(--gray-500);margin-left:8px">点击行展开学生详情</span></div>'
                 +(isAdmin()?'<div style="padding:10px 14px;border-bottom:1px solid var(--gray-100)"><button class="btn btn-primary" onclick="exportInspectionSummariesRange()">📥 导出 Excel（每天一个 Sheet）</button></div>':'')
-                +'<div style="overflow-x:auto;"><table>'
+                +'<div style="overflow-x:auto;"><table class="mobile-h-table">'
                 +'<thead><tr><th>日期</th><th>楼栋</th><th>楼层</th><th>值班老师</th><th>入宿人数</th><th>当天请假</th><th>退宿中</th><th>家长接走</th><th>无假条</th><th>实到人数</th></tr></thead>'
                 +'<tbody id="querySummaryTbody"></tbody>'
                 +'</table></div></div>';
@@ -2576,7 +2576,7 @@
             }
             resultArea.innerHTML='<div class="card">'
                 + '<div class="card-header">查询结果（'+typeLabel+'记录 '+leaveRecords.length+' 条）</div>'
-                + '<div style="overflow-x:auto;"><table>'
+                + '<div style="overflow-x:auto;"><table class="mobile-h-table">'
                 + '<thead><tr><th>'+dateLabel+'</th><th>宿舍号</th><th>床号</th><th>班级</th><th>姓名</th><th>原因</th></tr></thead>'
                 + '<tbody id="queryLeaveTbody"></tbody>'
                 + '</table></div></div>';
@@ -2606,7 +2606,7 @@
             }
             resultArea.innerHTML='<div class="card">'
                 + '<div class="card-header">查询结果（请假记录 '+absRecords.length+' 条）</div>'
-                + '<div style="overflow-x:auto;"><table>'
+                + '<div style="overflow-x:auto;"><table class="mobile-h-table">'
                 + '<thead><tr><th>班级</th><th>姓名</th><th>请假类型</th><th>说明</th><th>开始日期</th><th>结束日期</th><th>状态</th></tr></thead>'
                 + '<tbody id="queryAbsTbody"></tbody>'
                 + '</table></div></div>';
@@ -2673,7 +2673,7 @@
 
         resultArea.innerHTML = '<div class="card">'
             + '<div class="card-header">查询结果（' + records.length + '条记录）</div>'
-            + '<div style="overflow-x:auto;"><table>'
+            + '<div style="overflow-x:auto;"><table class="mobile-h-table">'
             + '<thead><tr><th>日期</th><th>宿舍号</th><th>床号</th><th>班级</th><th>学生</th><th>卫生加扣分</th><th>卫生分值</th><th>纪律加扣分</th><th>纪律分值</th><th>备注</th></tr></thead>'
             + '<tbody id="queryDeductionTbody"></tbody>'
             + '</table></div></div>';

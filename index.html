@@ -538,16 +538,20 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
             td:not([data-label])::before{content:none}
             td[colspan]{display:block;text-align:center;color:var(--gray-400)}
 
-            /* 晚检总结学生详情表格：移动端保持横向表格，不转卡片堆叠 */
-            .summary-detail-table{
+            /* 晚检总结学生详情表格 / 通用横向表格：移动端保持横向表格，不转卡片堆叠 */
+            .summary-detail-table,
+            .mobile-h-table{
                 display:table;
                 width:100%;
                 min-width:520px;
                 font-size:0.8571rem;
             }
-            .summary-detail-table thead{display:table-header-group}
-            .summary-detail-table tbody{display:table-row-group}
-            .summary-detail-table tr{
+            .summary-detail-table thead,
+            .mobile-h-table thead{display:table-header-group}
+            .summary-detail-table tbody,
+            .mobile-h-table tbody{display:table-row-group}
+            .summary-detail-table tr,
+            .mobile-h-table tr{
                 display:table-row;
                 background:transparent;
                 border:none;
@@ -556,7 +560,9 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
                 margin:0;
             }
             .summary-detail-table th,
-            .summary-detail-table td{
+            .summary-detail-table td,
+            .mobile-h-table th,
+            .mobile-h-table td{
                 display:table-cell;
                 padding:6px 8px;
                 border-bottom:1px solid var(--gray-100);
@@ -566,16 +572,19 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
                 vertical-align:middle;
                 white-space:nowrap;
             }
-            .summary-detail-table th{
+            .summary-detail-table th,
+            .mobile-h-table th{
                 background:var(--gray-50);
                 font-weight:700;
                 color:var(--gray-600);
                 border-bottom:2px solid var(--gray-200);
             }
-            .summary-detail-table td::before{
+            .summary-detail-table td::before,
+            .mobile-h-table td::before{
                 content:none;
             }
-            .summary-detail-table td:not([data-label])::before{
+            .summary-detail-table td:not([data-label])::before,
+            .mobile-h-table td:not([data-label])::before{
                 content:none;
             }
 
@@ -616,7 +625,7 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
             .chip.active{border-color:var(--primary);background:#eef2ff;color:var(--primary);font-weight:700}
             /* 加扣分模式切换 —— 移动端两个并列大芯片，占满卡片顶部一行 */
             .mode-chip-switch{display:flex;gap:8px;margin-bottom:4px}
-            .mode-chip{flex:1 1 0;min-height:48px;display:flex;align-items:center;justify-content:center;border:1.5px solid var(--gray-200);border-radius:12px;background:#fff;font-size:1rem;font-weight:600;color:var(--gray-600);cursor:pointer;user-select:none;transition:all .18s}
+            .mode-chip{flex:1 1 0;min-height:48px;display:flex;align-items:center;justify-content:center;border:1.5px solid var(--gray-200);border-radius:12px;background:#fff;font-size:1rem;font-weight:600;color:var(--gray-600);cursor:pointer;user-select:none;transition:all .18s;white-space:nowrap;padding:0 4px;}
             .mode-chip:active{transform:scale(.96)}
             .mode-chip.active{border-color:var(--primary);background:#eef2ff;color:var(--primary);font-weight:700;box-shadow:0 2px 8px rgba(79,110,247,.18)}
             .chip-floors{display:flex;justify-content:flex-start;flex-wrap:wrap;gap:8px}

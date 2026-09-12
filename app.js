@@ -1741,7 +1741,7 @@
             if(leaveRecords.length===0){
                 leaveListEl.innerHTML='<div class="empty-state">暂无退宿记录</div>';
             }else{
-                leaveListEl.innerHTML='<div style="overflow-x:auto"><table><thead><tr><th>班级</th><th>姓名</th><th>宿舍号</th><th>床号</th><th>退宿时间</th><th>退宿原因</th><th>状态</th>'+(isAdm?'<th>操作</th>':'')+'</tr></thead><tbody id="leaveTbody"></tbody></table></div>';
+                leaveListEl.innerHTML='<div style="overflow-x:auto"><table class="mobile-h-table"><thead><tr><th>班级</th><th>姓名</th><th>宿舍号</th><th>床号</th><th>退宿时间</th><th>退宿原因</th><th>状态</th>'+(isAdm?'<th>操作</th>':'')+'</tr></thead><tbody id="leaveTbody"></tbody></table></div>';
                 renderListInChunks(document.getElementById('leaveTbody'), leaveRecords, leaveRowHtml, 50);
             }
         }
@@ -1752,7 +1752,7 @@
             if(stopRecords.length===0){
                 stopListEl.innerHTML='<div class="empty-state">暂无停宿记录</div>';
             }else{
-                stopListEl.innerHTML='<div style="overflow-x:auto"><table><thead><tr><th>班级</th><th>姓名</th><th>宿舍号</th><th>床号</th><th>停宿时间段</th><th>停宿原因</th><th>状态</th>'+(isAdm?'<th>操作</th>':'')+'</tr></thead><tbody id="stopTbody"></tbody></table></div>';
+                stopListEl.innerHTML='<div style="overflow-x:auto"><table class="mobile-h-table"><thead><tr><th>班级</th><th>姓名</th><th>宿舍号</th><th>床号</th><th>停宿时间段</th><th>停宿原因</th><th>状态</th>'+(isAdm?'<th>操作</th>':'')+'</tr></thead><tbody id="stopTbody"></tbody></table></div>';
                 renderListInChunks(document.getElementById('stopTbody'), stopRecords, leaveRowHtml, 50);
             }
         }
