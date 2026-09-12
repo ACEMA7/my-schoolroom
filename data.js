@@ -1417,7 +1417,7 @@
      * 口径：
      *   totalStudents 入宿人数 = 住本用户负责楼层宿舍的学生数；
      *   absenceCount  当天请假 = absenceRecords 覆盖当日且在范围内；
-     *   leavePendingCount 退宿/停宿中 = leaveRecords 已审核通过且覆盖当日；
+     *   leavePendingCount 退宿/停宿中 = leaveRecords 已审核通过或待审核（pending）且覆盖当日；
      *   pickedUpCount 家长接走 = 当日 picked_up 异常上报；
      *   anomalyCount  无假条   = 当日 no_note 异常上报；
      *   actualCount   实到人数 = 入宿 - 请假 - 退宿/停宿中 - 家长接走 - 无假条（无假条=学生不在宿舍且无请假登记，属缺宿，计入减项）。
@@ -1444,9 +1444,9 @@
         var absenceRecs = (DB.absenceRecords || []).filter(function(r){
             return recordCoversDate(r, date) && inScope(_studentDormitoryId(r.studentId), r.dormitory);
         });
-        // 退宿/停宿中（已审核通过且覆盖当日）
+        // 退宿/停宿中（已审核通过或待审核 pending，且覆盖当日）
         var leaveRecs = (DB.leaveRecords || []).filter(function(r){
-            return r.status === 'approved' && recordCoversDate(r, date) && inScope(_studentDormitoryId(r.studentId), r.dormitory);
+            return (r.status === 'approved' || r.status === 'pending') && recordCoversDate(r, date) && inScope(_studentDormitoryId(r.studentId), r.dormitory);
         });
         // 异常上报
         var anomalies = getInspectionAnomalies(date, floorIds);
