@@ -914,23 +914,25 @@
                 bucket.items.forEach(function(it){
                     var conf=getInspectionConfirmation(it.recordType, it.recordId, date);
                     var timeRange=it.startDate&&it.endDate ? (it.startDate===it.endDate?it.startDate:it.startDate+' ~ '+it.endDate) : '';
-                    html+='<div style="display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--gray-100)">'
-                        +'<div style="flex:1 1 auto;min-width:0"><b>'+escapeHtmlAttr(it.name||'')+'</b> <span class="'+inspectionTagCls(it.recordType)+'">'+(INSPECTION_TYPE_LABELS[it.recordType]||'')+'</span>'
-                        +'<div style="color:var(--gray-500);font-size:0.8571rem;margin-top:2px">'+escapeHtmlAttr(it.className||'-')+' · 床号'+escapeHtmlAttr(it.bed||'-')+(timeRange?' · '+timeRange:'')+'</div></div>'
-                        +'<div style="flex-shrink:0;margin-left:auto;text-align:right">'
-                        +(conf
-                            ? '<span class="status-tag status-green">✅ 已确认（'+escapeHtmlAttr(conf.confirmedByName||'')+(formatConfirmedTime(conf.confirmedAt)?' · '+formatConfirmedTime(conf.confirmedAt):'')+'）</span>'
-                            : (isToday
-                                ? '<button class="btn btn-danger btn-xs" onclick="confirmInspection(\''+it.recordType+'\',\''+String(it.recordId).replace(/'/g,'')+'\')">✅ 确认属实</button>'
-                                : '<span class="status-tag" style="background:var(--gray-100);color:var(--gray-500)">⏳ 待确认</span>'))
-                        +'</div></div>';
+                    var actionHtml;
+                    if(conf){
+                        actionHtml = '<span class="status-tag status-green">✅ 已确认（'+escapeHtmlAttr(conf.confirmedByName||'')+(formatConfirmedTime(conf.confirmedAt)?' · '+formatConfirmedTime(conf.confirmedAt):'')+'）</span>';
+                    } else if(isToday){
+                        actionHtml = '<button class="btn btn-danger btn-xs" onclick="confirmInspection(\''+it.recordType+'\',\''+String(it.recordId).replace(/'/g,'')+'\')">✅ 确认属实</button>';
+                    } else {
+                        actionHtml = '<span class="status-tag" style="background:var(--gray-100);color:var(--gray-500)">⏳ 待确认</span>';
+                    }
+                    html+='<div style="display:flex;flex-direction:column;gap:4px;padding:10px 0;border-bottom:1px solid var(--gray-100)">'
+                        +'<div><b>'+escapeHtmlAttr(it.name||'')+'</b> <span class="'+inspectionTagCls(it.recordType)+'">'+(INSPECTION_TYPE_LABELS[it.recordType]||'')+'</span></div>'
+                        +'<div style="color:var(--gray-500);font-size:0.8571rem">'+escapeHtmlAttr(it.className||'-')+' · 床号'+escapeHtmlAttr(it.bed||'-')+(timeRange?' · '+timeRange:'')+'</div>'
+                        +'<div style="text-align:right">'+actionHtml+'</div>'
+                        +'</div>';
                 });
                 bucket.anomalies.forEach(function(a){
-                    // 无假条但该生当天已有覆盖当晚的请假记录 → 展示层标注"已补请假"（数据不改动）
                     var corrected = a.anomalyType==='no_note' && _studentHasAbsenceOnDate(a, date);
-                    html+='<div style="display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--gray-100)">'
-                        +'<div style="flex:1 1 auto;min-width:0"><b>'+escapeHtmlAttr(a.studentName||'')+'</b> <span class="'+inspectionTagCls(a.anomalyType)+'">'+(a.anomalyType==='picked_up'?'家长接走':'无假条')+'</span>'+(corrected?'<span class="badge-tag badge-warning" style="margin-left:4px">⚠️ 已补请假</span>':'')
-                        +'<div style="color:var(--gray-500);font-size:0.8571rem;margin-top:2px">'+escapeHtmlAttr(a.className||'-')+' · 床号'+escapeHtmlAttr(a.bed||'-')+' · 上报人：'+escapeHtmlAttr(a.reportedByName||'-')+(a.note?' · '+escapeHtmlAttr(a.note):'')+'</div></div>'
+                    html+='<div style="display:flex;flex-direction:column;gap:4px;padding:10px 0;border-bottom:1px solid var(--gray-100)">'
+                        +'<div><b>'+escapeHtmlAttr(a.studentName||'')+'</b> <span class="'+inspectionTagCls(a.anomalyType)+'">'+(a.anomalyType==='picked_up'?'家长接走':'无假条')+'</span>'+(corrected?'<span class="badge-tag badge-warning" style="margin-left:4px">⚠️ 已补请假</span>':'')+'</div>'
+                        +'<div style="color:var(--gray-500);font-size:0.8571rem">'+escapeHtmlAttr(a.className||'-')+' · 床号'+escapeHtmlAttr(a.bed||'-')+' · 上报人：'+escapeHtmlAttr(a.reportedByName||'-')+(a.note?' · '+escapeHtmlAttr(a.note):'')+'</div>'
                         +'</div>';
                 });
                 html+='</div></div>';
