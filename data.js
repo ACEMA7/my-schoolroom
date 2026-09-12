@@ -1522,6 +1522,44 @@
         }).length;
     }
     /**
+     * 批量创建通知（多人同文场景的性能优化版）：
+     * 逐用户生成与 app.js addNotification 单条版结构完全一致的记录，统一追加到
+     * DB.notifications，逐条 v3MarkDirty 纳入 V3 同步，最后仅落库一次
+     * （N 次 saveDB → 1 次）。批量发送场景请用本函数；单条创建（预警/审核）
+     * 仍用 app.js 的 addNotification。
+     * @param {Array<number|string>} userIdList - 接收用户 ID 数组
+     * @param {string} type - 通知类型（如 'manual' / 'warning' / 'approval'）
+     * @param {string} title - 通知标题
+     * @param {string} content - 通知正文
+     * @param {string} [relatedId] - 关联业务记录 ID（扣分/请假/审核记录等），可空
+     * @returns {number} 实际成功创建的通知数量
+     */
+    function addNotificationsBatch(userIdList, type, title, content, relatedId){
+        if(!DB || !Array.isArray(userIdList) || userIdList.length === 0) return 0;
+        if(!Array.isArray(DB.notifications)) DB.notifications = [];
+        var now = Date.now();
+        var created = 0;
+        userIdList.forEach(function(uid){
+            if(uid === null || uid === undefined || uid === '') return;
+            var notification = {
+                id: generateRecordId(),
+                userId: String(uid),
+                type: type,
+                title: title,
+                content: content,
+                relatedId: relatedId || null,
+                read: false,
+                createdAt: now,
+                lastModified: now
+            };
+            DB.notifications.push(notification);
+            v3MarkDirty('notification', notification.id);
+            created++;
+        });
+        if(created > 0) saveDB();
+        return created;
+    }
+    /**
      * 获取全部启用的通知模板（enabled !== false；缺省 enabled 字段亦视为启用）。
      * @returns {Array} 启用中的模板记录数组
      */

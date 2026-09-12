@@ -2327,6 +2327,8 @@
      * @param {string} content - 通知正文
      * @param {string} [relatedId] - 关联业务记录 ID（扣分/请假/审核记录等），可空
      * @returns {object} 新创建的通知记录
+     * @description 用途区分：单条通知场景（预警/审核等）用本函数；批量发送场景
+     *   （如管理员群发通知）请使用 data.js 的 addNotificationsBatch（统一落库一次，性能更优）。
      */
     function addNotification(userId, type, title, content, relatedId){
         if(!Array.isArray(DB.notifications)) DB.notifications = [];
@@ -2564,7 +2566,8 @@
         return out;
     }
     /**
-     * 点击"发送通知"：校验标题/正文与目标用户，逐个创建 type='manual' 的通知，
+     * 点击"发送通知"：校验标题/正文与目标用户，经 addNotificationsBatch 批量创建
+     * type='manual' 的通知（逐条标脏、统一落库一次），
      * 完成后 toast "已发送 N 条通知" 并重绘管理页（统计卡/记录表刷新）。
      */
     function sendNotifications(){
@@ -2575,14 +2578,11 @@
         if(!content){ toast('请填写通知内容','error'); return; }
         var userIds = resolveNotifTargetUserIds();
         if(userIds.length === 0){ toast('没有符合条件的接收用户','error'); return; }
-        // 逐个创建（addNotification 内部各自标脏并落库），数量取实际成功条数
+        // 批量创建（addNotificationsBatch 内部逐条标脏、统一落库一次），数量取实际成功条数
         var sent = 0;
-        userIds.forEach(function(uid){
-            try{
-                addNotification(uid, 'manual', title, content);
-                sent++;
-            }catch(e){ handleError(e, '发送通知', { silent: true }); }
-        });
+        try{
+            sent = addNotificationsBatch(userIds, 'manual', title, content);
+        }catch(e){ handleError(e, '发送通知', { silent: true }); }
         if(sent > 0){
             toast('已发送 ' + sent + ' 条通知');
             // 重置表单并整页重绘（折叠开合状态由 foldState 保持）
@@ -2607,20 +2607,11 @@
      */
     function openNotifTemplateModal(templateId){
         if(!isAdmin()){ toast('无权限','error'); return; }
+        // 仅用于存在性校验与记录当前编辑 id；弹层 HTML 由 ui.js 统一拼装
         var t = getNotificationTemplateById(templateId);
         if(!t){ toast('模板不存在','error'); return; }
         notifTemplateEditId = t.id;
-        var enabled = (t.enabled !== false);
-        document.getElementById('notifTemplateModalBox').innerHTML
-            = '<div class="em-header"><span>📝 编辑通知模板</span><button class="em-close" aria-label="关闭" onclick="closeNotifTemplateModal()">✕</button></div>'
-            + '<div class="em-body">'
-            + '<input type="hidden" id="notifTplEditId" value="' + escapeHtmlAttr(t.id) + '">'
-            + '<div class="form-group"><label>模板ID（系统标识，不可修改）</label><input type="text" value="' + escapeHtmlAttr(t.id) + '" readonly style="background:var(--gray-100)"></div>'
-            + '<div class="form-group"><label>标题 *</label><input type="text" id="notifTplTitle" value="' + escapeHtmlAttr(t.title || '') + '" placeholder="通知标题"></div>'
-            + '<div class="form-group"><label>内容 *</label><textarea id="notifTplContent" rows="7" placeholder="通知正文，支持 {studentName} {className} {score} 等变量">' + escapeHtmlAttr(t.content || '') + '</textarea></div>'
-            + '<div class="form-group"><label style="display:inline-flex;align-items:center;gap:6px;font-weight:500"><input type="checkbox" id="notifTplEnabled" style="width:auto" ' + (enabled ? 'checked' : '') + '> 启用该模板（关闭后发送通知时不可选用）</label></div>'
-            + '</div>'
-            + '<div class="em-footer"><button class="btn btn-primary" onclick="saveNotifTemplate()">💾 保存</button><button class="btn btn-outline" onclick="closeNotifTemplateModal()">取消</button></div>';
+        document.getElementById('notifTemplateModalBox').innerHTML = buildNotifTemplateModalHtml(templateId);
         document.getElementById('notifTemplateModal').classList.add('show');
     }
     /** 关闭模板编辑模态框 */
@@ -2719,6 +2710,19 @@
             renderNotifDrawer();
             updateNotifBadge();
         }
+    }
+    /**
+     * 通知记录表格行内删除（confirm 二次确认），成功后按当前筛选条件重填表格并刷新角标。
+     * 与 deleteNotificationAndRefresh（抽屉版）确认文案一致；表格版不整页重绘，
+     * 改用 applyNotifFilter 复用 DOM 上未变的筛选下拉值，避免丢失筛选状态。
+     * @param {string} id - 通知 ID
+     */
+    function deleteNotifAndRefresh(id){
+        if(!confirm('确认删除该通知？删除后不可恢复。')) return;
+        if(!deleteNotification(id)){ toast('通知不存在或已被删除','error'); return; }
+        applyNotifFilter();
+        updateNotifBadge();
+        toast('已删除');
     }
     /**
      * 将当前登录用户的全部未读通知标记为已读，随后刷新抽屉与角标。

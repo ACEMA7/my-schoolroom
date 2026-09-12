@@ -1452,7 +1452,7 @@
             + '<td data-label="类型"><span style="color:'+catColor+';font-weight:600">'+(NOTIF_CATEGORY_LABELS[cat] || '手动')+'</span></td>'
             + '<td data-label="标题">'+escapeHtmlAttr(r.title||'-')+'</td>'
             + '<td data-label="状态">'+statusHtml+'</td>'
-            + '<td data-label="操作"><button class="btn btn-danger btn-xs" onclick="if(deleteNotification(\''+escapeHtmlAttr(r.id)+'\')){renderView();}">删除</button></td>'
+            + '<td data-label="操作"><button class="btn btn-danger btn-xs" onclick="deleteNotifAndRefresh(\''+escapeHtmlAttr(r.id)+'\')">删除</button></td>'
             + '</tr>';
     }
     /**
@@ -3047,6 +3047,25 @@
             +'<div class="form-group"><label>📏 纪律加扣分（可多选）</label><div class="checkbox-group">'+disChecks+'</div><div style="margin-top:5px">纪律扣分合计：<b id="emDisScore">0</b> 分</div></div>'
             +'</div>'
             +'<div class="em-footer"><button class="btn btn-primary" onclick="saveEditedRecord()">💾 保存修改</button><button class="btn btn-outline" onclick="closeEditModal()">取消</button></div>';
+    }
+    /**
+     * 生成"编辑通知模板"弹层 HTML（由 app.js openNotifTemplateModal 调用后注入模态框）。
+     * @param {string} templateId - 模板 id
+     * @returns {string} 弹层 HTML；模板不存在返回空字符串（由调用方处理）
+     */
+    function buildNotifTemplateModalHtml(templateId){
+        var t = getNotificationTemplateById(templateId);
+        if(!t) return '';
+        var enabled = (t.enabled !== false);
+        return '<div class="em-header"><span>📝 编辑通知模板</span><button class="em-close" aria-label="关闭" onclick="closeNotifTemplateModal()">✕</button></div>'
+            + '<div class="em-body">'
+            + '<input type="hidden" id="notifTplEditId" value="' + escapeHtmlAttr(t.id) + '">'
+            + '<div class="form-group"><label>模板ID（系统标识，不可修改）</label><input type="text" value="' + escapeHtmlAttr(t.id) + '" readonly style="background:var(--gray-100)"></div>'
+            + '<div class="form-group"><label>标题 *</label><input type="text" id="notifTplTitle" value="' + escapeHtmlAttr(t.title || '') + '" placeholder="通知标题"></div>'
+            + '<div class="form-group"><label>内容 *</label><textarea id="notifTplContent" rows="7" placeholder="通知正文，支持 {studentName} {className} {score} 等变量">' + escapeHtmlAttr(t.content || '') + '</textarea></div>'
+            + '<div class="form-group"><label style="display:inline-flex;align-items:center;gap:6px;font-weight:500"><input type="checkbox" id="notifTplEnabled" style="width:auto" ' + (enabled ? 'checked' : '') + '> 启用该模板（关闭后发送通知时不可选用）</label></div>'
+            + '</div>'
+            + '<div class="em-footer"><button class="btn btn-primary" onclick="saveNotifTemplate()">💾 保存</button><button class="btn btn-outline" onclick="closeNotifTemplateModal()">取消</button></div>';
     }
 
 // ---- shared globals explicitly mounted on window ----
