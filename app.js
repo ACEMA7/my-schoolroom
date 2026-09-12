@@ -2644,7 +2644,7 @@
     }
     /**
      * 将模板重置为出厂默认值（confirm 二次确认）。
-     * 系统模板（warn_* / approval_* / reject_*）内置默认值，重置覆盖当前编辑内容并标脏同步；
+      * 系统模板（warn_* / approval_* / reject_*）内置默认值，重置覆盖当前编辑内容并标脏同步。；
      * 系统模板禁止删除（本页不提供删除入口，非内置模板也无默认值可重置）。
      * @param {string} templateId - 模板 id
      */
@@ -3001,21 +3001,31 @@
         lines.push('家长接走：'+sum.pickedUpCount+'人');
         lines.push('无  假  条：'+sum.anomalyCount+'人');
         lines.push('实到人数：'+sum.actualCount+'人');
-        // 学生详情
-        function detailBlock(title, list, extraKey){
+        // 学生详情：每段仅在有学生时输出，段间空行，每生一行 4 列（宿舍号/班级/床号/姓名，3 空格分隔）
+        function detailBlock(title, list){
+            if(!list || list.length===0) return;
             lines.push('');
-            lines.push(title+'：'+list.length+'人');
+            lines.push(title);
             lines.push('【学生具体信息】');
-            if(list.length===0){ lines.push('（暂无）'); return; }
             list.forEach(function(r){
-                var info=(r.name||'')+'（'+(r.className||'-')+'） 床号：'+(r.bed||'-');
-                if(extraKey && r[extraKey]) info += '（'+r[extraKey]+'）';
-                lines.push(info);
+                lines.push((r.dormitory||'-')+'   '+(r.className||'-')+'   '+(r.bed||'-')+'   '+(r.name||'-'));
             });
         }
-        detailBlock('退宿中', sum.leavePendingDetails||[]);
-        detailBlock('家长接走', sum.pickedUpDetails||[], 'confirmedBy');
-        detailBlock('无假条', sum.anomalyDetails||[], 'reportedBy');
+        // 退宿中段（含退宿和停宿两类学生）
+        detailBlock('退宿中：'+(sum.leavePendingDetails||[]).length+'人', sum.leavePendingDetails||[]);
+        // 家长接走段
+        detailBlock('家长接走：'+(sum.pickedUpDetails||[]).length+'人', sum.pickedUpDetails||[]);
+        // 无假条段：所有学生 note 完全相同且非空时标题附加（note值）
+        var noNoteList=sum.anomalyDetails||[];
+        if(noNoteList.length>0){
+            var notes=noNoteList.map(function(r){ return r.note||''; });
+            var firstNote=notes[0];
+            var noNoteTitle='无假条：'+noNoteList.length+'人';
+            if(firstNote!=='' && notes.every(function(n){ return n===firstNote; })){
+                noNoteTitle+='（'+firstNote+'）';
+            }
+            detailBlock(noNoteTitle, noNoteList);
+        }
         var text=lines.join('\n');
         // 复制
         if(navigator.clipboard && navigator.clipboard.writeText){

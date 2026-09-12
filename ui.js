@@ -997,13 +997,16 @@
             +'</div>'
             +'<div class="summary-detail-col">'
             +detailTable('📋 退宿/停宿中学生详情', sum.leavePendingDetails||[], [
-                {key:'name',label:'姓名'},{key:'className',label:'班级'},{key:'bed',label:'床号'},{key:'dormitory',label:'宿舍'},{key:'type',label:'类型'},{key:'startDate',label:'开始'},{key:'endDate',label:'结束'}
+                {key:'dormitory',label:'宿舍号'},{key:'className',label:'班级'},{key:'bed',label:'床号'},{key:'name',label:'姓名'},{key:'type',label:'原因'},{key:'startDate',label:'时间',render:function(row){
+                    if(!row.endDate || row.startDate===row.endDate) return row.startDate||'-';
+                    return row.startDate+'到'+row.endDate;
+                }}
             ])
             +detailTable('🚗 家长接走学生详情', sum.pickedUpDetails||[], [
-                {key:'name',label:'姓名'},{key:'className',label:'班级'},{key:'bed',label:'床号'},{key:'dormitory',label:'宿舍'},{key:'confirmedBy',label:'确认人'},{key:'note',label:'备注'}
+                {key:'dormitory',label:'宿舍号'},{key:'className',label:'班级'},{key:'bed',label:'床号'},{key:'name',label:'姓名'},{key:'confirmedBy',label:'确认人员'}
             ])
             +detailTable('⚠️ 无假条学生详情', sum.anomalyDetails||[], [
-                {key:'name',label:'姓名'},{key:'className',label:'班级'},{key:'bed',label:'床号'},{key:'dormitory',label:'宿舍'},{key:'reportedBy',label:'上报人'},{key:'note',label:'备注',render:function(row){ return (row.note||'-')+(row.correctedByAbsence?'（已补登记请假）':''); }}
+                {key:'dormitory',label:'宿舍号'},{key:'className',label:'班级'},{key:'bed',label:'床号'},{key:'name',label:'姓名'},{key:'note',label:'是否与家长确认',render:function(row){ return (row.note||'-')+(row.correctedByAbsence?'（已补登记请假）':''); }},{key:'reportedBy',label:'确认人员'}
             ])
             +'</div>'
             +'</div>'
