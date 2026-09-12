@@ -969,7 +969,7 @@
         function detailTable(title, list, columns, emptyText){
             var h='<div style="margin-top:12px"><div style="font-weight:700;margin-bottom:6px">'+title+'（'+list.length+'人）</div>';
             if(list.length===0){ h+='<div style="color:var(--gray-500);font-size:0.8571rem">'+(emptyText||'无')+'</div></div>'; return h; }
-            h+='<div style="overflow-x:auto"><table style="font-size:0.9rem"><thead><tr>'+columns.map(function(c){return '<th>'+c.label+'</th>';}).join('')+'</tr></thead><tbody>';
+            h+='<div style="overflow-x:auto;-webkit-overflow-scrolling:touch"><table class="summary-detail-table" style="font-size:0.9rem;min-width:520px"><thead><tr>'+columns.map(function(c){return '<th>'+c.label+'</th>';}).join('')+'</tr></thead><tbody>';
             list.forEach(function(row){
                 h+='<tr>'+columns.map(function(c){
                     // c.render 为该列自定义纯文本渲染（返回字符串仍经 escapeHtmlAttr 转义）
@@ -2687,7 +2687,7 @@
         function block(title, list, cols){
             var h='<div style="margin-top:10px"><div style="font-weight:700;margin-bottom:4px">'+title+'（'+(list||[]).length+'人）</div>';
             if(!list||list.length===0){ h+='<div style="color:var(--gray-500);font-size:0.8571rem">（暂无）</div></div>'; return h; }
-            h+='<div style="overflow-x:auto"><table style="font-size:0.8571rem"><thead><tr>'+cols.map(function(c){return '<th>'+c.label+'</th>';}).join('')+'</tr></thead><tbody>';
+            h+='<div style="overflow-x:auto;-webkit-overflow-scrolling:touch"><table class="summary-detail-table" style="font-size:0.8571rem;min-width:520px"><thead><tr>'+cols.map(function(c){return '<th>'+c.label+'</th>';}).join('')+'</tr></thead><tbody>';
             list.forEach(function(r){
                 h+='<tr>'+cols.map(function(c){ return '<td>'+escapeHtmlAttr(r[c.key]==null?'-':String(r[c.key]))+'</td>'; }).join('')+'</tr>';
             });
