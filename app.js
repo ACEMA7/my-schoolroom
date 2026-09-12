@@ -277,7 +277,7 @@
     // ==================== 字体缩放（仅STAFF移动端） ====================
     var FONT_SCALE_KEY='dorm_font_scale_staff';
     var FONT_BASE=14; // 基准字号 14px
-    var FONT_MIN=100, FONT_MAX=160, FONT_STEP=5;
+    var FONT_MIN=100, FONT_MAX=140, FONT_STEP=5; // 最大140%，再大容易导致移动端布局溢出
 
     function applyFontScale(scale){
         scale=Math.max(FONT_MIN,Math.min(FONT_MAX,scale));

@@ -4,9 +4,9 @@
 //
 // ⚠️ 每次修改任何 .js / .html 文件后，必须更新下面这一行的时间戳
 // （哪怕只改一行代码，也要改成新的时间），浏览器才会检测到新版本并自动推送更新
-var CACHE_NAME = 'dormitory-cache-2026-09-12-0008';
+var CACHE_NAME = 'dormitory-cache-2026-09-12-0011';
 // 页面通过 postMessage({type:'GET_VERSION'}) 读取，用于顶栏版本号显示（须与 CACHE_NAME 同步修改）
-self.APP_VERSION = '2026-09-12-0008';
+self.APP_VERSION = '2026-09-12-0011';
 
 // 同源核心资源（任一失败都会阻断安装，保证离线可用的最小集合）
 var LOCAL_ASSETS = [
