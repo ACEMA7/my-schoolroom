@@ -2995,9 +2995,14 @@
         lines.push(building+'：'+floorNums.join('、')+'楼');
         lines.push('值班老师：'+teacher);
         lines.push(sep);
+        // 退宿/停宿分组：type==='停宿' 归停宿，其余（含缺 type）归退宿
+        var allLeaveDetails = sum.leavePendingDetails || [];
+        var stopDetails = allLeaveDetails.filter(function(r){ return r && r.type === '停宿'; });
+        var leaveDetails = allLeaveDetails.filter(function(r){ return !r || r.type !== '停宿'; });
         lines.push('入宿人数：'+sum.totalStudents+'人');
         lines.push('当天请假：'+sum.absenceCount+'人');
-        lines.push('退  宿  中：'+sum.leavePendingCount+'人');
+        lines.push('退  宿  中：'+leaveDetails.length+'人');
+        lines.push('停  宿  中：'+stopDetails.length+'人');
         lines.push('家长接走：'+sum.pickedUpCount+'人');
         lines.push('无  假  条：'+sum.anomalyCount+'人');
         lines.push('实到人数：'+sum.actualCount+'人');
@@ -3011,8 +3016,9 @@
                 lines.push((r.dormitory||'-')+'   '+(r.className||'-')+'   '+(r.bed||'-')+'   '+(r.name||'-'));
             });
         }
-        // 退宿中段（含退宿和停宿两类学生）
-        detailBlock('退宿中：'+(sum.leavePendingDetails||[]).length+'人', sum.leavePendingDetails||[]);
+        // 退宿中段 + 停宿中段（按 type 分组后各自输出，空段由 detailBlock 内部跳过）
+        detailBlock('退宿中：'+leaveDetails.length+'人', leaveDetails);
+        detailBlock('停宿中：'+stopDetails.length+'人', stopDetails);
         // 家长接走段
         detailBlock('家长接走：'+(sum.pickedUpDetails||[]).length+'人', sum.pickedUpDetails||[]);
         // 无假条段：所有学生 note 完全相同且非空时标题附加（note值）

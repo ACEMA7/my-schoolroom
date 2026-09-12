@@ -814,7 +814,7 @@
         }catch(e){ return dateStr; }
     }
     // 巡查类型标签样式
-    var INSPECTION_TAG_CLS = { leave:'status-tag status-orange', stop:'status-tag status-blue', absence:'status-tag status-blue', picked_up:'status-tag status-orange', no_note:'status-tag status-red' };
+    var INSPECTION_TAG_CLS = { leave:'status-tag status-orange', stop:'status-tag status-blue', absence:'status-tag status-blue', picked_up:'status-tag status-orange', no_note:'status-tag status-orange' };
     function inspectionTagCls(t){ return INSPECTION_TAG_CLS[t] || 'status-tag'; }
     /**
      * 将时间戳格式化为 HH:mm（用于巡查确认时间显示）。
@@ -931,7 +931,7 @@
                     html+='<div style="display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--gray-100)">'
                         +'<div style="flex:1 1 auto;min-width:0"><b>'+escapeHtmlAttr(a.studentName||'')+'</b> <span class="'+inspectionTagCls(a.anomalyType)+'">'+(a.anomalyType==='picked_up'?'家长接走':'无假条')+'</span>'+(corrected?'<span class="badge-tag badge-warning" style="margin-left:4px">⚠️ 已补请假</span>':'')
                         +'<div style="color:var(--gray-500);font-size:0.8571rem;margin-top:2px">'+escapeHtmlAttr(a.className||'-')+' · 床号'+escapeHtmlAttr(a.bed||'-')+' · 上报人：'+escapeHtmlAttr(a.reportedByName||'-')+(a.note?' · '+escapeHtmlAttr(a.note):'')+'</div></div>'
-                        +'<div style="flex-shrink:0;margin-left:auto"><span class="status-tag status-red">⚠️ 异常</span></div></div>';
+                        +'</div>';
                 });
                 html+='</div></div>';
             });
