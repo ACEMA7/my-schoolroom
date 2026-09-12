@@ -1420,7 +1420,7 @@
      *   leavePendingCount 退宿/停宿中 = leaveRecords 已审核通过且覆盖当日；
      *   pickedUpCount 家长接走 = 当日 picked_up 异常上报；
      *   anomalyCount  无假条   = 当日 no_note 异常上报；
-     *   actualCount   实到人数 = 入宿 - 请假 - 退宿/停宿中 - 家长接走（无假条学生在宿，不计减）。
+     *   actualCount   实到人数 = 入宿 - 请假 - 退宿/停宿中 - 家长接走 - 无假条（无假条=学生不在宿舍且无请假登记，属缺宿，计入减项）。
      * @param {string} date - 总结日期 YYYY-MM-DD
      * @param {object} [user] - 用户对象，缺省取 currentUser
      * @returns {object} 总结数据对象（详情列表含姓名/班级/床号等快照）
@@ -1465,7 +1465,7 @@
             leavePendingCount: leaveRecs.length,
             pickedUpCount: picked.length,
             anomalyCount: noNoteEffective.length,
-            actualCount: Math.max(0, totalStudents - absenceRecs.length - leaveRecs.length - picked.length),
+            actualCount: Math.max(0, totalStudents - absenceRecs.length - leaveRecs.length - picked.length - noNoteEffective.length),
             // 详情快照（历史回溯时不依赖学生/记录后续变化）
             leavePendingDetails: leaveRecs.map(function(r){
                 return { name: r.name, className: r.className, bed: r.bed, dormitory: r.dormitory, type: r.type === 'stop' ? '停宿' : '退宿', startDate: r.startDate || r.date, endDate: r.endDate || r.date };
