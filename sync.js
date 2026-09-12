@@ -23,9 +23,11 @@
  *   等全部数据函数）、ui.js（toast/handleError）、app.js（currentUser/
  *   selectedDormitoryId/renderTree/renderView）、window.supabase（supabase-js）。
  *
- * 对外暴露：文件末尾挂载 window.supabaseClient / window.syncEnabled /
- *   window._retryState；函数声明为全局，常用：initializeData / saveDB /
- *   manualSync / resetCloudData / syncWithRetry / loadFromCloud / syncToCloud。
+ * 对外暴露：文件末尾挂载 window.supabaseClient / window._retryState
+ *   （对象引用，便于外部访问）；另在 initializeData 中 DB 就绪后挂载
+ *   window.DB，确保始终指向最新数据库实例。函数声明为全局，常用：
+ *   initializeData / saveDB / manualSync / resetCloudData / syncWithRetry /
+ *   loadFromCloud / syncToCloud。
  * ============================================================ */
 
     var supabaseClient = null;   // Supabase 客户端实例（initializeData 中创建）
@@ -665,13 +667,47 @@
     function updateSyncStatus(state){
         var dot=document.getElementById('syncStatusDot');
         if(!dot) return;
+        // 离线优先：无论调用方传入何种状态，离线时一律显示红点 + 离线提示文案
+        if(typeof navigator!=='undefined' && navigator.onLine===false){
+            dot.classList.remove('synced','syncing','unsynced');
+            dot.classList.add('unsynced');
+            dot.title='离线中，数据将在联网后自动同步';
+            _applyOfflineUI(true);
+            return;
+        }
+        _applyOfflineUI(false);
         dot.classList.remove('synced','syncing','unsynced');
         dot.classList.add(state);
         var tips={synced:'已同步',syncing:'同步中…',unsynced:'有未同步数据（点击重试）'};
         dot.title='同步状态：'+(tips[state]||'');
     }
+    // 离线视觉增强：离线超过阈值后，在状态点旁显示“离线”文字标签（仅移动端 CSS 放行）。
+    // 延迟显示是为了过滤短暂网络抖动，避免标签频繁闪烁。
+    var OFFLINE_LABEL_DELAY_MS=10000;
+    var _offlineUIState={timer:null, active:false};
+    function _clearOfflineLabelTimer(){
+        if(_offlineUIState.timer){ clearTimeout(_offlineUIState.timer); _offlineUIState.timer=null; }
+    }
+    function _applyOfflineUI(offline){
+        var label=document.getElementById('offlineLabel');
+        if(offline){
+            if(_offlineUIState.active) return;
+            _offlineUIState.active=true;
+            _clearOfflineLabelTimer();
+            _offlineUIState.timer=setTimeout(function(){
+                if(label) label.classList.add('show');
+            }, OFFLINE_LABEL_DELAY_MS);
+        }else{
+            _offlineUIState.active=false;
+            _clearOfflineLabelTimer();
+            if(label) label.classList.remove('show');
+        }
+    }
     // 重试状态：指数退避 5s→10s→20s→40s→60s（封顶），最多 5 次
     var _retryState={attempt:0, timer:null, running:false};
+    // 断网 toast 防重复标志：仅在“在线→离线”跳变后的首次同步尝试时提示一次，
+    // online 事件中复位。页面加载时本就离线则初值为 true（开页离线的提示由 app.js 负责）。
+    var _offlineToastShown=(typeof navigator!=='undefined' && navigator.onLine===false);
     function clearRetryTimer(){ if(_retryState.timer){ clearTimeout(_retryState.timer); _retryState.timer=null; } }
     /**
      * 后台同步入口（带指数退避自动重试）。saveDB() 数据变更后即调用。
@@ -687,13 +723,18 @@
         _retryState.attempt=0;
         clearRetryTimer();
         function doAttempt(){
-            updateSyncStatus('syncing');
             // 离线：不立即重试，等 online 事件触发
             if(typeof navigator!=='undefined' && navigator.onLine===false){
                 updateSyncStatus('unsynced');
+                // 防重复：同一离线周期内仅在首次同步尝试时提示一次
+                if(!_offlineToastShown){
+                    _offlineToastShown=true;
+                    toast('当前网络已断开，数据已保存本地，联网后将自动同步', 'error');
+                }
                 _retryState.running=false;
                 return Promise.resolve(false);
             }
+            updateSyncStatus('syncing');
             return syncToCloud().then(function(ok){
                 if(ok){
                     updateSyncStatus('synced');
@@ -995,6 +1036,9 @@
         // initDatabase/ensureCorrectUsers 为异步（含密码哈希计算），先等待其完成再继续初始化
         var boot = loadDBFromLocal() ? Promise.resolve() : initDatabase();
         return boot.then(function(){ return ensureCorrectUsers(); }).then(function(){
+        // DB 已由 loadDBFromLocal / initDatabase 完成实例化，挂载到 window
+        // 确保外部脚本与控制台访问的始终是最新数据库实例
+        window.DB = DB;
         ensureSyncMeta();
         // 基础数据自愈：修复本地被意外清空的楼层/宿舍（无论是否启用云端同步都要执行）
         if(repairBasicData()) saveDBToLocal();
@@ -1003,7 +1047,19 @@
             try {
                 supabaseClient = window.supabase.createClient(SUPABASE_CONFIG.url, SUPABASE_CONFIG.anonKey);
                 // 网络恢复时自动重试未完成的增量上传（走重试队列）
-                window.addEventListener('online', function(){ if(syncEnabled&&supabaseClient&&DB){ ensureSyncMeta(); syncWithRetry(); } });
+                window.addEventListener('online', function(){
+                    if(syncEnabled&&supabaseClient&&DB){
+                        _offlineToastShown=false; // 复位断网提示标志，下次断网可再次提示
+                        _applyOfflineUI(false);
+                        toast('网络已恢复，正在同步…');
+                        ensureSyncMeta();
+                        syncWithRetry();
+                    }
+                });
+                // 断网瞬间即把状态点切为红色（无需等待下一次同步尝试），并启动“离线”标签延时
+                window.addEventListener('offline', function(){
+                    if(syncEnabled&&supabaseClient&&DB){ updateSyncStatus('unsynced'); }
+                });
                 // V3：检测表结构版本 + 旧数据迁移
                 return detectV3Schema().then(function(ver){
                     if(ver === 3){
@@ -1247,6 +1303,8 @@
 
 
 // ---- shared globals explicitly mounted on window ----
+// 仅挂载对象引用（supabaseClient 客户端实例、_retryState 重试状态对象），
+// 便于外部脚本/控制台访问；syncEnabled 为布尔可变状态，顶层 var 已天然全局，
+// 直接以变量名访问即可，无需经 window 中转。
 window.supabaseClient = supabaseClient;
-window.syncEnabled = syncEnabled;
 window._retryState = _retryState;

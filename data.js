@@ -18,8 +18,10 @@
  *   第三方：window.LZString（压缩）、window.crypto.subtle（哈希）。
  *
  * 对外暴露（函数声明在 classic script 中天然全局，另在文件末尾
- *           显式挂载 window 的有：DB / storageWarned / _detectedSchemaVersion /
- *           hashPassword / migrateUserPasswords / formatLocalDate / getTodayLocalStr）。
+ *           显式挂载 window 的有：hashPassword / migrateUserPasswords /
+ *           formatLocalDate / getTodayLocalStr / roundScore1 等函数引用；
+ *           DB 等可变状态不再在本文件挂载 window.DB，改由 sync.js
+ *           initializeData 在 DB 就绪后挂载以保证指向最新实例）。
  *   常用公共函数：getStudentById / getStudentsByDormitory / getRecordsByDormitory /
  *     getTotalScore / getItemById / isAdmin / isClassAdmin / initDatabase /
  *     loadDBFromLocal / saveDBToLocal / ensureSyncMeta / repairBasicData /
@@ -1205,15 +1207,33 @@
     var INSPECTION_TYPE_LABELS = { leave: '退宿', stop: '停宿', absence: '请假' };
 
     /**
-     * 判断一条请假/退宿/停宿记录的日期区间是否覆盖指定日期。
-     * 有 startDate/endDate 时按闭区间判断；否则回退为 date 字段单日判断。
+     * 判断某条请假/停宿记录是否覆盖某个"晚检晚上"。
+     * 规则：开始日 8:00 开始；endDate=startDate 时次日 3:00 结束；
+     *       endDate>startDate 时 endDate 当天 7:00 结束（学生早上回校）。
+     * @param {string} startDate - 开始日期 YYYY-MM-DD
+     * @param {string} endDate   - 结束日期 YYYY-MM-DD（为空视为与 startDate 相同）
+     * @param {string} nightDate - 待判断的"晚检晚上"日期 YYYY-MM-DD
+     * @returns {boolean}
+     */
+    function leaveCoversNight(startDate, endDate, nightDate){
+        if(!startDate || !nightDate) return false;
+        if(!endDate) endDate = startDate;
+        if(nightDate < startDate) return false;
+        if(nightDate > endDate) return false;
+        // 结束日当天晚上不算覆盖（学生早上已回校）；单日请假例外（这一晚整晚请假）
+        if(nightDate === endDate && endDate !== startDate) return false;
+        return true;
+    }
+    /**
+     * 判断一条请假/退宿/停宿记录的日期区间是否覆盖指定日期的晚检。
+     * 有 startDate/endDate 时按 leaveCoversNight 判断；否则回退为 date 字段单日判断。
      * @param {object} r - 记录（含 startDate/endDate 或 date，YYYY-MM-DD）
      * @param {string} date - 目标日期 YYYY-MM-DD
      * @returns {boolean}
      */
     function recordCoversDate(r, date){
         if(!r) return false;
-        if(r.startDate && r.endDate) return r.startDate <= date && date <= r.endDate;
+        if(r.startDate && r.endDate) return leaveCoversNight(r.startDate || r.date, r.endDate || r.date, date);
         return (r.date || r.startDate) === date;
     }
     // 取学生所在宿舍 ID（studentId 可能缺失/学生已删除，返回 null）
@@ -1305,6 +1325,27 @@
         }).sort(function(a,b){ return (b.createdAt||0) - (a.createdAt||0); });
     }
     /**
+     * 判断某条异常上报对应的学生，在指定日期是否有一条"覆盖当晚"的请假记录。
+     * 优先按 studentId 匹配；无 studentId 时按 姓名+班级 兜底匹配。
+     * @param {object} anomaly - anomalyReports 中的记录
+     * @param {string} date - YYYY-MM-DD
+     * @returns {boolean}
+     */
+    function _studentHasAbsenceOnDate(anomaly, date){
+        if(!DB || !Array.isArray(DB.absenceRecords) || !anomaly) return false;
+        var sid = anomaly.studentId;
+        var name = anomaly.studentName;
+        var cls = anomaly.className;
+        return DB.absenceRecords.some(function(r){
+            var start = r.startDate || r.date;
+            var end = r.endDate || start;
+            if(!leaveCoversNight(start, end, date)) return false;
+            if(sid && r.studentId) return String(r.studentId) === String(sid);
+            if(name && r.name === name && (!cls || r.className === cls)) return true;
+            return false;
+        });
+    }
+    /**
      * 计算某日晚检总结数据（纯统计，不落库）。
      * 口径：
      *   totalStudents 入宿人数 = 住本用户负责楼层宿舍的学生数；
@@ -1343,7 +1384,9 @@
         // 异常上报
         var anomalies = getInspectionAnomalies(date, floorIds);
         var picked = anomalies.filter(function(a){ return a.anomalyType === 'picked_up'; });
-        var noNote = anomalies.filter(function(a){ return a.anomalyType === 'no_note'; });
+        var noNoteAll = anomalies.filter(function(a){ return a.anomalyType === 'no_note'; });
+        // 无假条去重：如果该学生当天有覆盖当天的请假记录，则不算无假条（以请假为准）
+        var noNoteEffective = noNoteAll.filter(function(a){ return !_studentHasAbsenceOnDate(a, date); });
         return {
             summaryDate: date,
             buildingName: user.buildingName || '',
@@ -1354,7 +1397,7 @@
             absenceCount: absenceRecs.length,
             leavePendingCount: leaveRecs.length,
             pickedUpCount: picked.length,
-            anomalyCount: noNote.length,
+            anomalyCount: noNoteEffective.length,
             actualCount: Math.max(0, totalStudents - absenceRecs.length - leaveRecs.length - picked.length),
             // 详情快照（历史回溯时不依赖学生/记录后续变化）
             leavePendingDetails: leaveRecs.map(function(r){
@@ -1363,8 +1406,8 @@
             pickedUpDetails: picked.map(function(a){
                 return { name: a.studentName, className: a.className, bed: a.bed, dormitory: a.dormitoryRoom, confirmedBy: a.reportedByName || '', note: a.note || '' };
             }),
-            anomalyDetails: noNote.map(function(a){
-                return { name: a.studentName, className: a.className, bed: a.bed, dormitory: a.dormitoryRoom, reportedBy: a.reportedByName || '', note: a.note || '' };
+            anomalyDetails: noNoteAll.map(function(a){
+                return { name: a.studentName, className: a.className, bed: a.bed, dormitory: a.dormitoryRoom, reportedBy: a.reportedByName || '', note: a.note || '', correctedByAbsence: _studentHasAbsenceOnDate(a, date) };
             })
         };
     }
@@ -1400,9 +1443,10 @@
 
 
 // ---- shared globals explicitly mounted on window ----
-window.DB = DB;
-window.storageWarned = storageWarned;
-window._detectedSchemaVersion = _detectedSchemaVersion;
+// 仅挂载函数引用（固定引用，便于外部脚本/控制台调用）。
+// DB / storageWarned / _detectedSchemaVersion 为可变状态，由顶层 var 声明天然全局，
+// 直接以变量名访问即可，无需经 window 中转；window.DB 改在 sync.js initializeData
+// 中 DB 就绪后挂载，确保始终指向最新实例。
 window.hashPassword = hashPassword;
 window.migrateUserPasswords = migrateUserPasswords;
 window.formatLocalDate = formatLocalDate;

@@ -17,8 +17,11 @@
  *      Service Worker 注册与更新提示。
  *
  * 架构约定：
- *   - 本文件只写"做什么"（改 DB + 调用 saveDB + 触发重绘），界面 HTML
- *     拼装与视图渲染在 ui.js；数据读写在 data.js；云端同步在 sync.js；
+ *   - 本文件只写"做什么"（改 DB + 调用 saveDB + 触发重绘）；界面 HTML
+ *     拼装与视图渲染统一在 ui.js（含全部弹层 HTML：调宿/修改记录/
+ *     异常上报/账号/批量导入/宿舍管理等，由 ui.js 的 build*ModalHtml /
+ *     renderDormitoryManage 等函数生成）；数据读写在 data.js；
+ *     云端同步在 sync.js；
  *   - 所有异步入口统一用 safeAsync(Impl, 上下文, {retry:true}) 包装，
  *     外层函数保留 _busy 防重入，异常由 handleError 分类处理；
  *   - HTML 内联 onclick 调用的函数全部声明在本文件（全局函数）。
@@ -27,9 +30,9 @@
  *   （initializeData/saveDB/manualSync/resetCloudData）、ui.js（全部 renderXxxView/
  *   toast/handleError）、index.html 的 DOM 元素。
  *
- * 对外暴露：文件末尾把 currentUser/currentView/selectedFloorId/
- *   selectedDormitoryId 等状态挂载 window；函数声明为全局供 onclick 与
- *   ui.js/sync.js 回调使用。
+ * 对外暴露：所有函数声明为全局供 onclick 与 ui.js/sync.js 回调使用；
+ *   currentUser/currentView/selectedFloorId 等可变状态由顶层 var 声明
+ *   天然全局，直接以变量名访问，不再显式挂载 window（避免挂载过时初始值）。
  * ============================================================ */
 
     var currentUser = null;             // 当前登录用户对象（null=未登录）
@@ -496,50 +499,14 @@
         var s = getStudentById(studentId);
         if(!s){toast('学生不存在','error');return;}
         transferStudentId = studentId;
-        var curDorm = getDormitoryById(s.dormitoryId);
-        var curRoom = curDorm ? curDorm.roomNumber : '未分配';
-        // 目标宿舍：所有生效宿舍号（排除当前宿舍）
-        var allActiveDorms = (DB.dormitories||[]).filter(function(d){ return isDormitoryDeleted(d.roomNumber)===false; });
-        allActiveDorms.sort(function(a,b){ return String(a.roomNumber).localeCompare(String(b.roomNumber),'zh-Hans-CN',{numeric:true}); });
-        var dormOpts = allActiveDorms.map(function(d){
-            var selected = (curDorm && d.id===curDorm.id) ? ' selected' : '';
-            var fl = getFloorById(d.floorId);
-            return '<option value="'+d.id+'"'+selected+'>'+d.roomNumber+'（'+(fl?fl.name:'未分配楼层')+'）</option>';
-        }).join('');
-        var bedOpts = '';
-        // 初始床位选项：当前宿舍的床位（含当前学生自身床位）
-        if(curDorm){
-            bedOpts = buildBedOptions(curDorm.id, s.id);
-        }
-        var html = '<div class="em-header"><span>🔄 调换床位/宿舍</span><button class="em-close" aria-label="关闭" onclick="closeTransferModal()">✕</button></div>'
-            + '<div class="em-body">'
-            + '<div class="form-group"><label>当前信息</label><div style="padding:8px 12px;background:var(--gray-50);border-radius:6px;font-size:0.9286rem">姓名：<b>'+escapeHtmlAttr(s.name)+'</b>　班级：'+(s.className||'-')+'　当前宿舍：'+curRoom+'　当前床号：'+(s.bedNumber||'-')+'</div></div>'
-            + '<div class="form-group"><label>目标宿舍号 *</label><select id="transferDormId" onchange="onTransferDormChange()">'+dormOpts+'</select></div>'
-            + '<div class="form-group"><label>目标床号 *</label><select id="transferBed">'+bedOpts+'</select></div>'
-            + '<div style="font-size:0.8571rem;color:#888">提示：已被占用的床位将显示占用者姓名且不可选择</div>'
-            + '</div>'
-            + '<div class="em-footer"><button class="btn btn-primary" onclick="saveTransfer()">💾 确认调宿</button><button class="btn btn-outline" onclick="closeTransferModal()">取消</button></div>';
-        document.getElementById('transferModalBox').innerHTML = html;
+        // HTML 拼装已迁移至 ui.js 的 buildTransferModalHtml
+        document.getElementById('transferModalBox').innerHTML = buildTransferModalHtml(studentId);
         document.getElementById('transferModal').classList.add('show');
     }
     function closeTransferModal(){
         var m=document.getElementById('transferModal');
         if(m) m.classList.remove('show');
         transferStudentId = null;
-    }
-    // 生成目标宿舍的床位选项：已被占用的床位标注占用者并禁用
-    function buildBedOptions(dormId, currentStudentId){
-        var beds = ['1','2','3','4','5','6','7','8'];
-        var occupants = {};
-        getStudentsByDormitory(dormId).forEach(function(st){
-            if(st.id !== currentStudentId && st.bedNumber) occupants[String(st.bedNumber)] = st.name;
-        });
-        return beds.map(function(b){
-            if(occupants[b]){
-                return '<option value="'+b+'" disabled>床位 '+b+'（已被 '+occupants[b]+' 占用）</option>';
-            }
-            return '<option value="'+b+'">床位 '+b+'</option>';
-        }).join('');
     }
     function onTransferDormChange(){
         var dormId = parseInt(document.getElementById('transferDormId').value);
@@ -598,29 +565,8 @@
         for(var i=0;i<DB.deductionRecords.length;i++){if(String(DB.deductionRecords[i].id)===String(id)){r=DB.deductionRecords[i];break;}}
         if(!r){toast('记录不存在','error');return;}
         editRecordId=id;
-        function buildChecks(items,recordIds,prefix,customLabel,customScoreText){
-            var html=items.map(function(i){
-                var checked=(recordIds||[]).indexOf(i.id)!==-1?' checked':'';
-                return '<label><input type="checkbox" value="'+i.id+'" class="'+prefix+'-item"'+checked+' onchange="updateEditScores()"> '+i.name+' (-'+i.defaultScore+'分)</label>';
-            }).join('');
-            // 回填自定义项目：记录中以 'custom:名称' 存储，卫生0.2分/纪律1分
-            var customName='';
-            (recordIds||[]).forEach(function(v){ if(typeof v==='string'&&v.indexOf('custom:')===0) customName=v.substring(7); });
-            html+='<label><input type="checkbox" value="custom" class="'+prefix+'-item"'+(customName?' checked':'')+' onchange="emCustomChange(\''+prefix+'\')"> ✏️ '+customLabel+'('+customScoreText+')</label>';
-            html+='<span id="'+prefix+'CustomWrap" style="display:'+(customName?'inline-block':'none')+';margin-left:8px;"><input type="text" id="'+prefix+'CustomName" placeholder="自定义项目名称" value="'+escapeHtmlAttr(customName)+'" style="padding:4px 8px;border:1px dashed #ccc;border-radius:4px;"></span>';
-            return html;
-        }
-        var hyChecks=buildChecks(DB.deductionItems.hygiene||[],r.hygieneItemIds,'em-hy','自定义','0.2分');
-        var disChecks=buildChecks(DB.deductionItems.discipline||[],r.disciplineItemIds,'em-dis','自定义','1分');
-        var html='<div class="em-header"><span>✏️ 修改扣分记录</span><button class="em-close" aria-label="关闭" onclick="closeEditModal()">✕</button></div>'
-            +'<div class="em-body">'
-            +'<div class="form-group"><label>扣分日期 *</label><input type="text" class="date-picker" id="emDate" value="'+escapeHtmlAttr(r.recordDate)+'"></div>'
-            +'<div class="form-group"><label>备注</label><input type="text" id="emRemark" placeholder="可填写具体原因..." value="'+escapeHtmlAttr(r.remark)+'"></div>'
-            +'<div class="form-group"><label>🧹 卫生加扣分（可多选）</label><div class="checkbox-group">'+hyChecks+'</div><div style="margin-top:5px">卫生扣分合计：<b id="emHyScore">0</b> 分</div></div>'
-            +'<div class="form-group"><label>📏 纪律加扣分（可多选）</label><div class="checkbox-group">'+disChecks+'</div><div style="margin-top:5px">纪律扣分合计：<b id="emDisScore">0</b> 分</div></div>'
-            +'</div>'
-            +'<div class="em-footer"><button class="btn btn-primary" onclick="saveEditedRecord()">💾 保存修改</button><button class="btn btn-outline" onclick="closeEditModal()">取消</button></div>';
-        document.getElementById('editModalBox').innerHTML=html;
+        // HTML 拼装已迁移至 ui.js 的 buildEditRecordModalHtml
+        document.getElementById('editModalBox').innerHTML=buildEditRecordModalHtml(id);
         document.getElementById('editModal').classList.add('show');
         updateEditScores();
         initDatePickers(document); // 初始化修改日期选择器
@@ -1507,6 +1453,94 @@
         renderView();
     }
 
+    // ==================== 数据备份与恢复 ====================
+    // 备份：把当前 DB 全量序列化为 JSON 下载；恢复：从 JSON 覆盖当前 DB。
+    var backupPendingFile = null;   // 用户选择的备份文件（File 对象）
+    /**
+     * 备份全部数据：将当前 DB（含业务数据与同步元数据）序列化为 JSON 并下载。
+     * 文件名：宿舍系统备份_YYYYMMDD.json
+     */
+    function backupAllData(){
+        if(!isAdmin()){toast('无权限','error');return;}
+        if(!DB){toast('数据未初始化','error');return;}
+        try{
+            var json = JSON.stringify(DB);
+            var today = getTodayLocalStr();  // YYYY-MM-DD
+            var dateTag = today.replace(/-/g, '');  // YYYYMMDD
+            var blob = new Blob([json], { type: 'application/json;charset=utf-8' });
+            var link = document.createElement('a');
+            link.href = URL.createObjectURL(blob);
+            link.download = '宿舍系统备份_' + dateTag + '.json';
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            setTimeout(function(){ URL.revokeObjectURL(link.href); }, 1000);
+            toast('备份已下载：宿舍系统备份_' + dateTag + '.json');
+        }catch(e){
+            handleError(e, '备份全部数据');
+        }
+    }
+    /**
+     * 备份文件选择回调：记录用户选中的 JSON 文件并显示文件名。
+     * @param {File|null} file
+     */
+    function onBackupFileChange(file){
+        backupPendingFile = file || null;
+        var nameEl = document.getElementById('backupFileName');
+        if(nameEl){
+            nameEl.textContent = file ? ('已选择：' + file.name) : '未选择文件';
+        }
+    }
+    /**
+     * 从备份恢复：读取选中的 JSON 文件，校验关键字段，双重确认后覆盖当前 DB。
+     * 使用 Object.assign(DB, parsed) 保持 DB 引用不变（其他模块持有该引用）。
+     */
+    function restoreFromBackup(){
+        if(!isAdmin()){toast('无权限','error');return;}
+        var file = backupPendingFile;
+        if(!file){
+            var input = document.getElementById('backupFileInput');
+            if(input && input.files && input.files[0]) file = input.files[0];
+        }
+        if(!file){toast('请先选择备份文件','error');return;}
+        var reader = new FileReader();
+        reader.onload = function(e){
+            try{
+                var parsed = JSON.parse(e.target.result);
+                if(!parsed || typeof parsed !== 'object'){
+                    toast('备份文件格式不正确','error'); return;
+                }
+                // 校验关键字段
+                var required = ['users','floors','dormitories','students','deductionItems','deductionRecords','leaveRecords','nextIds'];
+                var missing = required.filter(function(k){ return !(k in parsed); });
+                if(missing.length > 0){
+                    toast('备份文件格式不正确','error'); return;
+                }
+                // 双重确认
+                if(!confirm('恢复将覆盖当前全部数据，确定继续？')) return;
+                if(!confirm('此操作不可撤销，确定要覆盖当前全部数据吗？')) return;
+                // 保持 DB 引用不变：逐个字段赋值（Object.assign 只做浅拷贝顶层字段）
+                Object.keys(parsed).forEach(function(k){
+                    DB[k] = parsed[k];
+                });
+                // 清理可能存在的残留字段（备份中没有的旧字段不主动删除，避免破坏向后兼容）
+                saveDB();
+                backupPendingFile = null;
+                var nameEl = document.getElementById('backupFileName');
+                if(nameEl) nameEl.textContent = '未选择文件';
+                renderTree();
+                renderView();
+                toast('数据恢复完成');
+            }catch(err){
+                handleError(err, '从备份恢复');
+            }
+        };
+        reader.onerror = function(){
+            toast('读取备份文件失败','error');
+        };
+        reader.readAsText(file, 'utf-8');
+    }
+
     // 日期选择说明：所有日期输入框统一由内嵌 flatpickr 渲染（class="date-picker"），
     // initDatePickers 在视图渲染/色块展开/弹窗打开后自动初始化，选中后派发原生 change 事件，
     // 兼容 updateStopPeriod、addFormChange 等既有监听；库缺失时输入框回退为可手动键入的文本框。
@@ -1803,6 +1837,7 @@
         // V3 按行存储：新退宿/停宿记录标记脏
         v3MarkDirty('leave_record', newRec.id);
         saveDB();
+        try { refreshTodaySummariesIfNeeded(); } catch(e) { console.warn('[晚检总结自动刷新失败]', e); }
         toast(status==='pending'?'登记成功，待管理员审核':'登记成功！');
         // 班级账号的班级字段只读锁定，重置时保留本班；其他角色清空回"请选择班级"
         var resetClassVal=isClassAdmin()?currentUser.className:'';
@@ -1831,6 +1866,7 @@
         // V3 按行存储：审核状态变更 → 脏
         v3MarkDirty('leave_record', id);
         saveDB();
+        try { refreshTodaySummariesIfNeeded(); } catch(e) { console.warn('[晚检总结自动刷新失败]', e); }
         toast('✅ 审核已通过');
         applyLeaveFilter();
         refreshAccBlockInfo();
@@ -1848,6 +1884,7 @@
         // V3 按行存储：审核状态变更 → 脏
         v3MarkDirty('leave_record', id);
         saveDB();
+        try { refreshTodaySummariesIfNeeded(); } catch(e) { console.warn('[晚检总结自动刷新失败]', e); }
         toast('❌ 审核未通过');
         applyLeaveFilter();
         refreshAccBlockInfo();
@@ -1871,14 +1908,20 @@
         // 2. 退宿申请中（pending）
         if(leaves.some(function(r){return r.studentId===studentId&&r.type==='leave'&&r.status==='pending';}))
             return {label:'退宿申请中', cls:'status-orange'};
-        // 3. 停宿中（approved 且未过期）
-        if(leaves.some(function(r){return r.studentId===studentId&&r.type==='stop'&&r.status==='approved'&&r.endDate&&r.endDate>=today;}))
+        // 3. 停宿中（approved 且覆盖今晚）
+        if(leaves.some(function(r){
+            return r.studentId===studentId && r.type==='stop' && r.status==='approved'
+                && leaveCoversNight(r.startDate || r.date, r.endDate || r.date, today);
+        }))
             return {label:'停宿中', cls:'status-purple'};
         // 4. 停宿申请中（pending）
         if(leaves.some(function(r){return r.studentId===studentId&&r.type==='stop'&&r.status==='pending';}))
             return {label:'停宿申请中', cls:'status-orange'};
-        // 5. 请假中（未过期）
-        if(absences.some(function(r){return r.studentId===studentId&&r.endDate&&r.endDate>=today;}))
+        // 5. 请假中（覆盖今晚）
+        if(absences.some(function(r){
+            return r.studentId===studentId
+                && leaveCoversNight(r.startDate || r.date, r.endDate || r.date, today);
+        }))
             return {label:'请假中', cls:'status-blue'};
         // 6. 默认在住
         return {label:'在住', cls:'status-green'};
@@ -1889,14 +1932,20 @@
         if(r.status==='pending') return '<span class="status-tag status-orange">待审核</span>';
         if(r.status==='rejected') return '<span class="status-tag status-red">已驳回</span>';
         // approved
-        if(r.type==='stop'&&r.endDate&&r.endDate<today) return '<span class="status-tag status-gray">已结束</span>';
+        var start=r.startDate||r.date;
+        var end=r.endDate||start;
+        if(r.type==='stop' && !leaveCoversNight(start, end, today))
+            return '<span class="status-tag status-gray">已结束</span>';
         return '<span class="status-tag status-green">已通过</span>';
     }
     // 请假记录在列表中的状态标签
     function getAbsenceStatusBadge(r){
         var today=getTodayStr();
-        if(r.endDate&&r.endDate<today) return '<span class="status-tag status-gray">已结束</span>';
-        return '<span class="status-tag status-blue">请假中</span>';
+        var start=r.startDate||r.date;
+        var end=r.endDate||start;
+        if(leaveCoversNight(start, end, today)) return '<span class="status-tag status-blue">请假中</span>';
+        if(today < start) return '<span class="status-tag status-blue">请假中</span>';
+        return '<span class="status-tag status-gray">已结束</span>';
     }
     /**
      * 删除退宿/停宿记录（管理员，confirm 确认）：打 V3 墓碑、落库同步后刷新列表。
@@ -1955,6 +2004,7 @@
         // V3 按行存储：新请假记录标记脏
         v3MarkDirty('absence_record', newRec.id);
         saveDB();
+        try { refreshTodaySummariesIfNeeded(); } catch(e) { console.warn('[晚检总结自动刷新失败]', e); }
         toast('请假登记成功！');
         document.getElementById('absName').value=''; document.getElementById('absDorm').value=''; document.getElementById('absBed').value=''; document.getElementById('absReason').value='';
         if(window.innerWidth>768){ refreshPcSelects('abs'); } // PC 端：重建姓名/宿舍/床号下拉（班级保留）
@@ -2041,35 +2091,9 @@
         if(!isStaff() && !isAdmin()){ toast('无权限','error'); return; }
         anomalyModalState.dormitoryId=null;
         anomalyModalState.floorId=null;
-        var floorIds=getAssignedFloorIds();
-        var floorOpts='<option value="">— 请选择楼层 —</option>'
-            +floorIds.map(function(fid){ var f=getFloorById(fid); return f?'<option value="'+fid+'">'+escapeHtmlAttr(f.name)+'</option>':''; }).join('');
-        var html='<div class="em-header"><span>⚠️ 异常上报</span><button class="em-close" aria-label="关闭" onclick="closeAnomalyModal()">✕</button></div>'
-            +'<div class="em-body">'
-            +'<div class="form-group"><label>楼层 *</label><select id="anomalyFloor" onchange="onAnomalyFloorChange()">'+floorOpts+'</select></div>'
-            +'<div class="form-group" id="anomalyDormWrap" style="display:none"><label>宿舍 *</label><select id="anomalyDorm" onchange="onAnomalyDormChange()"><option value="">— 请选择宿舍 —</option></select></div>'
-            +'<div id="anomalyStudentArea"></div>'
-            +'</div>'
-            +'<div class="em-footer"><button class="btn btn-primary" onclick="submitAnomalyReport()">📤 提交上报</button><button class="btn btn-outline" onclick="closeAnomalyModal()">取消</button></div>';
-        document.getElementById('anomalyModalBox').innerHTML=html;
+        // HTML 拼装已迁移至 ui.js 的 buildAnomalyModalHtml
+        document.getElementById('anomalyModalBox').innerHTML=buildAnomalyModalHtml();
         document.getElementById('anomalyModal').classList.add('show');
-    }
-    /**
-     * 拼装异常上报的学生选择+类型+备注表单（级联选定宿舍后调用）。
-     * @param {object} dorm - 宿舍对象
-     */
-    function buildAnomalyStudentForm(dorm){
-        var students=getStudentsByDormitory(dorm.id);
-        var stuOpts='<option value="">— 请选择学生 —</option>'
-            +students.map(function(s){
-                return '<option value="'+s.id+'">'+escapeHtmlAttr(s.name)+'（'+escapeHtmlAttr(s.className||'')+' · 床号'+(s.bedNumber||'-')+'）</option>';
-            }).join('')
-            +'<option value="manual">✏️ 其他（手动输入姓名）</option>';
-        return '<div class="form-group" style="color:var(--gray-500);font-size:0.9286rem">已选宿舍：<b>'+escapeHtmlAttr(dorm.roomNumber)+'</b></div>'
-            +'<div class="form-group"><label>学生 *</label><select id="anomalyStudent" onchange="onAnomalyStudentChange()">'+stuOpts+'</select></div>'
-            +'<div class="form-group" id="anomalyManualWrap" style="display:none"><label>学生姓名 *</label><input type="text" id="anomalyName" placeholder="手动输入学生姓名"></div>'
-            +'<div class="form-group"><label>异常类型 *</label><select id="anomalyType" onchange="onAnomalyTypeChange()"><option value="picked_up">🚗 家长接走（不扣分）</option><option value="no_note">⚠️ 无假条（自动生成纪律扣分：无请假信息 1分）</option></select></div>'
-            +'<div class="form-group"><label>备注</label><input type="text" id="anomalyNote" placeholder="可选：具体情况说明"></div>';
     }
     /** 通用模式：楼层变化 → 加载该楼层宿舍列表 */
     function onAnomalyFloorChange(){
@@ -2198,10 +2222,12 @@
      * 已有总结时按最新统计更新（数据变化才标脏），避免重复同步；返回总结对象。
      * @returns {object} 总结数据
      */
-    function ensureTodaySummary(){
+    function ensureTodaySummary(user){
+        user = user || currentUser;
+        if(!user) return null;
         var today=getTodayLocalStr();
-        var sum=computeInspectionSummary(today, currentUser);
-        var existing=getDailySummary(today, currentUser.id);
+        var sum=computeInspectionSummary(today, user);
+        var existing=getDailySummary(today, user.id);
         var now=Date.now();
         if(!existing){
             var rec={
@@ -2246,6 +2272,41 @@
             saveDB();
         }
         return existing;
+    }
+
+    /**
+     * 数据变化后自动刷新今日晚检总结。
+     * 规则：只刷新"已经存在的"今日总结，不主动为新用户创建总结；
+     *       遍历所有 STAFF/ADMIN 用户中"今日已有总结"的人，逐个重算。
+     * @param {object[]} [users] - 可选：指定要刷新的用户列表；缺省自动收集今日已有总结的老师
+     */
+    function refreshTodaySummariesIfNeeded(users){
+        if(!DB || !Array.isArray(DB.dailyInspectionSummaries)) return;
+        var today = getTodayLocalStr();
+        var targets = [];
+        if(Array.isArray(users) && users.length > 0){
+            targets = users;
+        } else {
+            var uids = {};
+            DB.dailyInspectionSummaries.forEach(function(s){
+                if(s && s.summaryDate === today && s.confirmedBy != null) uids[String(s.confirmedBy)] = true;
+            });
+            targets = (DB.users || []).filter(function(u){
+                return uids[String(u.id)] && (u.role === 'STAFF' || u.role === 'ADMIN');
+            });
+        }
+        var changed = 0;
+        targets.forEach(function(u){
+            var has = getDailySummary(today, u.id);
+            if(!has) return;
+            try {
+                var before = JSON.stringify(has);
+                ensureTodaySummary(u);
+                var after = JSON.stringify(getDailySummary(today, u.id));
+                if(before !== after) changed++;
+            } catch(e) { console.warn('[晚检总结自动刷新] 失败：', u.id, e); }
+        });
+        if(changed > 0) console.log('[晚检总结] 已自动刷新 ' + changed + ' 位老师的今日总结');
     }
 
     /**
@@ -2461,44 +2522,8 @@
      */
     function openAccountModal(userId){
         if(!isAdmin()){ toast('无权限','error'); return; }
-        var u=userId ? DB.users.find(function(x){ return String(x.id)===String(userId); }) : null;
-        var isEdit=!!u;
-        u=u || { id:0, username:'', realName:'', role:'STAFF', assignedFloors:[], buildingName:'' };
-        // 时段规则默认值（新建账号默认启用）
-        var enableTimeLimit = (typeof u.enableTimeLimit === 'boolean') ? u.enableTimeLimit : true;
-        var hyStartHour = (typeof u.hygieneStartHour === 'number') ? u.hygieneStartHour : 5;
-        var hyEndHour = (typeof u.hygieneEndHour === 'number') ? u.hygieneEndHour : 15;
-        var roleOpts=[['STAFF','生活老师'],['CLASS_ADMIN','班主任'],['ADMIN','管理员']].map(function(r){
-            return '<option value="'+r[0]+'" '+(u.role===r[0]?'selected':'')+'>'+r[1]+'</option>';
-        }).join('');
-        var floorChecks=DB.floors.map(function(f){
-            var checked=(u.assignedFloors||[]).indexOf(f.id)!==-1 ? 'checked' : '';
-            return '<label style="display:inline-flex;align-items:center;gap:4px;margin:4px 10px 4px 0;font-weight:500"><input type="checkbox" class="acct-floor-check" value="'+f.id+'" '+checked+'> '+f.name+'</label>';
-        }).join('');
-        var html='<div class="em-header"><span>'+(isEdit?'✏️ 编辑账号':'➕ 新增账号')+'</span><button class="em-close" aria-label="关闭" onclick="closeAccountModal()">✕</button></div>'
-            +'<div class="em-body">'
-            +'<input type="hidden" id="acctEditId" value="'+(isEdit?u.id:0)+'">'
-            +'<div class="form-group"><label>用户名 *</label><input type="text" id="acctUsername" value="'+escapeHtmlAttr(u.username)+'" '+(isEdit?'readonly style="background:var(--gray-100)"':'')+' placeholder="登录用户名（班主任账号通常与班级同名，如 三1）"></div>'
-            +'<div class="form-group"><label>姓名 *</label><input type="text" id="acctRealName" value="'+escapeHtmlAttr(u.realName||'')+'"></div>'
-            +'<div class="form-group"><label>'+(isEdit?'新密码（留空则不修改）':'初始密码')+'</label><input type="text" id="acctPassword" placeholder="'+(isEdit?'留空保持原密码':'留空默认 123456')+'"></div>'
-            +'<div class="form-group"><label>角色</label><select id="acctRole" '+(isEdit?'disabled style="background:var(--gray-100)"':'')+'>'+roleOpts+'</select></div>'
-            +'<div class="form-group"><label>楼栋名称（生活老师）</label><input type="text" id="acctBuilding" value="'+escapeHtmlAttr(u.buildingName||'')+'" placeholder="如：恩泽楼"></div>'
-            +'<div class="form-group"><label>负责楼层（仅生活老师生效，不勾选=全部楼层）</label><div class="checkbox-group">'+floorChecks+'</div></div>'
-            +'<div style="border-top:1px dashed var(--gray-200);margin:12px 0;padding-top:12px"></div>'
-            +'<div class="form-group"><label style="font-weight:700">⏰ 时段限制（生活老师）</label>'
-            +'<label style="display:inline-flex;align-items:center;gap:4px;margin-bottom:8px;font-weight:500"><input type="checkbox" id="acctEnableTimeLimit" '+(enableTimeLimit?'checked':'')+'> 启用时段限制</label>'
-            +'<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">'
-            +'<span>卫生时段：</span>'
-            +'<select id="acctHyStartHour" style="width:80px">'+Array.from({length:24},function(_,i){return '<option value="'+i+'" '+(hyStartHour===i?'selected':'')+'>'+String(i).padStart(2,'0')+':00</option>';}).join('')+'</select>'
-            +'<span>至</span>'
-            +'<select id="acctHyEndHour" style="width:80px">'+Array.from({length:24},function(_,i){return '<option value="'+i+'" '+(hyEndHour===i?'selected':'')+'>'+String(i).padStart(2,'0')+':00</option>';}).join('')+'</select>'
-            +'</div>'
-            +'<p style="color:var(--gray-500);font-size:0.8571rem;margin-top:6px">卫生时段内只显示卫生加/扣分，时段外只显示纪律加/扣分。管理员不受限制。</p>'
-            +'</div>'
-            +(isEdit?'<p style="color:var(--gray-500);font-size:0.8571rem">账号角色不可修改；如需变更角色请新建账号。</p>':'')
-            +'</div>'
-            +'<div class="em-footer"><button class="btn btn-primary" onclick="saveAccount()">💾 保存</button><button class="btn btn-outline" onclick="closeAccountModal()">取消</button></div>';
-        document.getElementById('accountModalBox').innerHTML=html;
+        // HTML 拼装已迁移至 ui.js 的 buildAccountModalHtml
+        document.getElementById('accountModalBox').innerHTML=buildAccountModalHtml(userId);
         document.getElementById('accountModal').classList.add('show');
     }
     /** 关闭账号编辑模态框 */
@@ -2687,35 +2712,7 @@
         var m=document.getElementById('batchUserModal');
         if(m) m.classList.remove('show');
     }
-    /**
-     * 拼装批量导入模态框内容（按当前 Tab 渲染文本框或文件选择）。
-     * @returns {string}
-     */
-    function buildBatchUserModalHtml(){
-        var t=batchUserState.tab;
-        var tabs='<div class="batch-tab-bar">'
-            +'<div class="batch-tab'+(t==='text'?' active':'')+'" onclick="switchBatchUserTab(\'text\')">📋 文本导入</div>'
-            +'<div class="batch-tab'+(t==='excel'?' active':'')+'" onclick="switchBatchUserTab(\'excel\')">📂 Excel导入</div>'
-            +'</div>';
-        var body;
-        if(t==='text'){
-            body='<div class="batch-hint">每行一个账号，格式：<b>用户名,姓名,密码,角色,负责楼层（生活老师）或 班级（班主任）</b><br>'
-                +'示例：<br>staff1,张老师,123456,STAFF,1,2,3<br>san5,三5班,123456,CLASS_ADMIN,三5<br>'
-                +'角色支持：STAFF（生活老师）/ CLASS_ADMIN（班主任）/ ADMIN（管理员）</div>'
-                +'<textarea id="batchUserText" rows="9" style="width:100%;padding:10px;border:1.5px solid var(--gray-200);border-radius:8px;font-size:0.9286rem" placeholder="staff1,张老师,123456,STAFF,1,2,3&#10;san5,三5班,123456,CLASS_ADMIN,三5"></textarea>';
-        }else{
-            body='<div class="batch-hint">请选择 Excel 文件（.xlsx / .xls），第一行表头自动跳过。<br>'
-                +'列顺序：<b>用户名 | 姓名 | 密码 | 角色 | 负责楼层 | 班级（可选）</b><br>'
-                +'负责楼层为多楼层逗号分隔（如 1,2,3，仅生活老师）；班级为班主任账号填写（如 三5）。</div>'
-                +'<div style="margin-bottom:10px"><span class="file-upload-wrapper"><span class="file-upload-btn">📂 选择Excel文件</span><input type="file" id="batchUserExcel" accept=".xlsx,.xls" onchange="onBatchUserExcelChange(this.files[0])"></span>'
-                +'<span id="batchUserFileName" style="margin-left:8px;color:var(--gray-600);font-size:0.8571rem">'+(batchUserState.file?escapeHtmlAttr(batchUserState.file.name):'未选择文件')+'</span></div>'
-                +'<button class="btn btn-outline btn-sm" onclick="downloadUserImportTemplate()">📥 下载导入模板</button>';
-        }
-        return '<div class="em-header"><span>📥 批量新增账号</span><button class="em-close" aria-label="关闭" onclick="closeBatchUserModal()">✕</button></div>'
-            +tabs
-            +'<div class="em-body">'+body+'</div>'
-            +'<div class="em-footer"><button class="btn btn-primary" onclick="submitBatchUsers()">✅ 确认导入</button><button class="btn btn-outline" onclick="closeBatchUserModal()">取消</button></div>';
-    }
+    // buildBatchUserModalHtml 已迁移至 ui.js（批量导入弹层 HTML 拼装）
     /**
      * 切换导入方式 Tab（保留文本草稿，避免误切换丢内容）。
      * @param {string} tab - 'text' | 'excel'
@@ -2884,6 +2881,19 @@
         XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(aoa), '账号导入模板');
         XLSX.writeFile(wb, '账号导入模板.xlsx');
     }
+    /** 下载学生导入 Excel 模板（说明行 + 表头 + 两行示例，XLSX 生成） */
+    function downloadStudentImportTemplate(){
+        if(!window.XLSX){ toast('Excel 组件未加载','error'); return; }
+        var wb=XLSX.utils.book_new();
+        var aoa=[
+            ['第一行表头，从第二行开始填写数据，宿舍号填写三位数字（如 101），床号填写 1-8；走读生宿舍号留空或填 0'],
+            ['姓名','班级','宿舍号','床号'],
+            ['张三','高一1班','101','1'],
+            ['李四','高一1班','101','2']
+        ];
+        XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(aoa), '学生导入模板');
+        XLSX.writeFile(wb, '学生导入模板.xlsx');
+    }
     /**
      * 保存楼层分工配置（楼层分配管理卡片）：更新所选生活老师的
      * assignedFloors（空数组=全部楼层）与 buildingName，标脏落库后局部刷新卡片。
@@ -2912,6 +2922,8 @@
         // 登录框支持回车提交
         document.getElementById('loginUsername').addEventListener('keydown', function(e){ if(e.key==='Enter') handleLogin(); });
         document.getElementById('loginPassword').addEventListener('keydown', function(e){ if(e.key==='Enter') handleLogin(); });
+        // 初始化"回到顶部"浮动按钮（#contentArea 为静态节点，只插入一次）
+        initBackToTop();
         initializeData().then(function(){
             document.getElementById('loadingOverlay').style.display='none';
             // 会话恢复（checkSavedLogin）已进入主应用时，不再显示登录页
@@ -2926,7 +2938,11 @@
     // ==================== 网络状态提示 ====================
     // 断网/恢复均给出即时反馈（数据同步的自动重试由 sync.js 的 online 监听另行处理）
     window.addEventListener('online', function(){
-        toast('网络已恢复');
+        // 云端同步启用时，恢复提示由 sync.js 的 online 监听统一展示（“网络已恢复，正在同步…”），
+        // 此处仅在纯本地模式（无云同步）下兜底提示，避免两条 toast 同时弹出
+        var cloudOn = (typeof SUPABASE_CONFIG!=='undefined' && SUPABASE_CONFIG.enabled
+            && String(SUPABASE_CONFIG.url).indexOf('YOUR_')===-1);
+        if(!cloudOn) toast('网络已恢复');
     });
     window.addEventListener('offline', function(){
         toast('当前网络已断开，部分功能（云端同步）可能受限，本地记录不受影响', 'error');
@@ -3057,17 +3073,9 @@
 
 
 // ---- shared globals explicitly mounted on window ----
-window.currentUser = currentUser;
-window.currentView = currentView;
-window.selectedFloorId = selectedFloorId;
-window.selectedDormitoryId = selectedDormitoryId;
-window.viewHistory = viewHistory;
-window.studentSearch = studentSearch;
-window.addFormState = addFormState;
-window.editRecordId = editRecordId;
-window.transferStudentId = transferStudentId;
-window.foldState = foldState;
-window.statsCache = statsCache;
-window.statsDormExpandAll = statsDormExpandAll;
-window.statsFloorPickId = statsFloorPickId;
-window.lastMobileState = lastMobileState;
+// 本文件所有挂载项均为可变状态（currentUser/currentView/selectedFloorId/
+// selectedDormitoryId/viewHistory/studentSearch/addFormState/editRecordId/
+// transferStudentId/foldState/statsCache/statsDormExpandAll/statsFloorPickId/
+// lastMobileState）。classic script 顶层 var 声明天然成为全局变量（亦自动
+// 成为 window 属性），代码中均以变量名直接访问，无需经 window 中转，
+// 故不再在此处显式挂载，避免挂载初始值/过时引用的误导。

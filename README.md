@@ -24,9 +24,10 @@ data.js         数据层：内存库 DB、数据查询、本地持久化、密�
 sync.js         同步层：Supabase 客户端、V3 按行同步、重试队列、重置云端、初始化入口
 ui.js           视图层：toast/错误处理、分片渲染、各业务视图 HTML 渲染
 app.js          控制层：登录、路由、所有业务事件（onclick 入口）、SW 注册
-sw.js           Service Worker（离线缓存）；改任何 JS 后必须升级 CACHE_NAME
+sw.js           Service Worker（离线缓存）；版本号由 update_version.ps1 自动维护，勿手改
 manifest.json   PWA 清单；icon-192/512.png
 _server.ps1     本地静态服务器（http://localhost:8765，no-cache）
+update_version.ps1 版本号自动更新脚本（改完任何 .js/.html 后运行，详见「版本号管理」）
 ```
 
 分层约定：**app.js 决定"做什么"**（改 DB → `saveDB()` → 触发重绘）；**ui.js 负责"怎么显示"**（拼 HTML、渲染视图）；**data.js 管数据读写**；**sync.js 管云端**。新增交互函数放在 app.js，新增视图渲染放在 ui.js。
@@ -106,7 +107,65 @@ powershell -ExecutionPolicy Bypass -File .\_server.ps1
 ### PWA
 - 移动端浏览器菜单选"添加到主屏幕"即可以独立应用启动；
 - [sw.js](sw.js) 采用 cache-first（本地 + CDN）、Supabase API 仅网络、导航离线回退缓存页；
-- **修改任何 .js 文件后，必须把 sw.js 顶部 `CACHE_NAME` 版本号 +1**，否则设备继续运行旧缓存。
+- **修改任何 .js / .html 文件后，必须运行 `update_version.ps1` 升级 sw.js 版本号**（自动同步 `CACHE_NAME` 与 `APP_VERSION` 两处），否则设备继续运行旧缓存。操作方式见下方[版本号管理](#版本号管理必看)。
+
+## 版本号管理（必看）
+
+Service Worker 对同源 JS / HTML 采用 cache-first：**不升版本号，已打开过应用的设备会一直加载旧缓存代码**，出现"代码已改但运行时不存在"的幽灵错误。因此版本号的两处声明必须在每次代码改动后同步更新，且严格同值：
+
+```js
+// sw.js 顶部（由脚本自动生成，禁止手动修改）
+var CACHE_NAME = 'dormitory-cache-2026-09-12-1124'; // 浏览器据此发现并安装新 SW
+self.APP_VERSION = '2026-09-12-1124';               // 顶栏版本号文字，漏改会显示旧值
+```
+
+### 版本号格式规范
+
+- 格式：**`yyyy-MM-dd-HHmm`**（年-月-日-时分，24 小时制，月/日/时/分均为两位补零）
+- 示例：`2026-09-12-1124` 表示 2026 年 9 月 12 日 11:24
+- 由 [update_version.ps1](update_version.ps1) 在执行时取**系统当前时间**生成，无需人工编号，也不存在序号冲突
+- 注意：同一分钟内重复运行脚本，版本号不会变化（属正常现象）
+
+### 自动更新流程（推荐）
+
+**每次修改并保存任何 `.js` / `.html` 文件后**，在项目根目录执行一次脚本：
+
+```powershell
+# 方式一：PowerShell 中执行（推荐，可绕过默认执行策略限制）
+powershell -ExecutionPolicy Bypass -File .\update_version.ps1
+
+# 方式二：已在 PowerShell 窗口且执行策略允许时
+.\update_version.ps1
+```
+
+也可以在文件资源管理器中**右键 `update_version.ps1` →「使用 PowerShell 运行」**。
+
+脚本执行成功后会输出新旧版本号对照，例如：
+
+```text
+sw.js 版本号已同步更新：2026-09-12-1124
+  CACHE_NAME : var CACHE_NAME = 'dormitory-cache-2026-09-12-0017';
+             -> var CACHE_NAME = 'dormitory-cache-2026-09-12-1124';
+  APP_VERSION: self.APP_VERSION = '2026-09-12-0017';
+             -> self.APP_VERSION = '2026-09-12-1124';
+```
+
+脚本安全机制：
+
+1. 只精确匹配 `var CACHE_NAME = ...;` 与 `self.APP_VERSION = ...;` 两处单行声明，其他内容一律不动；
+2. 两处声明各必须且只能命中 1 次，否则**中止写入并报错**，不会写坏文件；
+3. 以 UTF-8（无 BOM）写回，保留中文注释与原有换行格式。
+
+### 备选方案：手动更新（无法运行脚本时）
+
+若当前环境不方便执行 PowerShell（如非 Windows 设备、执行策略被组策略锁定），可手动编辑 [sw.js](sw.js) 顶部的两行，**两处版本号必须完全相同**：
+
+1. 取当前系统时间，按 `yyyy-MM-dd-HHmm` 拼出版本号（例如下午 3:05 → `2026-09-12-1505`）；
+2. 替换 `CACHE_NAME` 引号中 `dormitory-cache-` 之后的部分；
+3. 用同一版本号替换 `self.APP_VERSION` 引号中的值；
+4. 保存后刷新页面两次（第一次安装新 SW，第二次加载新代码）。
+
+> 手动更新只作为兜底，日常开发请始终使用脚本，从根本上消除两处不一致的风险。
 
 ## 维护指南
 
@@ -122,5 +181,5 @@ powershell -ExecutionPolicy Bypass -File .\_server.ps1
 - **同步失败/红点提示"有未同步数据"**：断网自动进入指数退避重试（5/10/20/40/60 秒，最多 5 次），联网后自动补传；也可点顶栏 🔄 手动同步。上传失败不会误报"同步完成"，脏标记保留。
 - **云端数据被清空后别慌**：若管理员正在重置，拉取会判定"重置窗口"（aborted）不动本地，稍后再同步即可。
 - **本地存储空间告警**：数据接近 localStorage 上限时会自动 lz-string 压缩并提示，建议在数据管理中清理历史记录。
-- **改了代码不生效**：升级 sw.js 的 `CACHE_NAME`，并刷新页面两次（第一次安装新 SW，第二次才加载新代码）。
+- **改了代码不生效**：运行 `update_version.ps1` 升级 sw.js 版本号（详见[版本号管理](#版本号管理必看)），并刷新页面两次（第一次安装新 SW，第二次才加载新代码）。
 - **错误排查**：顶栏异常 toast 已分类（网络/权限/配额）；详细错误栈写入 localStorage 的 `dorm_error_logs`（最近 20 条）。

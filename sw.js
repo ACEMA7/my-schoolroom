@@ -2,11 +2,18 @@
 // 同源业务资源 cache-first；第三方 CDN 资源预缓存 + cache-first（cors 模式可校验）；
 // Supabase 数据接口仅网络不缓存；页面导航请求离线时回退缓存的 index.html
 //
-// ⚠️ 每次修改任何 .js / .html 文件后，必须更新下面这一行的时间戳
-// （哪怕只改一行代码，也要改成新的时间），浏览器才会检测到新版本并自动推送更新
-var CACHE_NAME = 'dormitory-cache-2026-09-12-0011';
-// 页面通过 postMessage({type:'GET_VERSION'}) 读取，用于顶栏版本号显示（须与 CACHE_NAME 同步修改）
-self.APP_VERSION = '2026-09-12-0011';
+// ============================================================
+// 版本号自动生成 —— 禁止手动修改下面两行！
+// 版本号格式：yyyy-MM-dd-HHmm（脚本执行时的系统时间，如 2026-09-12-1124）
+// 每次修改任何 .js / .html 文件后，在项目根目录运行脚本自动同步：
+//   powershell -ExecutionPolicy Bypass -File .\update_version.ps1
+// 脚本会同时更新 CACHE_NAME 与 APP_VERSION（两处必须同值；漏改 APP_VERSION
+// 会导致顶栏版本号显示旧值）。浏览器据此检测新版本并自动推送更新，
+// Service Worker 对同源 JS 为 cache-first，不升版本则设备持续加载旧缓存。
+// ============================================================
+var CACHE_NAME = 'dormitory-cache-2026-09-12-1131';
+// 页面通过 postMessage({type:'GET_VERSION'}) 读取，用于顶栏版本号显示（由脚本保证与 CACHE_NAME 同值）
+self.APP_VERSION = '2026-09-12-1131';
 
 // 同源核心资源（任一失败都会阻断安装，保证离线可用的最小集合）
 var LOCAL_ASSETS = [

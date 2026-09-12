@@ -9,8 +9,9 @@
  *
  * 依赖：无（本文件最先加载，只定义常量，不访问 DB / DOM）。
  *
- * 对外暴露（文件末尾统一挂载 window，供 data.js / sync.js / ui.js /
- *           app.js 及 index.html 内联脚本直接引用）：
+ * 对外暴露（classic script 顶层 var 声明天然全局，所有常量均可直接以
+ *           变量名引用；文件末尾另将对象/数组类配置显式挂载 window，
+ *           便于外部脚本访问）：
  *   SUPABASE_CONFIG     Supabase 连接配置 {url, anonKey, enabled}
  *   DB_KEY              localStorage 中本地数据库的键名
  *   DEVICE_ID           本机设备标识（生成全局唯一记录 ID 用）
@@ -74,14 +75,11 @@
 
 
 // ---- shared globals explicitly mounted on window ----
+// 仅挂载对象/数组类型的配置引用（SUPABASE_CONFIG 及 V3_*_TYPES），
+// 便于外部脚本访问；DB_KEY/DEVICE_ID/LOCAL_LZ_PREFIX/CLOUD_LZ_PREFIX/
+// STORAGE_WARN_BYTES/V3_UPSERT_CHUNK/V3_SCHEMA_VERSION 等基本类型常量由
+// 顶层 var 声明天然全局，直接以变量名访问即可，无需经 window 中转。
 window.SUPABASE_CONFIG = SUPABASE_CONFIG;
-window.DB_KEY = DB_KEY;
-window.DEVICE_ID = DEVICE_ID;
-window.LOCAL_LZ_PREFIX = LOCAL_LZ_PREFIX;
-window.CLOUD_LZ_PREFIX = CLOUD_LZ_PREFIX;
-window.STORAGE_WARN_BYTES = STORAGE_WARN_BYTES;
 window.V3_RECORD_TYPES = V3_RECORD_TYPES;
 window.V3_BASIC_TYPES = V3_BASIC_TYPES;
 window.V3_MUTABLE_TYPES = V3_MUTABLE_TYPES;
-window.V3_UPSERT_CHUNK = V3_UPSERT_CHUNK;
-window.V3_SCHEMA_VERSION = V3_SCHEMA_VERSION;
