@@ -67,6 +67,9 @@
                     updateHeaderForUser(found);
                     loadFontScaleForStaff();
                     initView();
+                    // 会话恢复：同样刷新通知角标并确保 60 秒定时轮询已启动
+                    updateNotifBadge();
+                    startNotifBadgeTimer();
                 }
             } catch(e) {}
         }
@@ -125,15 +128,15 @@
         document.getElementById('roleBadge').textContent = admin ? '👨‍💼 管理人员' : (classAdmin ? '🏫 班主任' : '📝 生活老师');
 
         // 先隐藏所有菜单
-        var menuIds = ['navHierarchy', 'navAdd', 'navStats', 'navInspection', 'navStudents', 'navItems', 'navLeaveManage', 'navExport'];
+        var menuIds = ['navHierarchy', 'navAdd', 'navStats', 'navInspection', 'navStudents', 'navItems', 'navLeaveManage', 'navExport', 'navNotifications'];
         menuIds.forEach(function(id) {
             var el = document.getElementById(id);
             if (el) el.style.display = 'none';
         });
 
         if (admin) {
-            // 管理员显示全部菜单
-            ['navHierarchy','navAdd','navStats','navInspection','navStudents','navItems','navLeaveManage','navExport'].forEach(function(id){
+            // 管理员显示全部菜单（含仅 ADMIN 可见的"通知管理"）
+            ['navHierarchy','navAdd','navStats','navInspection','navStudents','navItems','navLeaveManage','navExport','navNotifications'].forEach(function(id){
                 document.getElementById(id).style.display = 'flex';
             });
         } else if (classAdmin) {
@@ -242,6 +245,9 @@
         updateHeaderForUser(user);
         loadFontScaleForStaff();
         initView();
+        // 登录成功：立即刷新通知未读角标，并启动 60 秒定时轮询（仅启动一次）
+        updateNotifBadge();
+        startNotifBadgeTimer();
         toast('欢迎，'+user.realName+'！');
     }
     /**
@@ -249,6 +255,9 @@
      */
     function handleLogout(){
         currentUser=null;
+        // 关闭通知抽屉并隐藏未读角标（定时器保留，updateNotifBadge 对未登录态自动隐藏）
+        closeNotifDrawer();
+        updateNotifBadge();
         // 重置字体缩放
         applyFontScale(100);
         document.body.classList.remove('staff-font-scale');
@@ -339,6 +348,8 @@
         currentView = view;
         updateNavActive(view);
         renderView();
+        // 视图切换时顺手刷新通知未读角标（未登录态内部自动隐藏）
+        updateNotifBadge();
         // 内容区滚动回顶部
         var content=document.getElementById('contentArea');
         if(content) content.scrollTop=0;
@@ -373,6 +384,7 @@
         else if(currentView==='items') renderItemsView(c);
         else if(currentView==='leavemanage') renderLeaveManageView(c);
         else if(currentView==='export') renderExportView(c);
+        else if(currentView==='notifications') renderNotificationsView(c);
     }
 
     // ==================== 返回与侧边栏 ====================
@@ -655,6 +667,15 @@
         // V3 按行存储：修改扣分记录 → 脏标记
         v3MarkDirty('deduction_record', r.id);
         saveDB();
+        // 扣分预警：修改可能抬高净分跨过阈值。个人记录检查本人，集体记录检查同宿舍全体
+        try {
+            if(r.studentId != null){
+                checkAndNotifyStudentWarnings([r.studentId]);
+            } else if(r.dormitoryId != null){
+                var editedDormStuIds = getStudentsByDormitory(r.dormitoryId).map(function(s){ return s.id; });
+                checkAndNotifyStudentWarnings(editedDormStuIds);
+            }
+        } catch(e) { handleError(e, '修改记录预警触发', { silent: true }); }
         closeEditModal();
         toast('修改已保存');
         renderView();
@@ -873,6 +894,16 @@
             DB.deductionRecords.push(newRecord);
             v3MarkDirty('deduction_record', newRecord.id);
             saveDB();
+            // 扣分预警：个人记录检查该学生；宿舍集体记录（studentId=null）检查该宿舍全体在住学生。
+            // 已通知过的阈值由 notifiedThresholds 天然去重；异常不阻断主流程。
+            try {
+                if(newRecord.studentId != null){
+                    checkAndNotifyStudentWarnings([newRecord.studentId]);
+                } else {
+                    var dormStuIds = getStudentsByDormitory(addFormState.dormitoryId).map(function(s){ return s.id; });
+                    checkAndNotifyStudentWarnings(dormStuIds);
+                }
+            } catch(e) { handleError(e, '扣分登记预警触发', { silent: true }); }
             toast('登记成功！');
         }
         addFormState.studentId=null;
@@ -1852,6 +1883,52 @@
         applyLeaveFilter();
         refreshAccBlockInfo();
     }
+    /**
+     * 发送退宿/停宿审核结果通知（通过/驳回共用）。
+     * 接收人：优先该班 CLASS_ADMIN 班主任；找不到时兜底通知全部 ADMIN，避免结果无接收人。
+     * 模板 ID：'approval_'/'reject_' + r.type（approval_leave/approval_stop/reject_leave/reject_stop）。
+     * 模板变量：{studentName}=r.name、{type}=退宿/停宿，并附带 className/dormRoom/bedNumber/date。
+     * 审核为独立事件，允许重复通知；模板缺失时使用内置兜底文案。
+     * @param {object} r - DB.leaveRecords 记录
+     * @param {'approval'|'reject'} action - 审核结果
+     * @returns {number} 实际发送条数
+     */
+    function sendLeaveReviewNotification(r, action){
+        try {
+            var typeText = r.type === 'leave' ? '退宿' : '停宿';
+            var template = getNotificationTemplateById(action + '_' + r.type);
+            var vars = {
+                studentName: r.name,
+                type: typeText,
+                className: r.className || '',
+                dormRoom: r.dormitory || '',
+                bedNumber: r.bed || '',
+                date: r.date || r.startDate || ''
+            };
+            var title, content;
+            if(template){
+                title = renderNotificationTemplate({ content: template.title || '' }, vars);
+                content = renderNotificationTemplate(template, vars);
+            } else {
+                title = (action === 'approval' ? '✅ ' : '❌ ') + typeText + '申请' + (action === 'approval' ? '已通过' : '被驳回');
+                content = '你提交的' + typeText + '申请' + (action === 'approval' ? '已通过审核。' : '未通过审核，请查看详情或重新提交。');
+            }
+            var teacherId = getClassAdminUserId(r.className);
+            if(teacherId != null){
+                addNotification(teacherId, action, title, content, r.id);
+                return 1;
+            }
+            // 无班主任兜底：通知全部管理员（可选策略）
+            var sent = 0;
+            (DB.users || []).forEach(function(u){
+                if(u && u.role === 'ADMIN'){ addNotification(u.id, action, title, content, r.id); sent++; }
+            });
+            return sent;
+        } catch(e) {
+            handleError(e, '审核结果通知', { silent: true });
+            return 0;
+        }
+    }
     // 管理员审核：通过
     // id 匹配采用 String() 宽松比较，兼容云端同步/历史数据中 id 可能为字符串的情况
     /**
@@ -1866,6 +1943,8 @@
         // V3 按行存储：审核状态变更 → 脏
         v3MarkDirty('leave_record', id);
         saveDB();
+        // 审核通过通知：通知该班班主任（模板 approval_leave/approval_stop）
+        sendLeaveReviewNotification(r, 'approval');
         try { refreshTodaySummariesIfNeeded(); } catch(e) { console.warn('[晚检总结自动刷新失败]', e); }
         toast('✅ 审核已通过');
         applyLeaveFilter();
@@ -1884,6 +1963,8 @@
         // V3 按行存储：审核状态变更 → 脏
         v3MarkDirty('leave_record', id);
         saveDB();
+        // 审核驳回通知：通知该班班主任（模板 reject_leave/reject_stop）
+        sendLeaveReviewNotification(r, 'reject');
         try { refreshTodaySummariesIfNeeded(); } catch(e) { console.warn('[晚检总结自动刷新失败]', e); }
         toast('❌ 审核未通过');
         applyLeaveFilter();
@@ -2004,6 +2085,21 @@
         // V3 按行存储：新请假记录标记脏
         v3MarkDirty('absence_record', newRec.id);
         saveDB();
+        // 请假登记即时生效（status='approved'）：仅 ADMIN/STAFF 代登记时通知对应班主任；
+        // 班主任为自己班级登记时跳过（提交人即接收人，无需自发自收）
+        if(currentUser && (currentUser.role === 'ADMIN' || currentUser.role === 'STAFF')){
+            try {
+                var absenceTeacherId = getClassAdminUserId(className);
+                if(absenceTeacherId != null){
+                    var absenceTitle = '✅ 学生请假登记';
+                    var absenceContent = renderNotificationTemplate(
+                        { content: '{studentName} 已于 {date} 登记请假。' },
+                        { studentName: name, date: startDate }
+                    );
+                    addNotification(absenceTeacherId, 'approval', absenceTitle, absenceContent, newRec.id);
+                }
+            } catch(e) { handleError(e, '请假登记通知', { silent: true }); }
+        }
         try { refreshTodaySummariesIfNeeded(); } catch(e) { console.warn('[晚检总结自动刷新失败]', e); }
         toast('请假登记成功！');
         document.getElementById('absName').value=''; document.getElementById('absDorm').value=''; document.getElementById('absBed').value=''; document.getElementById('absReason').value='';
@@ -2211,10 +2307,438 @@
         DB.anomalyReports.push(report);
         v3MarkDirty('anomaly_report', report.id);
         saveDB();
+        // 无假条自动扣分可能使净分跨过预警阈值：stu 为空（手动输入姓名无法定位学生）时跳过
+        if(stu){
+            try { checkAndNotifyStudentWarnings([stu.id]); }
+            catch(e) { handleError(e, '异常上报预警触发', { silent: true }); }
+        }
         closeAnomalyModal();
         toast(type==='no_note' ? '已上报无假条，并自动生成扣分记录' : '已上报家长接走');
         renderInspectionView(document.getElementById('contentArea'));
         renderTree();
+    }
+
+    // ==================== 站内通知子系统：通知创建/已读/删除 + 模板渲染 ====================
+    /**
+     * 创建一条站内通知并纳入 V3 同步。
+     * @param {number|string} userId - 接收用户 ID
+     * @param {string} type - 通知类型（如扣分预警、审核结果等业务类型标识）
+     * @param {string} title - 通知标题
+     * @param {string} content - 通知正文
+     * @param {string} [relatedId] - 关联业务记录 ID（扣分/请假/审核记录等），可空
+     * @returns {object} 新创建的通知记录
+     */
+    function addNotification(userId, type, title, content, relatedId){
+        if(!Array.isArray(DB.notifications)) DB.notifications = [];
+        var now = Date.now();
+        var notification = {
+            id: generateRecordId(),
+            userId: String(userId),
+            type: type,
+            title: title,
+            content: content,
+            relatedId: relatedId || null,
+            read: false,
+            createdAt: now,
+            lastModified: now
+        };
+        DB.notifications.push(notification);
+        v3MarkDirty('notification', notification.id);
+        saveDB();
+        return notification;
+    }
+    /**
+     * 将一条通知标记为已读（幂等：通知不存在或已是已读时直接返回 false，不产生无效同步）。
+     * @param {string} id - 通知 ID
+     * @returns {boolean} true=本次发生未读→已读的状态变更
+     */
+    function markNotificationRead(id){
+        if(!Array.isArray(DB.notifications)) return false;
+        var n = DB.notifications.find(function(x){ return x && String(x.id) === String(id); });
+        if(!n || n.read) return false;
+        n.read = true;
+        n.lastModified = Date.now();
+        v3MarkDirty('notification', id);
+        saveDB();
+        return true;
+    }
+    /**
+     * 将指定用户的全部未读通知逐条标记为已读（逐条 v3MarkDirty，最后统一落库一次）。
+     * @param {number|string} userId - 用户 ID
+     * @returns {number} 本次标记的通知条数（0 表示无未读或用户为空）
+     */
+    function markAllNotificationsRead(userId){
+        if(!Array.isArray(DB.notifications)) return 0;
+        if(userId === null || userId === undefined || userId === '') return 0;
+        var uid = String(userId);
+        var count = 0;
+        DB.notifications.forEach(function(n){
+            if(n && String(n.userId) === uid && !n.read){
+                n.read = true;
+                n.lastModified = Date.now();
+                v3MarkDirty('notification', n.id);
+                count++;
+            }
+        });
+        if(count > 0) saveDB();
+        return count;
+    }
+    /**
+     * 删除一条通知：从本地数组移除并打 V3 墓碑（v3MarkDeleted），
+     * 其他设备同步到墓碑后联动删除。
+     * @param {string} id - 通知 ID
+     * @returns {boolean} true=删除成功；false=通知不存在
+     */
+    function deleteNotification(id){
+        if(!Array.isArray(DB.notifications)) return false;
+        var idx = DB.notifications.findIndex(function(x){ return x && String(x.id) === String(id); });
+        if(idx === -1) return false;
+        DB.notifications.splice(idx, 1);
+        v3MarkDeleted('notification', id);
+        saveDB();
+        return true;
+    }
+    /**
+     * 渲染通知模板：把模板正文中的 {xxx} 占位符替换为 vars[xxx]。
+     * vars 未提供（或缺席/为 null）的占位符保留原样，便于暴露变量遗漏；
+     * vars 值为 null/undefined 亦不替换（避免把 "null"/"undefined" 写进通知）。
+     * @param {object} template - 通知模板对象（需含 content 字段）
+     * @param {object} [vars] - 变量映射，如 {studentName:'张三', className:'高一1班', score:3}
+     * @returns {string} 渲染后的正文；模板缺失或 content 非字符串时返回 ''
+     */
+    function renderNotificationTemplate(template, vars){
+        if(!template || typeof template.content !== 'string') return '';
+        var values = vars || {};
+        return template.content.replace(/\{(\w+)\}/g, function(match, key){
+            if(Object.prototype.hasOwnProperty.call(values, key) && values[key] != null){
+                return String(values[key]);
+            }
+            return match; // 未提供的变量保留原样
+        });
+    }
+
+    // ==================== 扣分预警自动触发 ====================
+    // 七档预警阈值（与 DEFAULT_NOTIFICATION_TEMPLATES 的 warn_* 一一对应）
+    var NOTIF_WARNING_THRESHOLDS = [3, 5, 6, 11, 12, 17, 18];
+    /**
+     * 对一批学生执行扣分预警检查（入参自动去重）。
+     *
+     * 规则：
+     *   - 净分 = 个人扣分 - 个人加分（getStudentNetScore，不含宿舍集体记录）；
+     *   - 净分跨过 threshold（threshold <= netScore）且该阈值不在学生
+     *     notifiedThresholds 中时，给班主任发 warn_X 模板通知；
+     *   - notifiedThresholds 只增不减：净分下降不撤销、下降后再次跨过同一阈值不重复通知；
+     *   - 无班主任（getClassAdminUserId 返回 null）或模板被禁用时静默跳过；
+     *   - 每个学生独立 try-catch，单个出错不影响其他学生。
+     *
+     * @param {number[]|string[]} studentIds - 学生 ID 数组（自动去重）
+     * @returns {number} 本次实际产生的预警通知条数
+     */
+    function checkAndNotifyStudentWarnings(studentIds){
+        if(!Array.isArray(studentIds)) return 0;
+        // 入参去重（String 口径），同一批中重复 id 只检查一次
+        var seen = {}, ids = [];
+        studentIds.forEach(function(id){
+            if(id == null) return;
+            var k = String(id);
+            if(!seen[k]){ seen[k] = true; ids.push(id); }
+        });
+        var createdCount = 0;
+        ids.forEach(function(sid){
+            try {
+                var student = getStudentById(sid);
+                if(!student) return;
+                var netScore = getStudentNetScore(sid);
+                var teacherId = getClassAdminUserId(student.className);
+                if(teacherId == null) return; // 无接收人，静默跳过
+                // 旧学生记录兼容：notifiedThresholds 缺失视为空数组，首次触发时回写
+                var notified = Array.isArray(student.notifiedThresholds) ? student.notifiedThresholds : [];
+                var studentChanged = false;
+                NOTIF_WARNING_THRESHOLDS.forEach(function(threshold){
+                    if(threshold > netScore) return;                 // 尚未跨过该阈值
+                    if(notified.indexOf(threshold) > -1) return;     // 已通知过（含下降后再上升），不重复
+                    var template = getNotificationTemplateById('warn_' + threshold);
+                    if(!template || template.enabled === false) return; // 模板缺失/禁用则跳过
+                    var dormRoom = '';
+                    if(student.dormitoryId != null){
+                        var dorm = getDormitoryById(student.dormitoryId);
+                        dormRoom = dorm ? (dorm.roomNumber || '') : '';
+                    }
+                    var vars = {
+                        studentName: student.name,
+                        className: student.className,
+                        score: netScore,
+                        threshold: threshold,
+                        dormRoom: dormRoom,
+                        bedNumber: student.bedNumber != null ? String(student.bedNumber) : ''
+                    };
+                    var title = renderNotificationTemplate({ content: template.title || '' }, vars);
+                    var content = renderNotificationTemplate(template, vars);
+                    // relatedId 绑定学生 id，后续迭代可据此跳转住宿信息并定位学生
+                    addNotification(teacherId, 'warning', title, content, student.id);
+                    notified.push(threshold);
+                    studentChanged = true;
+                    createdCount++;
+                });
+                if(studentChanged){
+                    student.notifiedThresholds = notified;
+                    v3MarkDirty('student', student.id);
+                }
+            } catch(e) {
+                handleError(e, '扣分预警检查', { silent: true });
+            }
+        });
+        // 有新通知时统一落库一次（addNotification 内部亦各自落库，此处确保学生
+        // notifiedThresholds 变更一并持久化）
+        if(createdCount > 0) saveDB();
+        return createdCount;
+    }
+    /**
+     * 手动触发：对全部学生重新检查扣分预警（通知管理页"🔁 全量重算预警"按钮，仅 ADMIN）。
+     * 用于云端拉取合并后补齐历史遗漏预警（loadFromCloudV3 内不自动集成，避免大数据量卡顿）。
+     */
+    function recalcAllStudentWarnings(){
+        if(!isAdmin()){ toast('无权限', 'error'); return; }
+        if(!confirm('将对全部学生重新检查扣分预警，可能产生大量通知，确定继续？')) return;
+        var ids = (DB.students || []).map(function(s){ return s.id; });
+        var n = checkAndNotifyStudentWarnings(ids);
+        toast(n > 0 ? ('已补发 ' + n + ' 条预警通知') : '没有新的预警需要通知');
+        renderView();
+        updateNotifBadge();
+    }
+
+    // ==================== 通知管理页：发送通知（仅 ADMIN） ====================
+    /**
+     * 接收对象类型切换：显示对应的角色/用户/班级下拉，其余隐藏。
+     */
+    function onNotifTargetChange(){
+        var v = document.getElementById('notifTargetType').value;
+        var pairs = [['notifRoleWrap','role'],['notifUserWrap','user'],['notifClassWrap','class']];
+        pairs.forEach(function(p){
+            var el = document.getElementById(p[0]);
+            if(el) el.style.display = (v === p[1]) ? 'block' : 'none';
+        });
+    }
+    /**
+     * 选择通知模板后，自动回填标题与正文（可再手动修改）。
+     */
+    function onNotifTemplateChange(){
+        var id = document.getElementById('notifTemplateSelect').value;
+        if(!id) return;
+        var t = getNotificationTemplateById(id);
+        if(!t) return;
+        var titleEl = document.getElementById('notifTitle');
+        var contentEl = document.getElementById('notifContent');
+        if(titleEl) titleEl.value = t.title || '';
+        if(contentEl) contentEl.value = t.content || '';
+    }
+    /**
+     * 发送通知：按接收对象类型计算目标 userId 列表，逐个 addNotification 落库标脏。
+     * @returns {number[]} 去重后的目标用户 ID 列表（空数组表示无有效目标）
+     */
+    function resolveNotifTargetUserIds(){
+        var targetType = document.getElementById('notifTargetType').value;
+        var users = Array.isArray(DB.users) ? DB.users : [];
+        var ids = [];
+        if(targetType === 'all'){
+            users.forEach(function(u){ if(u && u.id != null) ids.push(u.id); });
+        } else if(targetType === 'role'){
+            var role = document.getElementById('notifRoleSelect').value;
+            users.forEach(function(u){ if(u && u.role === role) ids.push(u.id); });
+        } else if(targetType === 'user'){
+            var uid = document.getElementById('notifUserSelect').value;
+            if(uid !== '') ids.push(uid);
+        } else if(targetType === 'class'){
+            var cls = document.getElementById('notifClassSelect').value;
+            // 班主任账号以 className 为准，兼容历史数据用 username 存班级名
+            users.forEach(function(u){
+                if(u && u.role === 'CLASS_ADMIN' && (u.className === cls || (!u.className && u.username === cls))) ids.push(u.id);
+            });
+        }
+        // 去重（String 口径），保持 users 原始顺序
+        var seen = {}, out = [];
+        ids.forEach(function(id){
+            var k = String(id);
+            if(!seen[k]){ seen[k] = true; out.push(id); }
+        });
+        return out;
+    }
+    /**
+     * 点击"发送通知"：校验标题/正文与目标用户，逐个创建 type='manual' 的通知，
+     * 完成后 toast "已发送 N 条通知" 并重绘管理页（统计卡/记录表刷新）。
+     */
+    function sendNotifications(){
+        if(!isAdmin()){ toast('无权限','error'); return; }
+        var title = String(document.getElementById('notifTitle').value || '').trim();
+        var content = String(document.getElementById('notifContent').value || '').trim();
+        if(!title){ toast('请填写通知标题','error'); return; }
+        if(!content){ toast('请填写通知内容','error'); return; }
+        var userIds = resolveNotifTargetUserIds();
+        if(userIds.length === 0){ toast('没有符合条件的接收用户','error'); return; }
+        // 逐个创建（addNotification 内部各自标脏并落库），数量取实际成功条数
+        var sent = 0;
+        userIds.forEach(function(uid){
+            try{
+                addNotification(uid, 'manual', title, content);
+                sent++;
+            }catch(e){ handleError(e, '发送通知', { silent: true }); }
+        });
+        if(sent > 0){
+            toast('已发送 ' + sent + ' 条通知');
+            // 重置表单并整页重绘（折叠开合状态由 foldState 保持）
+            var tplSel = document.getElementById('notifTemplateSelect');
+            if(tplSel) tplSel.value = '';
+            var titleEl = document.getElementById('notifTitle');
+            var contentEl = document.getElementById('notifContent');
+            if(titleEl) titleEl.value = '';
+            if(contentEl) contentEl.value = '';
+            renderView();
+        } else {
+            toast('发送失败，请重试','error');
+        }
+    }
+
+    // ==================== 通知模板管理：编辑/重置模态框（仅 ADMIN） ====================
+    // 当前编辑中的模板 id（模态框生命周期内有效）
+    var notifTemplateEditId = null;
+    /**
+     * 打开模板编辑模态框并回填当前标题/正文/启用状态。
+     * @param {string} templateId - 模板 id
+     */
+    function openNotifTemplateModal(templateId){
+        if(!isAdmin()){ toast('无权限','error'); return; }
+        var t = getNotificationTemplateById(templateId);
+        if(!t){ toast('模板不存在','error'); return; }
+        notifTemplateEditId = t.id;
+        var enabled = (t.enabled !== false);
+        document.getElementById('notifTemplateModalBox').innerHTML
+            = '<div class="em-header"><span>📝 编辑通知模板</span><button class="em-close" aria-label="关闭" onclick="closeNotifTemplateModal()">✕</button></div>'
+            + '<div class="em-body">'
+            + '<input type="hidden" id="notifTplEditId" value="' + escapeHtmlAttr(t.id) + '">'
+            + '<div class="form-group"><label>模板ID（系统标识，不可修改）</label><input type="text" value="' + escapeHtmlAttr(t.id) + '" readonly style="background:var(--gray-100)"></div>'
+            + '<div class="form-group"><label>标题 *</label><input type="text" id="notifTplTitle" value="' + escapeHtmlAttr(t.title || '') + '" placeholder="通知标题"></div>'
+            + '<div class="form-group"><label>内容 *</label><textarea id="notifTplContent" rows="7" placeholder="通知正文，支持 {studentName} {className} {score} 等变量">' + escapeHtmlAttr(t.content || '') + '</textarea></div>'
+            + '<div class="form-group"><label style="display:inline-flex;align-items:center;gap:6px;font-weight:500"><input type="checkbox" id="notifTplEnabled" style="width:auto" ' + (enabled ? 'checked' : '') + '> 启用该模板（关闭后发送通知时不可选用）</label></div>'
+            + '</div>'
+            + '<div class="em-footer"><button class="btn btn-primary" onclick="saveNotifTemplate()">💾 保存</button><button class="btn btn-outline" onclick="closeNotifTemplateModal()">取消</button></div>';
+        document.getElementById('notifTemplateModal').classList.add('show');
+    }
+    /** 关闭模板编辑模态框 */
+    function closeNotifTemplateModal(){
+        var m = document.getElementById('notifTemplateModal');
+        if(m) m.classList.remove('show');
+        notifTemplateEditId = null;
+    }
+    /**
+     * 保存模板编辑：更新标题/正文/启用状态，按 notification_template 基础数据标脏并同步。
+     */
+    function saveNotifTemplate(){
+        if(!isAdmin()){ toast('无权限','error'); return; }
+        var id = String((document.getElementById('notifTplEditId') || {}).value || notifTemplateEditId || '');
+        if(!id){ toast('模板标识缺失','error'); return; }
+        var t = getNotificationTemplateById(id);
+        if(!t){ toast('模板不存在或已被删除','error'); closeNotifTemplateModal(); return; }
+        var title = String(document.getElementById('notifTplTitle').value || '').trim();
+        var content = String(document.getElementById('notifTplContent').value || '').trim();
+        if(!title || !content){ toast('标题和内容均不能为空','error'); return; }
+        t.title = title;
+        t.content = content;
+        t.enabled = !!document.getElementById('notifTplEnabled').checked;
+        t.lastModified = Date.now();
+        v3MarkDirty('notification_template', t.id);
+        saveDB();
+        closeNotifTemplateModal();
+        toast('模板已保存');
+        if(currentView === 'notifications') renderView();
+    }
+    /**
+     * 将模板重置为出厂默认值（confirm 二次确认）。
+     * 系统模板（warn_*/approval_*/reject_*）内置默认值，重置覆盖当前编辑内容并标脏同步；
+     * 系统模板禁止删除（本页不提供删除入口，非内置模板也无默认值可重置）。
+     * @param {string} templateId - 模板 id
+     */
+    function resetNotifTemplate(templateId){
+        if(!isAdmin()){ toast('无权限','error'); return; }
+        var t = getNotificationTemplateById(templateId);
+        if(!t){ toast('模板不存在','error'); return; }
+        var def = getDefaultNotificationTemplate(templateId);
+        if(!def){ toast('该模板无内置默认值，无法重置','error'); return; }
+        if(!confirm('确认将模板「' + (t.title || t.id) + '」恢复为系统默认内容？')) return;
+        // 以默认值为准整体覆盖：先清空现有键，再拷贝默认键（消除历史编辑残留字段）
+        Object.keys(t).forEach(function(k){ delete t[k]; });
+        Object.keys(def).forEach(function(k){ t[k] = def[k]; });
+        t.lastModified = Date.now();
+        v3MarkDirty('notification_template', t.id);
+        saveDB();
+        toast('模板已重置为默认值');
+        if(currentView === 'notifications') renderView();
+    }
+
+    // ==================== 顶栏通知铃铛：抽屉开关与通知操作（所有角色） ====================
+    /**
+     * 切换通知抽屉开合。打开时立即重绘抽屉内容并刷新未读角标；
+     * 关闭动作委托 closeNotifDrawer（同时隐藏遮罩）。
+     */
+    function toggleNotifDrawer(){
+        var drawer = document.getElementById('notifDrawer');
+        if(!drawer) return;
+        if(drawer.classList.contains('open')){
+            closeNotifDrawer();
+        } else {
+            drawer.classList.add('open');
+            var overlay = document.getElementById('notifDrawerOverlay');
+            if(overlay) overlay.classList.add('show');
+            renderNotifDrawer();
+            updateNotifBadge();
+        }
+    }
+    /** 关闭通知抽屉并隐藏遮罩层 */
+    function closeNotifDrawer(){
+        var drawer = document.getElementById('notifDrawer');
+        var overlay = document.getElementById('notifDrawerOverlay');
+        if(drawer) drawer.classList.remove('open');
+        if(overlay) overlay.classList.remove('show');
+    }
+    /**
+     * 标记单条通知为已读并刷新抽屉与角标。
+     * markNotificationRead 幂等（已是已读返回 false），刷新仍照常执行。
+     * @param {string} id - 通知 ID
+     */
+    function markNotificationReadAndRefresh(id){
+        markNotificationRead(id);
+        if(document.getElementById('notifDrawer').classList.contains('open')) renderNotifDrawer();
+        updateNotifBadge();
+    }
+    /**
+     * 删除单条通知（confirm 二次确认），成功后刷新抽屉与角标。
+     * @param {string} id - 通知 ID
+     */
+    function deleteNotificationAndRefresh(id){
+        if(!confirm('确认删除该通知？删除后不可恢复。')) return;
+        if(deleteNotification(id)){
+            renderNotifDrawer();
+            updateNotifBadge();
+        }
+    }
+    /**
+     * 将当前登录用户的全部未读通知标记为已读，随后刷新抽屉与角标。
+     */
+    function markAllNotificationsReadForCurrentUser(){
+        if(!currentUser){ closeNotifDrawer(); return; }
+        var n = markAllNotificationsRead(currentUser.id);
+        renderNotifDrawer();
+        updateNotifBadge();
+        if(n > 0) toast('已全部标记为已读');
+    }
+    /**
+     * 启动未读角标定时刷新（全局仅启动一次）：每 60 秒拉取一次当前用户未读数。
+     * updateNotifBadge 内部对未登录态（currentUser 为空）自行兜底隐藏。
+     */
+    var notifBadgeTimerStarted = false;
+    function startNotifBadgeTimer(){
+        if(notifBadgeTimerStarted) return;
+        notifBadgeTimerStarted = true;
+        setInterval(updateNotifBadge, 60000);
     }
 
     /**

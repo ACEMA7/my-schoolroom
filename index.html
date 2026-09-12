@@ -261,6 +261,39 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
         .stat-card.warning{border-top-color:var(--warning)}
         .stat-card.danger{border-top-color:var(--danger)}
         /* 巡查核实页顶部统计卡片：PC 端一行横排 5 个，间距均匀 */
+        /* 通知管理页统计卡（PC 三列；移动端复用 .stat-cards-mobile 的三列卡片样式） */
+        .notif-stat-cards{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:16px}
+        .notif-stat-cards .stat-item{background:#fff;border-radius:10px;padding:14px 8px;text-align:center;border:1px solid var(--gray-200);box-shadow:0 1px 3px rgba(0,0,0,.06)}
+        .notif-stat-cards .stat-item .number{font-size:1.5714rem;font-weight:700;line-height:1.2}
+        .notif-stat-cards .stat-item .label{font-size:0.8571rem;color:var(--gray-500);margin-top:4px}
+        /* 顶栏通知铃铛（所有角色可见；桌面端略大，移动端在媒体查询内固定 38px） */
+        .notif-bell{position:relative;width:40px;height:40px;flex-shrink:0;display:flex;align-items:center;justify-content:center;padding:0;background:var(--gray-100);border:1px solid var(--gray-200);border-radius:8px;cursor:pointer;font-size:1.1rem;line-height:1}
+        .notif-bell:active{background:var(--gray-200)}
+        /* 未读红色角标：右上角圆形，>99 显示 99+（文本由 ui.js updateNotifBadge 写入） */
+        .notif-badge{position:absolute;top:-5px;right:-5px;min-width:17px;height:17px;padding:0 4px;border-radius:9px;background:var(--danger);color:#fff;font-size:10px;font-weight:700;line-height:17px;text-align:center;border:1.5px solid #fff;box-sizing:content-box;pointer-events:none}
+        /* 通知抽屉遮罩：默认隐藏，显示时 display:block + 透明度淡入 */
+        .notif-drawer-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:1400;opacity:0;transition:opacity .28s ease}
+        .notif-drawer-overlay.show{display:block;opacity:1}
+        /* 通知抽屉：右侧固定 380px，从右侧滑入 translateX(100%)→0，0.28s */
+        .notif-drawer{position:fixed;top:0;right:0;width:380px;max-width:100vw;height:100vh;background:#fff;z-index:1401;display:flex;flex-direction:column;transform:translateX(100%);transition:transform .28s ease;box-shadow:-4px 0 24px rgba(0,0,0,.15)}
+        .notif-drawer.open{transform:translateX(0)}
+        /* 抽屉头部：标题居左，操作按钮居右；顶部预留刘海安全区 */
+        .notif-drawer-header{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:12px 14px;border-bottom:1px solid var(--gray-200);flex-shrink:0;font-size:1rem;font-weight:700;padding-top:calc(12px + var(--sat))}
+        .notif-drawer-header>div{display:flex;align-items:center;gap:6px;flex-shrink:0}
+        .notif-close-btn{width:36px;height:36px;border:none;background:transparent;border-radius:8px;cursor:pointer;font-size:1rem;color:var(--gray-600);display:flex;align-items:center;justify-content:center}
+        .notif-close-btn:active{background:var(--gray-100)}
+        /* 抽屉正文：垂直滚动，触摸惯性滚动 */
+        .notif-drawer-body{flex:1;min-height:0;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:12px}
+        /* 通知卡片：未读浅蓝底+左侧蓝点；已读灰白底 */
+        .notif-item{position:relative;background:#f3f4f6;border:1px solid var(--gray-200);border-radius:10px;padding:12px 12px 10px 18px;margin-bottom:10px;cursor:pointer}
+        .notif-item.unread{background:#e8f0fe;border-color:#c6dafc}
+        .notif-item.unread::before{content:'';position:absolute;left:7px;top:16px;width:8px;height:8px;border-radius:50%;background:#2f6fed}
+        .notif-item.read{background:#f3f4f6}
+        .notif-item-top{display:flex;align-items:flex-start;justify-content:space-between;gap:8px;margin-bottom:6px}
+        .notif-item-time{font-size:0.75rem;color:var(--gray-500);white-space:nowrap;padding-top:3px}
+        .notif-item-actions{display:flex;gap:6px;flex-shrink:0}
+        .notif-item-title{font-size:0.9286rem;font-weight:700;color:var(--gray-800);margin-bottom:4px;overflow-wrap:break-word;word-break:break-word}
+        .notif-item-content{font-size:0.8571rem;color:var(--gray-600);line-height:1.5;white-space:pre-wrap;overflow-wrap:break-word;word-break:break-word}
         .inspection-stat-cards{display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin-bottom:16px}
         .inspection-stat-cards .stat-item{background:#fff;border-radius:10px;padding:14px 8px;text-align:center;border:1px solid var(--gray-200);box-shadow:0 1px 3px rgba(0,0,0,.06)}
         .inspection-stat-cards .stat-item .number{font-size:1.5714rem;font-weight:700;line-height:1.2}
@@ -764,6 +797,15 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
                 overflow-wrap:break-word;
                 word-break:break-word;
             }
+
+            /* ===== 通知铃铛 + 抽屉移动端适配（≤768px） ===== */
+            /* 铃铛固定 38×38，与字体按钮视觉一致 */
+            .notif-bell{width:38px;height:38px;min-width:38px;font-size:1rem}
+            /* 抽屉整屏宽度从右侧滑入，底部预留安全区 */
+            .notif-drawer{width:100vw;padding-bottom:var(--sab)}
+            /* 抽屉头部按钮触摸热区不小于 44×44 */
+            .notif-drawer-header button{min-width:44px;min-height:44px}
+            .notif-close-btn{width:44px;height:44px}
         }
     </style>
 </head>
@@ -798,6 +840,9 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
                 <button class="logout-btn" id="manualSyncBtn" title="手动同步云端记录" onclick="manualSync()">🔄</button>
                 <span class="sync-status-dot synced" id="syncStatusDot" title="同步状态：已同步（点击手动重试）" onclick="manualSync()"></span>
                 <span class="offline-label" id="offlineLabel" title="离线中，数据将在联网后自动同步">离线</span>
+                <button class="notif-bell" id="notifBell" title="通知" onclick="toggleNotifDrawer()">
+                  🔔<span class="notif-badge" id="notifBadge" style="display:none">0</span>
+                </button>
                 <span class="app-version-text" id="appVersionText" title="应用版本">v—</span>
                 <button class="font-scale-btn" id="fontScaleBtn" title="字体大小" onclick="toggleFontPanel()">Aa</button>
                 <button class="logout-btn" onclick="handleLogout()">退出</button>
@@ -825,6 +870,7 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
                     <div class="nav-item" data-view="items" id="navItems" style="display:none" onclick="switchView('items')">📋 扣分项目管理</div>
                     <div class="nav-item" data-view="leavemanage" id="navLeaveManage" style="display:none" onclick="switchView('leavemanage')">🏠 学生管理</div>
                     <div class="nav-item" data-view="export" id="navExport" style="display:none" onclick="switchView('export')">📊 数据管理</div>
+                    <div class="nav-item" data-view="notifications" id="navNotifications" style="display:none" onclick="switchView('notifications')">📢 通知管理</div>
                 </div>
                 <div class="sidebar-tree" id="sidebarTree"></div>
             </div>
@@ -833,6 +879,17 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
         <nav class="bottom-nav" id="bottomNav" aria-label="主导航"></nav>
     </div>
     <div id="toast"></div>
+    <div class="notif-drawer-overlay" id="notifDrawerOverlay" onclick="closeNotifDrawer()"></div>
+    <div class="notif-drawer" id="notifDrawer">
+      <div class="notif-drawer-header">
+        <span>🔔 我的通知</span>
+        <div>
+          <button class="btn btn-outline btn-xs" onclick="markAllNotificationsReadForCurrentUser()">全部已读</button>
+          <button class="notif-close-btn" onclick="closeNotifDrawer()">✕</button>
+        </div>
+      </div>
+      <div class="notif-drawer-body" id="notifDrawerBody"></div>
+    </div>
     <div class="modal-overlay" id="editModal" onclick="if(event.target===this) closeEditModal()">
         <div class="edit-modal" id="editModalBox" role="dialog" aria-label="修改扣分记录"></div>
     </div>
@@ -851,6 +908,7 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
     <div class="modal-overlay" id="batchUserModal" onclick="if(event.target===this) closeBatchUserModal()">
         <div class="edit-modal" id="batchUserModalBox" role="dialog" aria-label="批量新增账号"></div>
     </div>
+    <div class="modal-overlay" id="notifTemplateModal" onclick="if(event.target===this) closeNotifTemplateModal()"><div class="edit-modal" id="notifTemplateModalBox" role="dialog" aria-label="编辑通知模板"></div></div>
 
     <!-- 业务逻辑模块化拆分：config -> data -> sync -> ui -> app（经典脚本，全局作用域） -->
     <script src="config.js"></script>

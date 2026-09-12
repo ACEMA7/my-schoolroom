@@ -237,7 +237,8 @@
         students:{icon:'👥',label:'名单'},
         items:{icon:'📋',label:'项目'},
         leavemanage:{icon:'🏠',label:'学生'},
-        export:{icon:'📤',label:'数据'}
+        export:{icon:'📤',label:'数据'},
+        notifications:{icon:'📢',label:'通知'}
     };
     /**
      * 构建移动端底部导航栏（5 个主入口图标，高亮当前视图）。
@@ -322,7 +323,8 @@
             {view:'students',   icon:'👥', name:'学生名单管理',     color:'#ff3b30', roles:['ADMIN']},
             {view:'items',      icon:'📋', name:'扣分项目管理', color:'#a855f7', roles:['ADMIN']},
             {view:'leavemanage',icon:'🏠', name:'学生管理', color:'#0891b2', roles:['ADMIN','STAFF','CLASS_ADMIN']},
-            {view:'export',     icon:'📊', name:'数据管理',     color:'#eab308', roles:['ADMIN','CLASS_ADMIN']}
+            {view:'export',     icon:'📊', name:'数据管理',     color:'#eab308', roles:['ADMIN','CLASS_ADMIN']},
+            {view:'notifications', icon:'📢', name:'通知管理', color:'#f43f5e', roles:['ADMIN']}
         ];
         var cards = all.filter(function(it){
             if (it.roles.indexOf(role) === -1) return false;
@@ -1404,6 +1406,259 @@
             +addForm({nameId:'newDisBonusItemName',scoreId:'newDisBonusItemScore',defaultScore:1,addFn:'addDisciplineBonusItem',batchId:'disBonusBatchImport',batchFn:'batchImportDisciplineBonusItems'})
             +'</div></div>'
             +'</div>';
+    }
+
+    // ==================== 通知管理视图（仅 ADMIN） ====================
+    // 通知业务类型归类（记录表筛选/类型标签共用）：
+    //   warn_*/warning → 预警；approval_*/reject_*/audit → 审核；其余（含 manual 手动）→ 手动
+    var NOTIF_CATEGORY_LABELS = { warning:'预警', approval:'审核', manual:'手动' };
+    function notifCategoryOf(r){
+        var t = String((r && r.type) || '');
+        if(t.indexOf('warn') === 0 || t === 'warning') return 'warning';
+        if(t.indexOf('approval') === 0 || t.indexOf('reject') === 0 || t === 'audit') return 'approval';
+        return 'manual';
+    }
+    /**
+     * 通知时间戳 → 'YYYY-MM-DD HH:mm'（本地时区）；非法/缺失返回 '-'。
+     */
+    function notifFormatDateTime(ts){
+        if(!ts) return '-';
+        var d = new Date(ts);
+        if(isNaN(d.getTime())) return '-';
+        function p2(n){ return String(n).padStart(2,'0'); }
+        return d.getFullYear()+'-'+p2(d.getMonth()+1)+'-'+p2(d.getDate())+' '+p2(d.getHours())+':'+p2(d.getMinutes());
+    }
+    /**
+     * 通知接收人显示文本："用户名（姓名）"；账号已被删除时兜底显示 未知用户(id)。
+     */
+    function notifReceiverText(r){
+        var u = (DB.users||[]).find(function(x){ return String(x.id) === String(r.userId); });
+        if(!u) return '未知用户('+escapeHtmlAttr(r.userId)+')';
+        return escapeHtmlAttr(u.username)+'（'+escapeHtmlAttr(u.realName||'')+'）';
+    }
+    /**
+     * 通知记录表格行 HTML（时间/接收人/类型/标题/状态/操作 六列，含 data-label 移动端卡片化）。
+     * 删除后整页重绘（统计卡/记录列表同步刷新）；通知 id 为 generateRecordId 生成串。
+     */
+    function notifRecordRowHtml(r){
+        var cat = notifCategoryOf(r);
+        var catColor = cat === 'warning' ? '#b45309' : (cat === 'approval' ? '#1d4ed8' : '#6b7280');
+        var statusHtml = r.read
+            ? '<span class="badge-tag" style="background:#e5f7ea;color:#15803d">已读</span>'
+            : '<span class="badge-tag badge-danger">未读</span>';
+        return '<tr>'
+            + '<td data-label="时间" style="white-space:nowrap">'+notifFormatDateTime(r.createdAt)+'</td>'
+            + '<td data-label="接收人">'+notifReceiverText(r)+'</td>'
+            + '<td data-label="类型"><span style="color:'+catColor+';font-weight:600">'+(NOTIF_CATEGORY_LABELS[cat] || '手动')+'</span></td>'
+            + '<td data-label="标题">'+escapeHtmlAttr(r.title||'-')+'</td>'
+            + '<td data-label="状态">'+statusHtml+'</td>'
+            + '<td data-label="操作"><button class="btn btn-danger btn-xs" onclick="if(deleteNotification(\''+escapeHtmlAttr(r.id)+'\')){renderView();}">删除</button></td>'
+            + '</tr>';
+    }
+    /**
+     * 按当前筛选下拉（用户/类型/状态）过滤通知并以 renderListInChunks 分片填充
+     * #notifRecordsTbody；记录数量可能很大，必须走分片渲染。
+     */
+    function applyNotifFilter(){
+        var tb = document.getElementById('notifRecordsTbody');
+        if(!tb) return;
+        var fu = document.getElementById('notifFilterUser');
+        var ft = document.getElementById('notifFilterType');
+        var fs = document.getElementById('notifFilterStatus');
+        var uid = fu ? fu.value : 'all';
+        var type = ft ? ft.value : 'all';
+        var status = fs ? fs.value : 'all';
+        var list = getNotificationsForUser().filter(function(r){
+            if(uid !== 'all' && String(r.userId) !== String(uid)) return false;
+            if(type !== 'all' && notifCategoryOf(r) !== type) return false;
+            if(status === 'read' && !r.read) return false;
+            if(status === 'unread' && r.read) return false;
+            return true;
+        });
+        renderListInChunks(tb, list, notifRecordRowHtml, 50, null,
+            { emptyHtml:'<tr><td colspan="6" style="text-align:center;color:#aaa">暂无通知</td></tr>' });
+    }
+
+    // ==================== 顶栏通知铃铛：抽屉渲染 + 未读徽章（所有角色） ====================
+    /**
+     * 抽屉内通知时间格式：当天显示"今天 HH:mm"，非当天显示"YYYY-MM-DD HH:mm"。
+     * @param {number} ts - createdAt 毫秒时间戳
+     * @returns {string}
+     */
+    function notifDrawerTime(ts){
+        if(!ts) return '-';
+        var d = new Date(ts);
+        if(isNaN(d.getTime())) return '-';
+        function p2(n){ return String(n).padStart(2,'0'); }
+        var hhmm = p2(d.getHours())+':'+p2(d.getMinutes());
+        return formatLocalDate(d) === getTodayLocalStr()
+            ? ('今天 '+hhmm)
+            : (d.getFullYear()+'-'+p2(d.getMonth()+1)+'-'+p2(d.getDate())+' '+hhmm);
+    }
+    /**
+     * 渲染顶栏通知抽屉内容：列出当前用户全部通知（getNotificationsForUser 已按
+     * createdAt 倒序）。空列表显示空状态；未读项加 .unread 类（浅蓝底+左蓝点）。
+     * 点击卡片整体标记已读（当前迭代不跳转；relatedId 跳转后续迭代实现），
+     * 卡片内按钮需 stopPropagation 避免触发卡片点击。
+     */
+    function renderNotifDrawer(){
+        var body = document.getElementById('notifDrawerBody');
+        if(!body) return;
+        if(!currentUser){
+            body.innerHTML = '<div class="empty-state">暂无通知</div>';
+            return;
+        }
+        var list = getNotificationsForUser(currentUser.id);
+        if(!list.length){
+            body.innerHTML = '<div class="empty-state">📭<br>暂无通知</div>';
+            return;
+        }
+        body.innerHTML = list.map(function(r){
+            var unread = !r.read;
+            var idAttr = escapeHtmlAttr(r.id);
+            var actions = '<div class="notif-item-actions">'
+                + (unread ? '<button class="btn btn-outline btn-xs" onclick="event.stopPropagation();markNotificationReadAndRefresh(\''+idAttr+'\')">标记已读</button>' : '')
+                + '<button class="btn btn-danger btn-xs" onclick="event.stopPropagation();deleteNotificationAndRefresh(\''+idAttr+'\')">删除</button>'
+                + '</div>';
+            return '<div class="notif-item '+(unread?'unread':'read')+'" onclick="markNotificationReadAndRefresh(\''+idAttr+'\')">'
+                + '<div class="notif-item-top"><span class="notif-item-time">🕐 '+notifDrawerTime(r.createdAt)+'</span>'+actions+'</div>'
+                + '<div class="notif-item-title">'+escapeHtmlAttr(r.title||'通知')+'</div>'
+                + '<div class="notif-item-content">'+escapeHtmlAttr(r.content||'')+'</div>'
+                + '</div>';
+        }).join('');
+    }
+    /**
+     * 更新顶栏铃铛未读角标：数量>0 显示（>99 显示 99+），为 0 隐藏。
+     * 未登录时一律隐藏（登出后亦调用本函数复位）。
+     */
+    function updateNotifBadge(){
+        var badge = document.getElementById('notifBadge');
+        if(!badge) return;
+        if(!currentUser){ badge.style.display = 'none'; badge.textContent = '0'; return; }
+        var n = getUnreadNotificationCount(currentUser.id);
+        if(n > 0){
+            badge.textContent = n > 99 ? '99+' : String(n);
+            badge.style.display = '';
+        } else {
+            badge.style.display = 'none';
+            badge.textContent = '0';
+        }
+    }
+
+    /**
+     * 渲染「通知管理」视图（仅 ADMIN，其他角色显示无权限）：
+     * 顶部三张统计卡（总数/未读/今日新增）+ 发送通知折叠块 + 通知记录折叠块
+     * （筛选 + 分片表格）+ 通知模板管理折叠块（编辑/重置）。
+     * @param {HTMLElement} container - contentArea 容器
+     */
+    function renderNotificationsView(container){
+        if(!isAdmin()){ container.innerHTML='<div class="empty-state">无权限</div>'; return; }
+        // 首次进入默认展开"发送通知"；其余折叠块默认收起，开合状态跨重绘由 foldState 保持
+        if(foldState['notif-fold-send'] === undefined) foldState['notif-fold-send'] = true;
+        // —— 统计数据 ——
+        var allNotifs = Array.isArray(DB.notifications) ? DB.notifications : [];
+        var totalCount = allNotifs.length;
+        var unreadCount = allNotifs.filter(function(n){ return n && !n.read; }).length;
+        var todayStr = getTodayLocalStr();
+        var todayCount = allNotifs.filter(function(n){
+            return n && n.createdAt && formatLocalDate(new Date(n.createdAt)) === todayStr;
+        }).length;
+        // —— 用户/班级/模板下拉选项 ——
+        var users = (DB.users||[]).slice().sort(function(a,b){
+            return String(a.username||'').localeCompare(String(b.username||''), 'zh-Hans-CN');
+        });
+        function userOption(u){
+            return '<option value="'+u.id+'">'+escapeHtmlAttr(u.username)+'（'+escapeHtmlAttr(u.realName||'')+'）</option>';
+        }
+        var userOpts = users.map(userOption).join('');
+        // 班级名单：学生班级 与 班主任账号(className/username) 取并集，按既有班级排序规则排序
+        var classSet = {};
+        (DB.students||[]).forEach(function(s){ if(s.className) classSet[s.className] = true; });
+        users.forEach(function(u){
+            if(u.role === 'CLASS_ADMIN'){ var cn = u.className || u.username; if(cn) classSet[cn] = true; }
+        });
+        var classOpts = sortClassNames(Object.keys(classSet)).map(function(c){
+            return '<option value="'+escapeHtmlAttr(c)+'">'+escapeHtmlAttr(c)+'</option>';
+        }).join('');
+        var tplOpts = getEnabledNotificationTemplates().map(function(t){
+            return '<option value="'+escapeHtmlAttr(t.id)+'">'+escapeHtmlAttr(t.title || t.id)+'</option>';
+        }).join('');
+        // —— 折叠块构造（开合状态走通用 toggleFold）——
+        function notifFoldBlock(id, title, bodyHtml){
+            return '<div class="fold-block'+(foldState[id]?' open':'')+'" id="'+id+'"><div class="fold-header" onclick="toggleFold(\''+id+'\')">'+title+'<span class="fold-arrow">▶</span></div><div class="fold-body">'+bodyHtml+'</div></div>';
+        }
+        var html = '<div class="content-header"><h2>📢 通知管理</h2></div>';
+        // 1) 统计卡（PC notif-stat-cards 三列；移动端复用 stat-cards-mobile 三列样式）
+        html += '<div class="stat-cards-mobile notif-stat-cards">'
+            + '<div class="stat-item"><div class="number" style="color:#4f6ef7">'+totalCount+'</div><div class="label">📨 总通知数</div></div>'
+            + '<div class="stat-item"><div class="number" style="color:#ff3b30">'+unreadCount+'</div><div class="label">🔔 未读数</div></div>'
+            + '<div class="stat-item"><div class="number" style="color:#34c759">'+todayCount+'</div><div class="label">📅 今日新增</div></div>'
+            + '</div>';
+        // 1.5) 全量重算扣分预警（仅本 ADMIN 页可见；用于云端拉取后补齐遗漏预警，confirm 二次确认）
+        html += '<div style="margin-bottom:14px;display:flex;justify-content:flex-end">'
+            + '<button class="btn btn-outline" onclick="recalcAllStudentWarnings()">🔁 全量重算预警</button>'
+            + '</div>';
+        // 2) 发送通知
+        var sendBody = '<div class="card-body">'
+            + '<div class="form-group"><label>接收对象</label><select id="notifTargetType" onchange="onNotifTargetChange()">'
+            + '<option value="all">全体用户</option><option value="role">指定角色</option><option value="user">指定用户</option><option value="class">指定班级</option>'
+            + '</select></div>'
+            + '<div class="form-group" id="notifRoleWrap" style="display:none"><label>角色</label><select id="notifRoleSelect">'
+            + '<option value="ADMIN">管理员</option><option value="STAFF">生活老师</option><option value="CLASS_ADMIN">班主任</option>'
+            + '</select></div>'
+            + '<div class="form-group" id="notifUserWrap" style="display:none"><label>用户</label><select id="notifUserSelect"><option value="">请选择用户</option>'+userOpts+'</select></div>'
+            + '<div class="form-group" id="notifClassWrap" style="display:none"><label>班级</label><select id="notifClassSelect"><option value="">请选择班级</option>'+classOpts+'</select></div>'
+            + '<div class="form-group"><label>通知模板（选择后自动填充标题与内容，可再修改）</label><select id="notifTemplateSelect" onchange="onNotifTemplateChange()"><option value="">不使用模板（手动填写）</option>'+tplOpts+'</select></div>'
+            + '<div class="form-group"><label>标题 *</label><input type="text" id="notifTitle" placeholder="请输入通知标题" maxlength="100"></div>'
+            + '<div class="form-group"><label>内容 *</label><textarea id="notifContent" rows="5" placeholder="请输入通知内容"></textarea></div>'
+            + '<button class="btn btn-primary" onclick="sendNotifications()">📤 发送通知</button>'
+            + '</div>';
+        html += notifFoldBlock('notif-fold-send', '📤 发送通知', sendBody);
+        // 3) 通知记录（筛选 + 分片表格骨架）
+        var recordsBody = '<div class="card-body"><div class="filter-section">'
+            + '<div class="form-group"><label>用户</label><select id="notifFilterUser" onchange="applyNotifFilter()"><option value="all">全部用户</option>'+userOpts+'</select></div>'
+            + '<div class="form-group"><label>类型</label><select id="notifFilterType" onchange="applyNotifFilter()"><option value="all">全部</option><option value="warning">预警</option><option value="approval">审核</option><option value="manual">手动</option></select></div>'
+            + '<div class="form-group"><label>状态</label><select id="notifFilterStatus" onchange="applyNotifFilter()"><option value="all">全部</option><option value="read">已读</option><option value="unread">未读</option></select></div>'
+            + '</div>'
+            + '<div style="overflow-x:auto"><table><thead><tr><th>时间</th><th>接收人</th><th>类型</th><th>标题</th><th>状态</th><th>操作</th></tr></thead>'
+            + '<tbody id="notifRecordsTbody"></tbody></table></div></div>';
+        html += notifFoldBlock('notif-fold-records', '📋 通知记录', recordsBody);
+        // 4) 通知模板管理
+        var levelMap = { yellow:['🟡 黄色','#ca8a04'], orange:['🟠 橙色','#ea580c'], red:['🔴 红色','#dc2626'], dark:['⚫ 黑色','#374151'] };
+        var tplRows = (Array.isArray(DB.notificationTemplates) ? DB.notificationTemplates : []).map(function(t){
+            var threshold = (t.threshold != null) ? String(t.threshold) : '-';
+            var levelCell = '-';
+            if(t.level){
+                var lv = levelMap[t.level] || null;
+                levelCell = lv
+                    ? '<span style="color:'+lv[1]+';font-weight:600">'+lv[0]+'</span>'
+                    : escapeHtmlAttr(t.level);
+            }
+            var content = String(t.content || '');
+            var shortContent = content.length > 30 ? content.slice(0,30) + '…' : content;
+            var enabled = (t.enabled !== false);
+            var enabledCell = enabled
+                ? '<span class="badge-tag" style="background:#e5f7ea;color:#15803d">启用</span>'
+                : '<span class="badge-tag" style="background:#f1f3f5;color:#868e96">禁用</span>';
+            // 系统模板（warn_*/approval_*/reject_*）禁止删除；表格仅提供编辑/重置，不提供删除入口
+            return '<tr>'
+                + '<td data-label="模板ID" style="white-space:nowrap">'+escapeHtmlAttr(t.id)+'</td>'
+                + '<td data-label="阈值">'+threshold+'</td>'
+                + '<td data-label="级别">'+levelCell+'</td>'
+                + '<td data-label="标题">'+escapeHtmlAttr(t.title||'-')+'</td>'
+                + '<td data-label="内容" title="'+escapeHtmlAttr(content)+'">'+escapeHtmlAttr(shortContent)+'</td>'
+                + '<td data-label="启用">'+enabledCell+'</td>'
+                + '<td data-label="操作" style="white-space:nowrap"><button class="btn btn-outline btn-xs" onclick="openNotifTemplateModal(\''+escapeHtmlAttr(t.id)+'\')">编辑</button> <button class="btn btn-outline btn-xs" onclick="resetNotifTemplate(\''+escapeHtmlAttr(t.id)+'\')">重置</button></td>'
+                + '</tr>';
+        }).join('');
+        var tplBody = '<div class="card-body"><div style="overflow-x:auto"><table><thead><tr><th>模板ID</th><th>阈值</th><th>级别</th><th>标题</th><th>内容</th><th>启用</th><th>操作</th></tr></thead><tbody>'
+            + (tplRows || '<tr><td colspan="7" style="text-align:center;color:#aaa">暂无模板</td></tr>')
+            + '</tbody></table></div>'
+            + '<p style="color:var(--gray-500);font-size:0.8571rem;margin-top:8px">系统模板（warn_* / approval_* / reject_*）仅允许编辑与重置，不可删除；"重置"将恢复为系统默认内容。</p></div>';
+        html += notifFoldBlock('notif-fold-templates', '📝 通知模板管理', tplBody);
+        container.innerHTML = html;
+        // 记录表 tbody 为空骨架，落 DOM 后按当前筛选分片填充
+        applyNotifFilter();
     }
 
     // ==================== 学生管理视图 ====================

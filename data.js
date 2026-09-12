@@ -338,6 +338,39 @@
     }
 
     /**
+     * 计算指定学生的个人累计净扣分（扣分总和 - 加分总和，保留 1 位小数）。
+     * 仅统计个人记录（r.studentId 严格等于 studentId），宿舍集体记录（studentId=null）
+     * 不计入任何学生的个人净分。
+     * @param {number|string} studentId - 学生 ID
+     * @returns {number} 净扣分；无记录返回 0
+     */
+    function getStudentNetScore(studentId) {
+        if (!DB || !Array.isArray(DB.deductionRecords) || studentId == null) return 0;
+        var recs = DB.deductionRecords.filter(function(r) { return r.studentId === studentId; });
+        return getNetScore(recs);
+    }
+
+    /**
+     * 按班级名查询班主任账号（role='CLASS_ADMIN'）ID。
+     * 兼容历史数据：早期班级账号无 className 字段、以 username 存班级名。
+     * @param {string} className - 班级名称
+     * @returns {number|string|null} 班主任用户 ID；未找到返回 null
+     */
+    function getClassAdminUserId(className) {
+        if (!DB || !Array.isArray(DB.users) || className == null || className === '') return null;
+        var u = DB.users.find(function(x) {
+            return x && x.role === 'CLASS_ADMIN' && x.className === className;
+        });
+        if (!u) {
+            // 旧数据兜底：className 缺失时回退比对 username
+            u = DB.users.find(function(x) {
+                return x && x.role === 'CLASS_ADMIN' && !x.className && x.username === className;
+            });
+        }
+        return u ? u.id : null;
+    }
+
+    /**
      * 判断当前时段应显示卫生类还是纪律类加/扣分项。
      * 管理员不受限制（始终返回 'both'）。
      * 生活老师按账号配置的时段规则判断。
@@ -706,6 +739,28 @@
         saveDBToLocal();
     }
 
+    // ==================== 站内通知子系统：默认模板常量 ====================
+    // 系统内置 13 条通知模板的出厂默认值：7 条扣分预警（warn_*，含 threshold/level）
+    // + 6 条审核结果通知（approval_*/reject_*）。
+    // initDatabase 初始化 DB.notificationTemplates 与 getDefaultNotificationTemplate
+    // （管理员"重置"模板）共用本常量，保证两处默认值永远一致。
+    // 扣分预警内容变量：{studentName} {className} {score}，由 renderNotificationTemplate 替换。
+    var DEFAULT_NOTIFICATION_TEMPLATES = [
+        { id:'warn_3',  threshold:3,  level:'yellow', title:'⚠️ 扣分预警通知', content:'{studentName}（{className}）当前累计净分已达 {score} 分，请班主任及时关注并教育。', enabled:true },
+        { id:'warn_5',  threshold:5,  level:'orange', title:'🟠 扣分预警升级', content:'{studentName}（{className}）当前累计净分已达 {score} 分，即将达到 6 分（停宿一周）标准，请班主任尽快与家长沟通。', enabled:true },
+        { id:'warn_6',  threshold:6,  level:'orange', title:'🟠 停宿一周告知', content:'{studentName}（{className}）当前累计净分已达 {score} 分，按校规将停宿一周，请班主任通知家长并做好后续安排。', enabled:true },
+        { id:'warn_11', threshold:11, level:'red',    title:'🔴 扣分预警升级', content:'{studentName}（{className}）当前累计净分已达 {score} 分，即将达到 12 分（停宿两周）标准，请班主任尽快约谈家长。', enabled:true },
+        { id:'warn_12', threshold:12, level:'red',    title:'🔴 停宿两周告知', content:'{studentName}（{className}）当前累计净分已达 {score} 分，按校规将停宿两周，请班主任约谈家长并做好记录。', enabled:true },
+        { id:'warn_17', threshold:17, level:'dark',   title:'🚨 扣分预警升级', content:'{studentName}（{className}）当前累计净分已达 {score} 分，即将达到 18 分（退宿）标准，请班主任立即联系家长并上报德育处。', enabled:true },
+        { id:'warn_18', threshold:18, level:'dark',   title:'🚨 退宿处理告知', content:'{studentName}（{className}）当前累计净分已达 {score} 分，按校规将作退宿处理，请班主任配合德育处完成后续流程。', enabled:true },
+        { id:'approval_leave',   title:'✅ 退宿申请已通过', content:'你提交的退宿申请已通过审核。', enabled:true },
+        { id:'approval_stop',    title:'✅ 停宿申请已通过', content:'你提交的停宿申请已通过审核。', enabled:true },
+        { id:'approval_absence', title:'✅ 请假申请已通过', content:'你提交的请假申请已通过审核。', enabled:true },
+        { id:'reject_leave',     title:'❌ 退宿申请被驳回', content:'你提交的退宿申请未通过审核，请查看详情或重新提交。', enabled:true },
+        { id:'reject_stop',      title:'❌ 停宿申请被驳回', content:'你提交的停宿申请未通过审核，请查看详情或重新提交。', enabled:true },
+        { id:'reject_absence',   title:'❌ 请假申请被驳回', content:'你提交的请假申请未通过审核，请查看详情或重新提交。', enabled:true }
+    ];
+
     /**
      * 首次使用时创建默认数据库（localStorage 无存档才调用）。
      * 内容：8 个楼层、每层 20 间宿舍 + 723/322/323 三间特殊宿舍、
@@ -805,7 +860,12 @@
         var inspectionConfirmations = [];
         var anomalyReports = [];
         var dailyInspectionSummaries = [];
-        DB = { floors, dormitories, dormitoryList, students, deductionItems, deductionRecords: records, leaveRecords: leaveRecords, absenceRecords: absenceRecords, inspectionConfirmations: inspectionConfirmations, anomalyReports: anomalyReports, dailyInspectionSummaries: dailyInspectionSummaries, users, nextIds: { floor:9, dormitory: dormId, student: stuId, item:300, record: recId, leave:1, absence:1, user: nextUserId, confirmation:1, anomaly:1, summary:1 } };
+        // 站内通知子系统：notifications 业务通知（默认空）；notificationTemplates 由管理员统一维护，
+        // 新库预置 DEFAULT_NOTIFICATION_TEMPLATES 13 条默认模板（逐项浅拷贝，勿与常量共享对象引用），
+        // 后续以云端为权威
+        var notifications = [];
+        var notificationTemplates = DEFAULT_NOTIFICATION_TEMPLATES.map(function(t){ return Object.assign({}, t); });
+        DB = { floors, dormitories, dormitoryList, students, deductionItems, deductionRecords: records, leaveRecords: leaveRecords, absenceRecords: absenceRecords, inspectionConfirmations: inspectionConfirmations, anomalyReports: anomalyReports, dailyInspectionSummaries: dailyInspectionSummaries, notifications: notifications, notificationTemplates: notificationTemplates, users, nextIds: { floor:9, dormitory: dormId, student: stuId, item:300, record: recId, leave:1, absence:1, user: nextUserId, confirmation:1, anomaly:1, summary:1 } };
         saveDBToLocal();
         });
     }
@@ -926,6 +986,9 @@
             if(!DB.deletedByType[m.type]) DB.deletedByType[m.type] = {};
         });
         if(!Array.isArray(DB.absenceRecords)) DB.absenceRecords=[];
+        // 站内通知子系统：旧版本地存档缺少两表时补齐空数组（模板由云端权威数据回填）
+        if(!Array.isArray(DB.notifications)) DB.notifications=[];
+        if(!Array.isArray(DB.notificationTemplates)) DB.notificationTemplates=[];
         if(!DB.nextIds) DB.nextIds={};
         if(typeof DB.nextIds.absence!=='number') DB.nextIds.absence=1;
         // dormitoryList：生效宿舍号列表；旧数据缺失时从 dormitories 重建
@@ -1031,6 +1094,10 @@
         if(repaired) ensureSyncMeta(); // 重建 dormitoryList
         // 4) 巡查核实模块：旧版本地存档缺少三张表时补齐空数组（不覆盖已有数据）
         ['inspectionConfirmations','anomalyReports','dailyInspectionSummaries'].forEach(function(k){
+            if(!Array.isArray(DB[k])){ DB[k] = []; repaired = true; }
+        });
+        // 5) 站内通知子系统：通知与模板两表缺失时同样补齐空数组（不覆盖已有数据）
+        ['notifications','notificationTemplates'].forEach(function(k){
             if(!Array.isArray(DB[k])){ DB[k] = []; repaired = true; }
         });
         // nextIds 同步补齐巡查模块键位
@@ -1423,6 +1490,70 @@
             return s.summaryDate === date && String(s.confirmedBy) === String(userId);
         }) || null;
     }
+
+    // ==================== 站内通知子系统：数据查询 ====================
+    /**
+     * 查询指定用户的通知列表（按 createdAt 倒序，最新在前）。
+     * @param {number|string} [userId] - 用户 ID；参数为空（null/undefined/''）时返回全部通知
+     * @returns {Array} 通知记录数组（排序副本，不改变 DB 中原始顺序）
+     */
+    function getNotificationsForUser(userId){
+        if(!DB || !Array.isArray(DB.notifications)) return [];
+        var list = DB.notifications;
+        if(userId !== null && userId !== undefined && userId !== ''){
+            var uid = String(userId);
+            list = list.filter(function(n){ return n && String(n.userId) === uid; });
+        }
+        return list.slice().sort(function(a,b){
+            return (b.createdAt || 0) - (a.createdAt || 0);
+        });
+    }
+    /**
+     * 统计指定用户的未读通知数量。
+     * @param {number|string} userId - 用户 ID
+     * @returns {number} 未读条数
+     */
+    function getUnreadNotificationCount(userId){
+        if(!DB || !Array.isArray(DB.notifications)) return 0;
+        if(userId === null || userId === undefined || userId === '') return 0;
+        var uid = String(userId);
+        return DB.notifications.filter(function(n){
+            return n && String(n.userId) === uid && !n.read;
+        }).length;
+    }
+    /**
+     * 获取全部启用的通知模板（enabled !== false；缺省 enabled 字段亦视为启用）。
+     * @returns {Array} 启用中的模板记录数组
+     */
+    function getEnabledNotificationTemplates(){
+        if(!DB || !Array.isArray(DB.notificationTemplates)) return [];
+        return DB.notificationTemplates.filter(function(t){ return t && t.enabled !== false; });
+    }
+    /**
+     * 按 id 查询通知模板（包含已禁用模板）。
+     * @param {string} id - 模板 id，如 'warn_3' / 'approval_leave'
+     * @returns {object|null} 模板记录；不存在返回 null
+     */
+    function getNotificationTemplateById(id){
+        if(!DB || !Array.isArray(DB.notificationTemplates)) return null;
+        if(id === null || id === undefined) return null;
+        return DB.notificationTemplates.find(function(t){
+            return t && String(t.id) === String(id);
+        }) || null;
+    }
+    /**
+     * 读取指定通知模板的出厂默认值（副本，调用方可安全修改/覆盖）。
+     * 用于管理员在模板管理中"重置"被改动的系统模板。
+     * @param {string} id - 模板 id，如 'warn_3' / 'approval_leave'
+     * @returns {object|null} 默认模板对象的浅拷贝；非系统内置模板 id 返回 null
+     */
+    function getDefaultNotificationTemplate(id){
+        if(id === null || id === undefined) return null;
+        var def = DEFAULT_NOTIFICATION_TEMPLATES.find(function(t){
+            return String(t.id) === String(id);
+        });
+        return def ? Object.assign({}, def) : null;
+    }
     /**
      * 确保纪律扣分项"无请假信息"存在（异常上报"无假条"自动扣分用）。
      * 缺失时以 nextIds.item 创建（默认扣 1 分）并标脏上传；已存在直接返回。
@@ -1452,3 +1583,4 @@ window.migrateUserPasswords = migrateUserPasswords;
 window.formatLocalDate = formatLocalDate;
 window.getTodayLocalStr = getTodayLocalStr;
 window.roundScore1 = roundScore1;
+window.getDefaultNotificationTemplate = getDefaultNotificationTemplate;

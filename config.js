@@ -62,12 +62,15 @@
         // —— 巡查核实模块（业务记录，多设备并发按 updated_at 合并）——
         { type: 'inspection_confirmation', dbPath: ['inspectionConfirmations'],  idField: 'id', isArray: true }, // 巡查确认
         { type: 'anomaly_report',          dbPath: ['anomalyReports'],           idField: 'id', isArray: true }, // 异常上报（家长接走/无假条）
-        { type: 'daily_summary',           dbPath: ['dailyInspectionSummaries'], idField: 'id', isArray: true }  // 每日晚检总结
+        { type: 'daily_summary',           dbPath: ['dailyInspectionSummaries'], idField: 'id', isArray: true }, // 每日晚检总结
+        // —— 站内通知子系统 ——
+        { type: 'notification',          dbPath: ['notifications'],         idField: 'id', isArray: true }, // 通知（业务记录，多设备并发）
+        { type: 'notification_template', dbPath: ['notificationTemplates'], idField: 'id', isArray: true }  // 通知模板（管理员统一维护的基础数据）
     ];
     // 基础数据类型（管理员统一维护，云端为权威）——拉取时云端覆盖本地
-    var V3_BASIC_TYPES = ['meta', 'floor', 'dormitory', 'student', 'user', 'deduction_item'];
+    var V3_BASIC_TYPES = ['meta', 'floor', 'dormitory', 'student', 'user', 'deduction_item', 'notification_template'];
     // 业务记录类型（多设备并发写入，按 updated_at 合并）
-    var V3_MUTABLE_TYPES = ['deduction_record', 'leave_record', 'absence_record', 'inspection_confirmation', 'anomaly_report', 'daily_summary'];
+    var V3_MUTABLE_TYPES = ['deduction_record', 'leave_record', 'absence_record', 'inspection_confirmation', 'anomaly_report', 'daily_summary', 'notification'];
     // Supabase upsert 批量上限（保守值，实际约 500）
     var V3_UPSERT_CHUNK = 200;
     // 表结构版本：2 = 旧版整库压缩，3 = 新版按行存储

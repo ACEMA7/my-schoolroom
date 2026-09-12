@@ -323,8 +323,8 @@
                     if(Array.isArray(mLive.data.dormitoryList)) DB.dormitoryList = mLive.data.dormitoryList;
                     if(mLive.data.nextIds) DB.nextIds = mLive.data.nextIds;
                 }
-                // 数组类型：floor / dormitory / student / user + 三类业务记录 + 巡查核实三类记录
-                ['floor','dormitory','student','user','deduction_record','leave_record','absence_record','inspection_confirmation','anomaly_report','daily_summary'].forEach(function(type){
+                // 数组类型：floor / dormitory / student / user + 三类业务记录 + 巡查核实三类记录 + 站内通知两类（通知 + 通知模板）
+                ['floor','dormitory','student','user','deduction_record','leave_record','absence_record','inspection_confirmation','anomaly_report','daily_summary','notification','notification_template'].forEach(function(type){
                     var tMeta = V3_RECORD_TYPES.find(function(m){ return m.type === type; });
                     if(!tMeta) return;
                     var liveRows = (grouped[type] || []).filter(function(r){ return !r.deleted; }).map(function(r){ return normalizeCloudIds(type, r.data); });
@@ -1196,6 +1196,8 @@
             if(isReset){ renderTree(); renderView(); }
             // 拉取到新数据时刷新当前视图与树形菜单（无论上传成败，拉取结果都要呈现）
             if(added>0||updated>0||removed>0||rescued>0||basicChanged||isReset){ renderTree(); renderView(); }
+            // 拉取可能带来其他设备下发的新通知，同步后刷新顶栏未读角标
+            updateNotifBadge();
             if(pushed === false){
                 // 上传失败：明确提示，绝不误报“同步完成”；脏标记保留，加入重试队列
                 updateSyncStatus('unsynced');
