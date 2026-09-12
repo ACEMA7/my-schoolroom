@@ -2,9 +2,11 @@
 // 同源业务资源 cache-first；第三方 CDN 资源预缓存 + cache-first（cors 模式可校验）；
 // Supabase 数据接口仅网络不缓存；页面导航请求离线时回退缓存的 index.html
 //
-// 【版本管理约定】每次修改任意 JS（或其他被缓存的静态资源）后，必须把下面的版本号 +1，
-// 否则客户端会继续使用旧缓存，导致"代码已改但不生效"。例如 v20 → v21。
-var CACHE_NAME = 'dormitory-cache-v21';
+// ⚠️ 每次修改任何 .js / .html 文件后，必须更新下面这一行的时间戳
+// （哪怕只改一行代码，也要改成新的时间），浏览器才会检测到新版本并自动推送更新
+var CACHE_NAME = 'dormitory-cache-2026-09-12-0008';
+// 页面通过 postMessage({type:'GET_VERSION'}) 读取，用于顶栏版本号显示（须与 CACHE_NAME 同步修改）
+self.APP_VERSION = '2026-09-12-0008';
 
 // 同源核心资源（任一失败都会阻断安装，保证离线可用的最小集合）
 var LOCAL_ASSETS = [
@@ -63,10 +65,20 @@ self.addEventListener('install', function(event) {
     );
 });
 
-// 页面可通过 postMessage({type:'SKIP_WAITING'}) 立即激活等待中的新版本
+// 页面可通过 postMessage 与 SW 通信：
+// - {type:'SKIP_WAITING'}：立即激活等待中的新版本
+// - {type:'GET_VERSION'}：取当前 SW 版本号（顶栏显示用）
 self.addEventListener('message', function(event) {
-    if (event.data && event.data.type === 'SKIP_WAITING') {
+    if (!event.data) return;
+    if (event.data.type === 'SKIP_WAITING') {
         self.skipWaiting();
+    } else if (event.data.type === 'GET_VERSION') {
+        var reply = { type: 'APP_VERSION', version: self.APP_VERSION };
+        if (event.ports && event.ports[0]) {
+            event.ports[0].postMessage(reply);
+        } else if (event.source) {
+            event.source.postMessage(reply);
+        }
     }
 });
 

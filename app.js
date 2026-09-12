@@ -2068,7 +2068,7 @@
         return '<div class="form-group" style="color:var(--gray-500);font-size:0.9286rem">已选宿舍：<b>'+escapeHtmlAttr(dorm.roomNumber)+'</b></div>'
             +'<div class="form-group"><label>学生 *</label><select id="anomalyStudent" onchange="onAnomalyStudentChange()">'+stuOpts+'</select></div>'
             +'<div class="form-group" id="anomalyManualWrap" style="display:none"><label>学生姓名 *</label><input type="text" id="anomalyName" placeholder="手动输入学生姓名"></div>'
-            +'<div class="form-group"><label>异常类型 *</label><select id="anomalyType"><option value="picked_up">🚗 家长接走（不扣分）</option><option value="no_note">⚠️ 无假条（自动生成纪律扣分：无请假信息 1分）</option></select></div>'
+            +'<div class="form-group"><label>异常类型 *</label><select id="anomalyType" onchange="onAnomalyTypeChange()"><option value="picked_up">🚗 家长接走（不扣分）</option><option value="no_note">⚠️ 无假条（自动生成纪律扣分：无请假信息 1分）</option></select></div>'
             +'<div class="form-group"><label>备注</label><input type="text" id="anomalyNote" placeholder="可选：具体情况说明"></div>';
     }
     /** 通用模式：楼层变化 → 加载该楼层宿舍列表 */
@@ -2108,6 +2108,25 @@
         var sel=document.getElementById('anomalyStudent');
         var wrap=document.getElementById('anomalyManualWrap');
         if(wrap) wrap.style.display = (sel && sel.value==='manual') ? '' : 'none';
+    }
+    /**
+     * 异常类型切换：选择"无假条"时自动在备注填入"已联系家长确认"
+     * （随 anomalyNote 写入 report.note，进入晚检总结与 Excel 导出）。
+     * 用户手动改过其他内容则不覆盖；切到其他类型不自动清空备注。
+     */
+    function onAnomalyTypeChange(){
+        var typeEl = document.getElementById('anomalyType');
+        var noteEl = document.getElementById('anomalyNote');
+        if(!typeEl || !noteEl) return;
+        var type = typeEl.value;
+        var autoText = '已联系家长确认';
+        if(type === 'no_note'){
+            // 备注为空或之前被自动填入过，则填入默认文案；用户手动改了别的就不覆盖
+            var cur = String(noteEl.value || '').trim();
+            if(cur === '' || cur === autoText){
+                noteEl.value = autoText;
+            }
+        }
     }
     /**
      * 提交异常上报：
@@ -2919,22 +2938,106 @@
         });
     }
 
-    // ==================== PWA: Service Worker 注册 ====================
+    // ==================== PWA: Service Worker 注册与无缝后台更新 ====================
     // 独立代码块，不嵌套在应用 DOMContentLoaded 中，避免影响初始化
     if ('serviceWorker' in navigator) {
         // 记录注册前是否已被 SW 控制：首次安装 claim 导致的 controllerchange 不提示，
-        // 仅"旧版本→新版本"的切换才提示用户刷新
+        // 仅"旧版本→新版本"的切换才走自动更新流程
         var swHadController = !!navigator.serviceWorker.controller;
-        navigator.serviceWorker.addEventListener('controllerchange', function(){
-            if (swHadController) {
-                toast('新版本已就绪，请刷新页面以应用更新');
+        var _updateReady = false;      // 是否已有新版本接管，等待刷新页面
+        var _updateChecking = false;   // 防抖：上一次 reg.update() 未完成时跳过本次检测
+        var _updateReloading = false;  // 防止刷新流程被重复触发
+        var _idlePollTimer = null;     // 忙碌状态下每 2 秒轮询是否已空闲
+
+        // 用户忙碌判定（任一满足）：输入框/文本域/下拉框获得焦点；存在可见模态框
+        function _isUserBusy(){
+            var el = document.activeElement;
+            if (el && el.tagName) {
+                var tag = el.tagName.toUpperCase();
+                if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true;
             }
+            return !!document.querySelector('.modal-overlay.show');
+        }
+
+        // 自动刷新前先把内存数据落本地，避免刷新丢数据
+        function _applyUpdate(){
+            if (_updateReloading) return;
+            _updateReloading = true;
+            toast('检测到新版本，正在自动更新…');
+            setTimeout(function(){
+                try { if (typeof saveDBToLocal === 'function') saveDBToLocal(); } catch(e) {}
+                window.location.reload();
+            }, 1000);
+        }
+
+        // 新版本就绪：空闲立即刷新；忙碌仅提示，转 2 秒轮询等用户操作完成
+        function _onUpdateReady(){
+            if (_updateReady) return;
+            _updateReady = true;
+            if (!_isUserBusy()) {
+                _applyUpdate();
+                return;
+            }
+            toast('新版本已就绪，操作完成后将自动刷新');
+            if (_idlePollTimer) clearInterval(_idlePollTimer);
+            _idlePollTimer = setInterval(function(){
+                if (_updateReady && !_isUserBusy()) {
+                    clearInterval(_idlePollTimer);
+                    _idlePollTimer = null;
+                    _applyUpdate();
+                }
+            }, 2000);
+        }
+
+        navigator.serviceWorker.addEventListener('controllerchange', function(){
+            if (swHadController) _onUpdateReady();
             swHadController = true;
+            requestAppVersion(); // 新 SW 接管后刷新顶栏版本号
         });
+
+        // 接收 SW 回传的版本号
+        navigator.serviceWorker.addEventListener('message', function(ev){
+            if (ev.data && ev.data.type === 'APP_VERSION') {
+                var vt = document.getElementById('appVersionText');
+                if (vt) vt.textContent = 'v' + ev.data.version;
+            }
+        });
+
+        // 向当前控制页面的 SW 请求版本号（首次安装时尚无 controller，等 controllerchange 再取）
+        function requestAppVersion(){
+            try {
+                if (navigator.serviceWorker.controller) {
+                    navigator.serviceWorker.controller.postMessage({ type: 'GET_VERSION' });
+                }
+            } catch(e) {}
+        }
+
+        /**
+         * 主动检测更新：页面重新可见 / 每 5 分钟 / 启动 3 秒后各触发一次 reg.update()。
+         * 离线时直接跳过（不产生报错）；检测进行中再次触发则跳过（防抖）。
+         */
+        function setupUpdateChecker(reg){
+            function check(){
+                if (navigator.onLine === false) return;
+                if (_updateChecking) return;
+                _updateChecking = true;
+                Promise.resolve(reg.update())
+                    .catch(function(){ /* 更新检查失败静默忽略，下次再试 */ })
+                    .then(function(){ _updateChecking = false; });
+            }
+            document.addEventListener('visibilitychange', function(){
+                if (document.visibilityState === 'visible') check();
+            });
+            setInterval(check, 5 * 60 * 1000);
+            setTimeout(check, 3000);
+        }
+
         window.addEventListener('load', function() {
             navigator.serviceWorker.register('./sw.js')
                 .then(function(reg) {
                     console.log('✅ Service Worker 注册成功', reg.scope);
+                    setupUpdateChecker(reg);
+                    requestAppVersion();
                     // 版本更新时自动激活新 SW
                     if (reg.waiting) reg.waiting.postMessage({type:'SKIP_WAITING'});
                     reg.addEventListener('updatefound', function() {

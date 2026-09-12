@@ -207,6 +207,8 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
         .sync-status-dot.unsynced{background:#ff3b30;box-shadow:0 0 6px rgba(255,59,48,.6);animation:dot-blink 0.8s infinite}
         @keyframes dot-blink{0%,100%{opacity:1}50%{opacity:.3}}
         @keyframes dot-pulse{0%,100%{transform:scale(1)}50%{transform:scale(1.3)}}
+        /* 顶栏版本号：低调灰色小字，不参与交互，不挤压布局 */
+        .app-version-text{font-size:0.72rem;color:#9ca3af;white-space:nowrap;user-select:none;line-height:1}
         /* 字体调节按钮：默认隐藏，仅STAFF移动端通过JS加body.staff-font-scale显示 */
         .font-scale-btn{display:none}
         .font-scale-panel{display:none}
@@ -261,8 +263,8 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
         .inspection-stat-cards .stat-item{background:#fff;border-radius:10px;padding:14px 8px;text-align:center;border:1px solid var(--gray-200);box-shadow:0 1px 3px rgba(0,0,0,.06)}
         .inspection-stat-cards .stat-item .number{font-size:1.5714rem;font-weight:700;line-height:1.2}
         .inspection-stat-cards .stat-item .label{font-size:0.8571rem;color:var(--gray-500);margin-top:4px}
-        .inspection-stat-cards .stat-item-action{cursor:pointer;border:2px dashed #ff3b30;background:#fff5f5;transition:all .15s}
-        .inspection-stat-cards .stat-item-action:hover{background:#ffe0e0;transform:translateY(-2px);box-shadow:0 4px 12px rgba(255,59,48,.18)}
+        .inspection-stat-cards .stat-item-action{cursor:pointer;border:2px dashed #ff3b30;background:#ffe0e0;transition:all .15s}
+        .inspection-stat-cards .stat-item-action:hover{background:#ffcccc;transform:translateY(-2px);box-shadow:0 4px 12px rgba(255,59,48,.18)}
         .inspection-stat-cards .stat-item-action:active{transform:scale(.97)}
         /* 巡查核实总结：PC 端左右分栏（左侧统计数字，右侧学生详情） */
         .summary-split{display:flex;gap:24px;align-items:flex-start}
@@ -469,6 +471,8 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
             .header-badge{display:none}
             #userNameDisplay{display:none}
             .logout-btn{padding:8px 10px;font-size:0.8571rem}
+            /* 移动端顶栏空间紧张，版本号进一步缩小 */
+            .app-version-text{font-size:0.62rem}
             .mobile-back-btn{display:flex;align-items:center}
             .sidebar-toggle{display:none !important}
 
@@ -593,10 +597,10 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
             .stat-cards-mobile .stat-item{background:#f8f9fc;border-radius:10px;padding:10px 4px;text-align:center;border:1px solid #e5e7eb}
             .stat-cards-mobile .stat-item .number{font-size:1.5714rem;font-weight:700;color:#4f6ef7;line-height:1.2}
             .stat-cards-mobile .stat-item .label{font-size:0.7857rem;color:#6b7280;margin-top:2px;white-space:nowrap}
-            /* 巡查核实页统计卡片：移动端 2×3 网格，异常上报卡片整行突出 */
-            .inspection-stat-cards{grid-template-columns:1fr 1fr 1fr;gap:8px}
-            .inspection-stat-cards .stat-item{padding:10px 4px}
-            .inspection-stat-cards .stat-item-action{grid-column:span 3;border-width:2px}
+            /* 巡查核实页统计卡片：移动端 6 等分网格——第一行3个卡片（各 span 2），第二行异常人数+异常上报按钮并排（各 span 3） */
+            .inspection-stat-cards{grid-template-columns:repeat(6,1fr);gap:8px}
+            .inspection-stat-cards .stat-item{padding:10px 4px;grid-column:span 2}
+            .inspection-stat-cards .stat-item:nth-child(4),.inspection-stat-cards .stat-item:nth-child(5){grid-column:span 3}
             /* 巡查核实总结：移动端垂直堆叠（统计数字在上，学生详情在下） */
             .summary-split{flex-direction:column;gap:12px}
             .summary-stats-col{flex:none;width:100%}
@@ -705,6 +709,7 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
                 <span id="userNameDisplay"></span>
                 <button class="logout-btn" id="manualSyncBtn" title="手动同步云端记录" onclick="manualSync()">🔄</button>
                 <span class="sync-status-dot synced" id="syncStatusDot" title="同步状态：已同步（点击手动重试）" onclick="manualSync()"></span>
+                <span class="app-version-text" id="appVersionText" title="应用版本">v—</span>
                 <button class="font-scale-btn" id="fontScaleBtn" title="字体大小" onclick="toggleFontPanel()">Aa</button>
                 <button class="logout-btn" onclick="handleLogout()">退出</button>
             </div>

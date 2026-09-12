@@ -713,7 +713,7 @@
                         return '<div class="chip'+(addFormState.studentId===s.id?' active':'')+'" onclick="mobilePickTarget(this,'+s.id+')">'+s.name+'</div>';
                     }).join('');
             }
-            container.innerHTML='<div class="content-header"><h2>📝 '+(isBonus?'加分':'扣分')+'登记</h2></div><div class="card"><div class="card-header">'+modeSwitchHtml+'<span style="margin-top:8px;display:block">填写信息</span></div><div class="card-body">'
+            container.innerHTML='<div class="content-header"><h2>📝 '+(isBonus?'加分':'扣分')+'登记</h2></div><div class="card"><div class="card-header">'+modeSwitchHtml+'</div><div class="card-body">'
                 +'<div class="form-group"><label>🏢 选择楼层 *</label><div class="chip-floors">'+floorChips+'</div></div>'
                 +'<div class="form-group"><label>🚪 选择宿舍号 * <span style="font-weight:400;font-size:0.8571rem;color:var(--gray-500)">左右滑动查看更多</span></label><div class="chip-dorms">'+dormChips+'</div></div>'
                 +'<div class="form-group"><label>👤 '+(isBonus?'加分对象（宿舍集体）':'扣分对象 *')+'</label><div class="chip-targets">'+targetChips+'</div></div>'
