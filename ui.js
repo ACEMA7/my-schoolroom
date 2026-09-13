@@ -1654,7 +1654,9 @@
                 + '<td data-label="操作" style="white-space:nowrap"><button class="btn btn-outline btn-xs" onclick="openNotifTemplateModal(\''+escapeHtmlAttr(t.id)+'\')">编辑</button> <button class="btn btn-outline btn-xs" onclick="resetNotifTemplate(\''+escapeHtmlAttr(t.id)+'\')">重置</button></td>'
                 + '</tr>';
         }).join('');
-        var tplBody = '<div class="card-body"><div style="overflow-x:auto"><table><thead><tr><th>模板ID</th><th>阈值</th><th>级别</th><th>标题</th><th>内容</th><th>启用</th><th>操作</th></tr></thead><tbody>'
+        var tplBody = '<div class="card-body">'
+            + '<button class="btn btn-primary btn-sm" onclick="openNotifTemplateModal(null)" style="margin-bottom:10px">➕ 新增自定义模板</button>'
+            + '<div style="overflow-x:auto"><table><thead><tr><th>模板ID</th><th>阈值</th><th>级别</th><th>标题</th><th>内容</th><th>启用</th><th>操作</th></tr></thead><tbody>'
             + (tplRows || '<tr><td colspan="7" style="text-align:center;color:#aaa">暂无模板</td></tr>')
             + '</tbody></table></div>'
             + '<p style="color:var(--gray-500);font-size:0.8571rem;margin-top:8px">系统模板（warn_* / approval_* / reject_*）仅允许编辑与重置，不可删除；"重置"将恢复为系统默认内容。</p></div>';
@@ -3057,13 +3059,14 @@
      * @returns {string} 弹层 HTML；模板不存在返回空字符串（由调用方处理）
      */
     function buildNotifTemplateModalHtml(templateId){
-        var t = getNotificationTemplateById(templateId);
-        if(!t) return '';
+        var isNew = !templateId;
+        var t = isNew ? { id:'', title:'', content:'', enabled:true } : getNotificationTemplateById(templateId);
+        if(!t && !isNew) return '';
         var enabled = (t.enabled !== false);
-        return '<div class="em-header"><span>📝 编辑通知模板</span><button class="em-close" aria-label="关闭" onclick="closeNotifTemplateModal()">✕</button></div>'
+        return '<div class="em-header"><span>' + (isNew ? '➕ 新增通知模板' : '📝 编辑通知模板') + '</span><button class="em-close" aria-label="关闭" onclick="closeNotifTemplateModal()">✕</button></div>'
             + '<div class="em-body">'
-            + '<input type="hidden" id="notifTplEditId" value="' + escapeHtmlAttr(t.id) + '">'
-            + '<div class="form-group"><label>模板ID（系统标识，不可修改）</label><input type="text" value="' + escapeHtmlAttr(t.id) + '" readonly style="background:var(--gray-100)"></div>'
+            + '<input type="hidden" id="notifTplEditId" value="' + escapeHtmlAttr(isNew ? '' : t.id) + '">'
+            + '<div class="form-group"><label>模板ID ' + (isNew ? '*（系统标识，不可重复，如 custom_1）' : '（系统标识，不可修改）') + '</label><input type="text" id="notifTplIdInput" value="' + escapeHtmlAttr(isNew ? '' : t.id) + '" ' + (isNew ? '' : 'readonly style="background:var(--gray-100)"') + ' placeholder="例如：custom_1"></div>'
             + '<div class="form-group"><label>标题 *</label><input type="text" id="notifTplTitle" value="' + escapeHtmlAttr(t.title || '') + '" placeholder="通知标题"></div>'
             + '<div class="form-group"><label>内容 *</label><textarea id="notifTplContent" rows="7" placeholder="通知正文，支持 {studentName} {className} {score} 等变量">' + escapeHtmlAttr(t.content || '') + '</textarea></div>'
             + '<div class="form-group"><label style="display:inline-flex;align-items:center;gap:6px;font-weight:500"><input type="checkbox" id="notifTplEnabled" style="width:auto" ' + (enabled ? 'checked' : '') + '> 启用该模板（关闭后发送通知时不可选用）</label></div>'

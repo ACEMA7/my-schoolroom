@@ -1867,6 +1867,15 @@
         DB.leaveRecords.push(newRec);
         // V3 按行存储：新退宿/停宿记录标记脏
         v3MarkDirty('leave_record', newRec.id);
+        // 登记待审核记录时，通知管理员进行审核
+        if(status === 'pending'){
+            var adminUsers = (DB.users || []).filter(function(u){ return u && u.role === 'ADMIN'; });
+            var reviewTitle = '📝 新的' + (type === 'leave' ? '退宿' : '停宿') + '申请待审核';
+            var reviewContent = (currentUser.realName || currentUser.username) + ' 提交了 ' + className + ' ' + name + ' 的' + (type === 'leave' ? '退宿' : '停宿') + '申请，请及时审核。';
+            adminUsers.forEach(function(admin){
+                addNotification(admin.id, 'approval', reviewTitle, reviewContent, newRec.id);
+            });
+        }
         saveDB();
         try { refreshTodaySummariesIfNeeded(); } catch(e) { console.warn('[晚检总结自动刷新失败]', e); }
         toast(status==='pending'?'登记成功，待管理员审核':'登记成功！');
@@ -2607,6 +2616,13 @@
      */
     function openNotifTemplateModal(templateId){
         if(!isAdmin()){ toast('无权限','error'); return; }
+        // 新增模式：templateId 为 null/空时跳过存在性校验，弹层 HTML 由 ui.js 统一拼装
+        if(templateId == null || templateId === ''){
+            notifTemplateEditId = null;
+            document.getElementById('notifTemplateModalBox').innerHTML = buildNotifTemplateModalHtml(null);
+            document.getElementById('notifTemplateModal').classList.add('show');
+            return;
+        }
         // 仅用于存在性校验与记录当前编辑 id；弹层 HTML 由 ui.js 统一拼装
         var t = getNotificationTemplateById(templateId);
         if(!t){ toast('模板不存在','error'); return; }

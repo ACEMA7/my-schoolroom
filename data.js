@@ -358,16 +358,20 @@
      */
     function getClassAdminUserId(className) {
         if (!DB || !Array.isArray(DB.users) || className == null || className === '') return null;
+        var target = String(className).trim();
+        // 1. 精确匹配 className 或 username
         var u = DB.users.find(function(x) {
-            return x && x.role === 'CLASS_ADMIN' && x.className === className;
+            return x && x.role === 'CLASS_ADMIN' && (String(x.className || '').trim() === target || String(x.username || '').trim() === target);
         });
-        if (!u) {
-            // 旧数据兜底：className 缺失时回退比对 username
-            u = DB.users.find(function(x) {
-                return x && x.role === 'CLASS_ADMIN' && !x.className && x.username === className;
-            });
-        }
-        return u ? u.id : null;
+        if (u) return u.id;
+        // 2. 模糊匹配：去除"班"字后比对（兼容 "三1" 与 "三1班" 写法不一致的情况）
+        var cleanTarget = target.replace(/班/g, '');
+        var u2 = DB.users.find(function(x) {
+            if (!x || x.role !== 'CLASS_ADMIN') return false;
+            var xClass = String(x.className || x.username || '').trim().replace(/班/g, '');
+            return xClass === cleanTarget;
+        });
+        return u2 ? u2.id : null;
     }
 
     /**
