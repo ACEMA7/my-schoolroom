@@ -784,7 +784,10 @@
         { id:'approval_absence', title:'✅ 请假申请已通过', content:'你提交的请假申请已通过审核。', enabled:true },
         { id:'reject_leave',     title:'❌ 退宿申请被驳回', content:'你提交的退宿申请未通过审核，请查看详情或重新提交。', enabled:true },
         { id:'reject_stop',      title:'❌ 停宿申请被驳回', content:'你提交的停宿申请未通过审核，请查看详情或重新提交。', enabled:true },
-        { id:'reject_absence',   title:'❌ 请假申请被驳回', content:'你提交的请假申请未通过审核，请查看详情或重新提交。', enabled:true }
+        { id:'reject_absence',   title:'❌ 请假申请被驳回', content:'你提交的请假申请未通过审核，请查看详情或重新提交。', enabled:true },
+        { id:'floor_change_request',  title:'📝 新的楼层调整申请', content:'{staffName} 申请将负责楼层由 {fromFloors} 调整为 {toFloors}，原因：{reason}，请及时审核。', enabled:true },
+        { id:'approval_floor_change', title:'✅ 楼层调整申请已通过', content:'你申请的楼层调整已通过审核，当前负责楼层已更新为 {toFloors}。', enabled:true },
+        { id:'reject_floor_change',   title:'❌ 楼层调整申请被驳回', content:'你申请的楼层调整未通过审核。{reviewRemark}', enabled:true }
     ];
 
     /**
@@ -891,7 +894,8 @@
         // 后续以云端为权威
         var notifications = [];
         var notificationTemplates = DEFAULT_NOTIFICATION_TEMPLATES.map(function(t){ return Object.assign({}, t); });
-        DB = { floors, dormitories, dormitoryList, students, deductionItems, deductionRecords: records, leaveRecords: leaveRecords, absenceRecords: absenceRecords, inspectionConfirmations: inspectionConfirmations, anomalyReports: anomalyReports, dailyInspectionSummaries: dailyInspectionSummaries, notifications: notifications, notificationTemplates: notificationTemplates, users, nextIds: { floor:9, dormitory: dormId, student: stuId, item:300, record: recId, leave:1, absence:1, user: nextUserId, confirmation:1, anomaly:1, summary:1 } };
+        var floorChangeRequests = [];
+        DB = { floors, dormitories, dormitoryList, students, deductionItems, deductionRecords: records, leaveRecords: leaveRecords, absenceRecords: absenceRecords, inspectionConfirmations: inspectionConfirmations, anomalyReports: anomalyReports, dailyInspectionSummaries: dailyInspectionSummaries, notifications: notifications, notificationTemplates: notificationTemplates, floorChangeRequests: floorChangeRequests, users, nextIds: { floor:9, dormitory: dormId, student: stuId, item:300, record: recId, leave:1, absence:1, user: nextUserId, confirmation:1, anomaly:1, summary:1 } };
         saveDBToLocal();
         });
     }
@@ -1015,6 +1019,7 @@
         // 站内通知子系统：旧版本地存档缺少两表时补齐空数组（模板由云端权威数据回填）
         if(!Array.isArray(DB.notifications)) DB.notifications=[];
         if(!Array.isArray(DB.notificationTemplates)) DB.notificationTemplates=[];
+        if(!Array.isArray(DB.floorChangeRequests)) DB.floorChangeRequests=[];
         if(!DB.nextIds) DB.nextIds={};
         if(typeof DB.nextIds.absence!=='number') DB.nextIds.absence=1;
         // dormitoryList：生效宿舍号列表；旧数据缺失时从 dormitories 重建
@@ -1123,7 +1128,7 @@
             if(!Array.isArray(DB[k])){ DB[k] = []; repaired = true; }
         });
         // 5) 站内通知子系统：通知与模板两表缺失时同样补齐空数组（不覆盖已有数据）
-        ['notifications','notificationTemplates'].forEach(function(k){
+        ['notifications','notificationTemplates','floorChangeRequests'].forEach(function(k){
             if(!Array.isArray(DB[k])){ DB[k] = []; repaired = true; }
         });
         // nextIds 同步补齐巡查模块键位
@@ -1634,6 +1639,68 @@
         DB.deductionItems.discipline.push(item);
         v3MarkDirty('deduction_item', item.id);
         return item;
+    }
+
+    // ==================== 楼层调整申请：数据查询 ====================
+    /**
+     * 查询全部楼层调整申请（按 createdAt 倒序，最新在前）。
+     * @returns {Array}
+     */
+    function getFloorChangeRequests(){
+        if(!DB || !Array.isArray(DB.floorChangeRequests)) return [];
+        return DB.floorChangeRequests.slice().sort(function(a,b){
+            return (b.createdAt||0) - (a.createdAt||0);
+        });
+    }
+    /**
+     * 查询指定生活老师的全部申请（按 createdAt 倒序）。
+     * @param {number|string} staffId
+     * @returns {Array}
+     */
+    function getFloorChangeRequestsByStaff(staffId){
+        if(!DB || !Array.isArray(DB.floorChangeRequests)) return [];
+        var sid = String(staffId);
+        return DB.floorChangeRequests.filter(function(r){
+            return r && String(r.staffId) === sid;
+        }).slice().sort(function(a,b){
+            return (b.createdAt||0) - (a.createdAt||0);
+        });
+    }
+    /**
+     * 查询全部待审核申请（按 createdAt 升序，先提交先处理）。
+     * @returns {Array}
+     */
+    function getPendingFloorChangeRequests(){
+        if(!DB || !Array.isArray(DB.floorChangeRequests)) return [];
+        return DB.floorChangeRequests.filter(function(r){
+            return r && r.status === 'pending';
+        }).slice().sort(function(a,b){
+            return (a.createdAt||0) - (b.createdAt||0);
+        });
+    }
+    /**
+     * 查询指定生活老师当前的待审核申请（无则 null）。
+     * @param {number|string} staffId
+     * @returns {object|null}
+     */
+    function getPendingFloorChangeRequestByStaff(staffId){
+        if(!DB || !Array.isArray(DB.floorChangeRequests)) return null;
+        var sid = String(staffId);
+        return DB.floorChangeRequests.find(function(r){
+            return r && String(r.staffId) === sid && r.status === 'pending';
+        }) || null;
+    }
+    /**
+     * 按 ID 查询单条申请（宽松字符串比较）。
+     * @param {string} id
+     * @returns {object|null}
+     */
+    function findFloorChangeRequestById(id){
+        if(!DB || !Array.isArray(DB.floorChangeRequests)) return null;
+        if(id == null) return null;
+        return DB.floorChangeRequests.find(function(r){
+            return r && String(r.id) === String(id);
+        }) || null;
     }
 
 

@@ -411,6 +411,18 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
         .net-floor-chips{display:flex;flex-wrap:wrap;gap:8px;padding:4px 0 6px}
         .net-floor-chips .chip{flex:1 1 0;min-width:0;padding:9px 2px;font-size:0.9286rem}
 
+        /* 楼层调整：楼层选择芯片，两行四个（PC/移动共用） */
+        .floor-change-chips{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
+        .floor-change-chips .chip{padding:11px 2px;font-size:1rem;text-align:center}
+        .floor-change-chips.disabled{opacity:.5;pointer-events:none;user-select:none}
+        /* 楼层调整：历史记录卡片（PC/移动共用） */
+        .fc-history-item{background:#fff;border:1px solid var(--gray-200);border-radius:10px;padding:12px;margin-bottom:10px}
+        .fc-history-item .fc-line1{font-size:0.9286rem;color:var(--gray-600);margin-bottom:4px}
+        .fc-history-item .fc-line2{font-weight:700;font-size:1rem;margin-bottom:4px}
+        .fc-history-item .fc-line3{color:var(--gray-500);font-size:0.8571rem;margin-bottom:6px}
+        .fc-history-item .fc-line4{display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-wrap:wrap}
+        .fc-history-item .fc-reject-remark{color:var(--danger);font-size:0.8571rem;margin-top:4px}
+
         /* 批量导入模态框：Tab 切换条（文本/Excel） */
         .batch-tab-bar{display:flex;gap:4px;border-bottom:1.5px solid var(--gray-200);padding:10px 16px 0;flex-shrink:0}
         .batch-tab{padding:10px 14px;cursor:pointer;font-weight:600;color:var(--gray-500);border-bottom:2px solid transparent;user-select:none;font-size:0.9286rem;white-space:nowrap}
@@ -920,6 +932,7 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
                     <div class="nav-item" data-view="add" id="navAdd" onclick="switchView('add')">📝 扣分登记</div>
                     <div class="nav-item" data-view="stats" id="navStats" onclick="switchView('stats')">📊 统计报表</div>
                     <div class="nav-item" data-view="inspection" id="navInspection" style="display:none" onclick="switchView('inspection')">👀 巡查核实</div>
+                    <div class="nav-item" data-view="floorchange" id="navFloorChange" style="display:none" onclick="switchView('floorchange')">🔄 楼层调整</div>
                     <div class="nav-item" data-view="students" id="navStudents" style="display:none" onclick="switchView('students')">👥 学生名单管理</div>
                     <div class="nav-item" data-view="items" id="navItems" style="display:none" onclick="switchView('items')">📋 扣分项目管理</div>
                     <div class="nav-item" data-view="leavemanage" id="navLeaveManage" style="display:none" onclick="switchView('leavemanage')">🏠 学生管理</div>
@@ -963,6 +976,9 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
         <div class="edit-modal" id="batchUserModalBox" role="dialog" aria-label="批量新增账号"></div>
     </div>
     <div class="modal-overlay" id="notifTemplateModal" onclick="if(event.target===this) closeNotifTemplateModal()"><div class="edit-modal" id="notifTemplateModalBox" role="dialog" aria-label="编辑通知模板"></div></div>
+    <div class="modal-overlay" id="floorChangeRejectModal" onclick="if(event.target===this) closeFloorChangeRejectModal()">
+        <div class="edit-modal" id="floorChangeRejectModalBox" role="dialog" aria-label="驳回申请"></div>
+    </div>
 
     <!-- 业务逻辑模块化拆分：config -> data -> sync -> ui -> app（经典脚本，全局作用域） -->
     <script src="config.js"></script>

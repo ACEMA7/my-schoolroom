@@ -234,6 +234,7 @@
         add:{icon:'📝',label:'登记'},
         stats:{icon:'📊',label:'统计'},
         inspection:{icon:'👀',label:'巡查'},
+        floorchange:{icon:'🔄',label:'楼层'},
         students:{icon:'👥',label:'名单'},
         items:{icon:'📋',label:'项目'},
         leavemanage:{icon:'🏠',label:'学生'},
@@ -320,6 +321,7 @@
             {view:'add',        icon:'📝', name:'扣分登记',     color:'#34c759', roles:['ADMIN','STAFF']},
             {view:'stats',      icon:'📊', name:'统计报表',     color:'#ff9500', roles:['ADMIN','STAFF']},
             {view:'inspection', icon:'👀', name:'巡查核实',     color:'#0ea5e9', roles:['ADMIN','STAFF']},
+            {view:'floorchange', icon:'🔄', name:'楼层调整', color:'#14b8a6', roles:['STAFF']},
             {view:'students',   icon:'👥', name:'学生名单管理',     color:'#ff3b30', roles:['ADMIN']},
             {view:'items',      icon:'📋', name:'扣分项目管理', color:'#a855f7', roles:['ADMIN']},
             {view:'leavemanage',icon:'🏠', name:'学生管理', color:'#0891b2', roles:['ADMIN','STAFF','CLASS_ADMIN']},
@@ -1042,6 +1044,122 @@
             +'</div>'
             +'</div></div>';
         return html;
+    }
+
+    // ==================== 楼层调整视图（仅 STAFF） ====================
+    /**
+     * 渲染「楼层调整」视图（生活老师专属）：
+     *   顶部当前负责楼层卡片；
+     *   申请表单卡片（8 个楼层芯片两行四个 + 原因输入 + 提交按钮）；
+     *   历史申请记录卡片。
+     * 若存在待审核申请，表单整体禁用并显示提示。
+     */
+    function renderFloorChangeView(container){
+        if(!currentUser || currentUser.role !== 'STAFF'){
+            container.innerHTML = '<div class="empty-state">无权限</div>';
+            return;
+        }
+        var raw = currentUser.assignedFloors || [];
+        var myFloorText;
+        if(raw.length === 0){
+            myFloorText = '全部楼层';
+        }else{
+            myFloorText = raw.slice().sort(function(a,b){ return a-b; }).map(function(fid){
+                var f = getFloorById(fid);
+                return f ? f.name : (fid + '楼');
+            }).join('、');
+        }
+        var buildingName = currentUser.buildingName || '未设置楼栋';
+        var pendingReq = getPendingFloorChangeRequestByStaff(currentUser.id);
+        var disabled = !!pendingReq;
+
+        // 8 个楼层芯片，两行四个
+        var floorChips = DB.floors.map(function(f){
+            return '<div class="chip" data-fid="'+f.id+'" onclick="toggleFloorChangeTarget('+f.id+')">'+f.name+'</div>';
+        }).join('');
+
+        // 表单卡片
+        var formHtml = '<div class="card"><div class="card-header">📤 申请调整</div><div class="card-body">'
+            + (disabled
+                ? '<div style="background:#fff7ed;border:1px solid #ff9500;border-radius:8px;padding:10px;margin-bottom:12px;color:#b45309;font-size:0.9286rem">⏳ 你有一条待审核的申请（'
+                  + escapeHtmlAttr((pendingReq.fromFloors||[]).map(function(fid){var f=getFloorById(fid);return f?f.name:fid;}).join('、'))
+                  + ' → '
+                  + escapeHtmlAttr((pendingReq.toFloors||[]).map(function(fid){var f=getFloorById(fid);return f?f.name:fid;}).join('、'))
+                  + '），请等待管理员处理</div>'
+                : '')
+            + '<div class="form-group"><label>调整到楼层（可多选）</label>'
+            + '<div class="floor-change-chips'+(disabled?' disabled':'')+'">'+floorChips+'</div>'
+            + '</div>'
+            + '<div class="form-group"><label>申请原因 *</label>'
+            + '<input type="text" id="floorChangeReason" placeholder="如：两周轮换，5、6楼与1、2楼对调" maxlength="200" '+(disabled?'disabled':'')+'>'
+            + '</div>'
+            + '<button class="btn btn-primary" onclick="submitFloorChangeRequest()" '+(disabled?'disabled style="opacity:.5;cursor:not-allowed"':'')+'>📤 提交申请</button>'
+            + '</div></div>';
+
+        // 历史记录
+        var history = getFloorChangeRequestsByStaff(currentUser.id);
+        var historyHtml = history.length === 0
+            ? '<div class="empty-state" style="padding:18px">暂无申请记录</div>'
+            : history.map(function(r){ return buildFloorChangeHistoryCardHtml(r); }).join('');
+
+        container.innerHTML = '<div class="content-header"><h2>🔄 楼层调整</h2></div>'
+            + '<div class="card"><div class="card-header">📍 当前负责楼层</div><div class="card-body">'
+            + '<b>'+escapeHtmlAttr(buildingName)+'</b> · '+escapeHtmlAttr(myFloorText)
+            + '</div></div>'
+            + formHtml
+            + '<div class="card"><div class="card-header">📋 申请记录 <span class="badge-tag badge-primary">'+history.length+'条</span></div>'
+            + '<div class="card-body" style="padding:2px 14px">'+historyHtml+'</div></div>';
+    }
+
+    /**
+     * 单条楼层调整历史记录卡片 HTML。
+     * @param {object} r - floorChangeRequests 记录
+     * @returns {string}
+     */
+    function buildFloorChangeHistoryCardHtml(r){
+        if(!r) return '';
+        function floorsText(arr){
+            if(!Array.isArray(arr) || arr.length === 0) return '全部楼层';
+            return arr.slice().sort(function(a,b){return a-b;}).map(function(fid){
+                var f = getFloorById(fid);
+                return f ? f.name : (fid + '楼');
+            }).join('、');
+        }
+        var dateStr = formatLocalDate(new Date(r.createdAt||0)) || '-';
+        var timeStr = (function(){
+            var d = new Date(r.createdAt||0);
+            if(isNaN(d.getTime())) return '';
+            function p2(n){ return String(n).padStart(2,'0'); }
+            return p2(d.getHours())+':'+p2(d.getMinutes());
+        })();
+        var statusHtml;
+        if(r.status === 'pending'){
+            statusHtml = '<span class="status-tag status-orange">⏳ 待审核</span>';
+        }else if(r.status === 'approved'){
+            var revTime = (function(){
+                if(!r.reviewedAt) return '';
+                var d = new Date(r.reviewedAt);
+                if(isNaN(d.getTime())) return '';
+                function p2(n){ return String(n).padStart(2,'0'); }
+                return p2(d.getMonth()+1)+'-'+p2(d.getDate())+' '+p2(d.getHours())+':'+p2(d.getMinutes());
+            })();
+            statusHtml = '<span class="status-tag status-green">✅ 已通过</span>'
+                + '<span style="color:var(--gray-500);font-size:0.7857rem">审核人：'+escapeHtmlAttr(r.reviewedByName||'')+(revTime?' · '+revTime:'')+'</span>';
+        }else if(r.status === 'rejected'){
+            statusHtml = '<span class="status-tag status-red">❌ 已驳回</span>';
+        }else{
+            statusHtml = '<span class="status-tag status-gray">'+escapeHtmlAttr(r.status||'-')+'</span>';
+        }
+        var rejectRemark = (r.status === 'rejected' && r.reviewRemark)
+            ? '<div class="fc-reject-remark">驳回原因：'+escapeHtmlAttr(r.reviewRemark)+'</div>'
+            : '';
+        return '<div class="fc-history-item">'
+            + '<div class="fc-line1">🕐 '+dateStr+(timeStr?' '+timeStr:'')+'</div>'
+            + '<div class="fc-line2">'+escapeHtmlAttr(floorsText(r.fromFloors))+' → '+escapeHtmlAttr(floorsText(r.toFloors))+'</div>'
+            + '<div class="fc-line3">原因：'+escapeHtmlAttr(r.reason||'-')+'</div>'
+            + '<div class="fc-line4">'+statusHtml+'</div>'
+            + rejectRemark
+            + '</div>';
     }
 
     // ==================== 统计报表视图 ====================
@@ -2171,9 +2289,10 @@
 
         var isAdminRole = isAdmin();
         var summaryOption = isAdminRole ? '<option value="inspection_summary">巡查核实总结</option>' : '';
+        var floorChangeOption = isAdminRole ? '<option value="floor_change">楼层调整记录</option>' : '';
         var html = '<div class="content-header"><h2>📊 数据管理</h2></div>'
             + '<div class="card"><div class="card-header">筛选导出条件</div><div class="card-body"><div class="filter-section">'
-            + '<div class="form-group"><label>数据类型</label><select id="exportDataType" onchange="onExportDataTypeChange()"><option value="deduction">扣分记录</option><option value="leave">退宿记录</option><option value="stop">停宿记录</option><option value="absence">请假记录</option>'+summaryOption+'</select></div>'
+            + '<div class="form-group"><label>数据类型</label><select id="exportDataType" onchange="onExportDataTypeChange()"><option value="deduction">扣分记录</option><option value="leave">退宿记录</option><option value="stop">停宿记录</option><option value="absence">请假记录</option>'+summaryOption+floorChangeOption+'</select></div>'
             + '<div class="form-group"><label>开始日期</label><input type="text" class="date-picker" id="exportStartDate" value="'+today+'"></div>'
             + '<div class="form-group"><label>结束日期</label><input type="text" class="date-picker" id="exportEndDate" value="'+today+'"></div>'
             + '<div class="form-group"><label>班级</label><select id="exportClass" onchange="onExportClassChange()">'+classOptions+'</select></div>'
@@ -2195,6 +2314,7 @@
                 + '<button class="btn btn-danger" style="margin-left:8px" onclick="deleteAllLeaveRecords()">🗑️ 删除全部退宿记录</button>'
                 + '<button class="btn btn-danger" style="margin-left:8px;margin-top:8px" onclick="deleteAllInspectionSummaries()">🗑️ 删除全部巡查核实总结</button>'
                 + '<button class="btn btn-danger" style="margin-left:8px;margin-top:8px" onclick="deleteAllConfirmationsAndAnomalies()">🗑️ 删除全部确认和异常上报</button>'
+                + '<button class="btn btn-danger" style="margin-left:8px;margin-top:8px" onclick="deleteAllFloorChangeRecords()">🗑️ 删除全部楼层调整记录</button>'
                 + '<p style="color:var(--danger);margin-top:8px;font-size:0.8571rem">此操作将永久删除对应类型的全部记录，不可恢复！</p></div></div>'
                 + '<div class="card"><div class="card-header">☁️ 云端数据重置（新学期/数据清理）</div><div class="card-body">'
                 + '<p style="margin:0 0 8px;color:var(--text-light);font-size:0.9rem">先在本机把数据整理到正确状态（删除不要的学生、导入新名单），再点此按钮：云端将被清空并以本机数据为准重新建立；其它设备点一次同步即统一下载，旧数据不会再同步回来。</p>'
@@ -2289,6 +2409,38 @@
      */
     function buildFloorAssignHtml(){
         if(!isAdmin()) return '<div class="empty-state">无权限</div>';
+        // 待审核申请区（放在卡片顶部）
+        var pendingList = getPendingFloorChangeRequests();
+        var pendingHtml;
+        if(pendingList.length === 0){
+            pendingHtml = '<div style="color:#9ca3af;font-size:0.9286rem;padding:4px 0 8px">暂无待审核申请</div>';
+        }else{
+            pendingHtml = pendingList.map(function(r){
+                function floorsText(arr){
+                    if(!Array.isArray(arr) || arr.length === 0) return '全部楼层';
+                    return arr.slice().sort(function(a,b){return a-b;}).map(function(fid){
+                        var f = getFloorById(fid);
+                        return f ? f.name : (fid + '楼');
+                    }).join('、');
+                }
+                var dateStr = formatLocalDate(new Date(r.createdAt||0)) || '-';
+                var timeStr = (function(){
+                    var d = new Date(r.createdAt||0);
+                    if(isNaN(d.getTime())) return '';
+                    function p2(n){ return String(n).padStart(2,'0'); }
+                    return p2(d.getHours())+':'+p2(d.getMinutes());
+                })();
+                return '<div style="background:#fff7ed;border:1.5px solid #ff9500;border-radius:10px;padding:12px;margin-bottom:10px">'
+                    + '<div style="font-size:0.9286rem;color:var(--gray-600);margin-bottom:4px">🕐 '+dateStr+(timeStr?' '+timeStr:'')+'</div>'
+                    + '<div style="font-weight:700;font-size:1rem;margin-bottom:4px">'+escapeHtmlAttr(r.staffName||r.staffUsername||'')+'（'+escapeHtmlAttr(r.staffUsername||'')+'）</div>'
+                    + '<div style="margin-bottom:4px"><b>'+escapeHtmlAttr(r.buildingName||'-')+'</b>：'+escapeHtmlAttr(floorsText(r.fromFloors))+' → '+escapeHtmlAttr(floorsText(r.toFloors))+'</div>'
+                    + '<div style="color:var(--gray-500);font-size:0.8571rem;margin-bottom:8px">原因：'+escapeHtmlAttr(r.reason||'-')+'</div>'
+                    + '<div style="text-align:right">'
+                    + '<button class="btn btn-success btn-xs" onclick="approveFloorChangeRequest(\''+escapeHtmlAttr(r.id)+'\')">✅ 通过</button> '
+                    + '<button class="btn btn-warning btn-xs" onclick="openFloorChangeRejectModal(\''+escapeHtmlAttr(r.id)+'\')">❌ 驳回</button>'
+                    + '</div></div>';
+            }).join('');
+        }
         var staffList = (DB.users||[]).filter(function(u){ return u.role === 'STAFF'; });
         if(staffList.length === 0) return '<div class="empty-state">暂无生活老师账号</div>';
         if(!floorAssignState.staffId || !staffList.some(function(u){ return String(u.id)===String(floorAssignState.staffId); })){
@@ -2297,9 +2449,16 @@
         var opts = staffList.map(function(u){
             return '<option value="'+u.id+'" '+(String(u.id)===String(floorAssignState.staffId)?'selected':'')+'>'+escapeHtmlAttr(u.username)+'（'+escapeHtmlAttr(u.realName||'')+'）</option>';
         }).join('');
-        var html = '<div class="form-group"><label>选择生活老师</label>'
-            + '<select id="assignStaffSelect" onchange="onAssignStaffChange()">'+opts+'</select></div>';
-        html += buildFloorAssignDetailHtml();
+        var html = '<div style="margin-bottom:16px">'
+            + '<div style="font-weight:700;margin-bottom:8px">⚠️ 待审核申请（'+pendingList.length+' 条）</div>'
+            + pendingHtml
+            + '</div>'
+            + '<div style="border-top:1px dashed var(--gray-200);padding-top:12px">'
+            + '<div style="font-weight:700;margin-bottom:8px">🔧 手动分配</div>'
+            + '<div class="form-group"><label>选择生活老师</label>'
+            + '<select id="assignStaffSelect" onchange="onAssignStaffChange()">'+opts+'</select></div>'
+            + buildFloorAssignDetailHtml()
+            + '</div>';
         return html;
     }
     /**
@@ -2336,17 +2495,22 @@
         var cards=document.getElementById('deductionOnlyCards');
         if(cards) cards.style.display=(type==='deduction'?'':'none');
         var isSummary=(type==='inspection_summary');
+        var isFloorChange=(type==='floor_change');
         var isLeaveOrStop=(type==='leave'||type==='stop');
         var isAbsence=(type==='absence');
-        // 巡查核实总结：只保留日期范围，隐藏班级/学生/宿舍号/床号
+        // 巡查核实总结 / 楼层调整记录：只保留日期范围，隐藏班级/学生/宿舍号/床号
+        var hideAllFilters = isSummary || isFloorChange;
         ['grpExportStudent','grpExportDorm','grpExportBed','grpExportAbsenceName'].forEach(function(id){
             var el=document.getElementById(id);
-            if(el) el.style.display=isSummary?'none':(id==='grpExportStudent'?(type==='deduction'?'':'none'):(id==='grpExportAbsenceName'?(isAbsence?'':'none'):''));
+            if(!el) return;
+            if(hideAllFilters){ el.style.display='none'; return; }
+            if(id==='grpExportStudent') el.style.display=(type==='deduction'?'':'none');
+            else if(id==='grpExportAbsenceName') el.style.display=(isAbsence?'':'none');
         });
-        // 班级筛选：巡查核实总结隐藏
+        // 班级筛选：巡查核实总结 / 楼层调整记录隐藏
         var classGrp=document.getElementById('exportClass');
-        if(classGrp) classGrp.closest('.form-group').style.display=isSummary?'none':'';
-        if(isSummary){
+        if(classGrp && classGrp.closest('.form-group')) classGrp.closest('.form-group').style.display=hideAllFilters?'none':'';
+        if(hideAllFilters){
             var resultArea=document.getElementById('queryResultArea');
             if(resultArea) resultArea.innerHTML='';
             return;
@@ -2548,6 +2712,60 @@
 
         var resultArea = document.getElementById('queryResultArea');
         if (!resultArea) return;
+
+        // ===== 楼层调整记录 =====
+        if(f.dataType === 'floor_change'){
+            if(!isAdmin()){ toast('无权限','error'); return; }
+            var list = getFloorChangeRequests().filter(function(r){
+                var d = formatLocalDate(new Date(r.createdAt||0));
+                return d && d >= f.startDate && d <= f.endDate;
+            });
+            if(list.length === 0){
+                resultArea.innerHTML = '<div class="card"><div class="card-header">查询结果</div><div class="card-body"><div class="empty-state">该日期范围内暂无楼层调整记录</div></div></div>';
+                return;
+            }
+            function fcFloorsText(arr){
+                if(!Array.isArray(arr) || arr.length === 0) return '全部楼层';
+                return arr.slice().sort(function(a,b){return a-b;}).map(function(fid){
+                    var ff = getFloorById(fid);
+                    return ff ? ff.name : (fid + '楼');
+                }).join('、');
+            }
+            function fcStatusText(r){
+                if(r.status === 'pending') return '待审核';
+                if(r.status === 'approved') return '已通过';
+                if(r.status === 'rejected') return '已驳回';
+                return r.status || '-';
+            }
+            function fcRowHtml(r){
+                var d = new Date(r.createdAt||0);
+                var dateStr = isNaN(d.getTime()) ? '-' : (formatLocalDate(d) + ' ' + String(d.getHours()).padStart(2,'0') + ':' + String(d.getMinutes()).padStart(2,'0'));
+                var revDateStr = '-';
+                if(r.reviewedAt){
+                    var rd = new Date(r.reviewedAt);
+                    if(!isNaN(rd.getTime())) revDateStr = formatLocalDate(rd);
+                }
+                return '<tr>'
+                    + '<td data-label="提交时间">'+dateStr+'</td>'
+                    + '<td data-label="发起人">'+escapeHtmlAttr(r.staffName||'')+'（'+escapeHtmlAttr(r.staffUsername||'')+'）</td>'
+                    + '<td data-label="楼栋">'+escapeHtmlAttr(r.buildingName||'-')+'</td>'
+                    + '<td data-label="调整前">'+escapeHtmlAttr(fcFloorsText(r.fromFloors))+'</td>'
+                    + '<td data-label="调整后">'+escapeHtmlAttr(fcFloorsText(r.toFloors))+'</td>'
+                    + '<td data-label="原因">'+escapeHtmlAttr(r.reason||'-')+'</td>'
+                    + '<td data-label="状态">'+fcStatusText(r)+'</td>'
+                    + '<td data-label="审核人">'+escapeHtmlAttr(r.reviewedByName||'-')+(r.reviewedByName?'（'+revDateStr+'）':'')+'</td>'
+                    + '<td data-label="驳回原因">'+escapeHtmlAttr(r.reviewRemark||'-')+'</td>'
+                    + '</tr>';
+            }
+            resultArea.innerHTML = '<div class="card">'
+                + '<div class="card-header">查询结果（楼层调整记录 '+list.length+' 条）</div>'
+                + '<div style="overflow-x:auto;"><table class="mobile-h-table">'
+                + '<thead><tr><th>提交时间</th><th>发起人</th><th>楼栋</th><th>调整前</th><th>调整后</th><th>原因</th><th>状态</th><th>审核人</th><th>驳回原因</th></tr></thead>'
+                + '<tbody id="queryFloorChangeTbody"></tbody>'
+                + '</table></div></div>';
+            renderListInChunks(document.getElementById('queryFloorChangeTbody'), list, fcRowHtml, 50);
+            return;
+        }
 
         // ===== 巡查核实总结 =====
         if(f.dataType==='inspection_summary'){
@@ -2758,6 +2976,50 @@
         var f=getExportFilterValues();
         if(!f.startDate||!f.endDate){toast('请选择日期范围','error');return;}
         if(f.startDate>f.endDate){toast('开始日期不能晚于结束日期','error');return;}
+
+        // ===== 楼层调整记录导出 =====
+        if(f.dataType === 'floor_change'){
+            if(!isAdmin()){ toast('无权限','error'); return; }
+            var list = getFloorChangeRequests().filter(function(r){
+                var d = formatLocalDate(new Date(r.createdAt||0));
+                return d && d >= f.startDate && d <= f.endDate;
+            });
+            if(list.length === 0){ toast('暂无数据','error'); return; }
+            function csvFloorsText(arr){
+                if(!Array.isArray(arr) || arr.length === 0) return '全部楼层';
+                return arr.slice().sort(function(a,b){return a-b;}).map(function(fid){
+                    var ff = getFloorById(fid);
+                    return ff ? ff.name : (fid + '楼');
+                }).join('、');
+            }
+            function csvStatusText(r){
+                if(r.status === 'pending') return '待审核';
+                if(r.status === 'approved') return '已通过';
+                if(r.status === 'rejected') return '已驳回';
+                return r.status || '-';
+            }
+            var csv = '﻿提交时间,发起人,用户名,楼栋,调整前,调整后,原因,状态,审核人,审核时间,驳回原因\n';
+            list.forEach(function(r){
+                var d = new Date(r.createdAt||0);
+                var dateStr = isNaN(d.getTime()) ? '-' : (formatLocalDate(d) + ' ' + String(d.getHours()).padStart(2,'0') + ':' + String(d.getMinutes()).padStart(2,'0'));
+                var revDateStr = '';
+                if(r.reviewedAt){
+                    var rd = new Date(r.reviewedAt);
+                    if(!isNaN(rd.getTime())) revDateStr = formatLocalDate(rd) + ' ' + String(rd.getHours()).padStart(2,'0') + ':' + String(rd.getMinutes()).padStart(2,'0');
+                }
+                csv += dateStr + ',' + escapeHtmlAttr(r.staffName||'') + ',' + escapeHtmlAttr(r.staffUsername||'') + ','
+                    + escapeHtmlAttr(r.buildingName||'') + ',' + escapeHtmlAttr(csvFloorsText(r.fromFloors)) + ','
+                    + escapeHtmlAttr(csvFloorsText(r.toFloors)) + ',' + escapeHtmlAttr((r.reason||'').replace(/,/g,'，')) + ','
+                    + csvStatusText(r) + ',' + escapeHtmlAttr(r.reviewedByName||'') + ',' + revDateStr + ',' + escapeHtmlAttr((r.reviewRemark||'').replace(/,/g,'，')) + '\n';
+            });
+            var blob = new Blob([csv], {type:'text/csv;charset=utf-8;'});
+            var link = document.createElement('a');
+            link.href = URL.createObjectURL(blob);
+            link.download = '楼层调整记录_' + getTodayLocalStr() + '.csv';
+            link.click();
+            toast('导出成功');
+            return;
+        }
 
         // ===== 巡查核实总结导出（仅 ADMIN，每天一个 Sheet） =====
         if(f.dataType==='inspection_summary'){

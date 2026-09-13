@@ -46,6 +46,10 @@
     // ==================== 学生名单检索状态 ====================
     var studentSearch = { className: '', name: '', residence: '' };
 
+    // ==================== 楼层调整申请状态 ====================
+    var floorChangeSelection = [];   // 楼层调整：用户当前勾选的楼层 ID
+    var floorChangeRejectId = null;  // 楼层调整：驳回弹层当前操作的申请 ID
+
 
     // ==================== 登录状态保持 ====================
     /**
@@ -128,7 +132,7 @@
         document.getElementById('roleBadge').textContent = admin ? '👨‍💼 管理人员' : (classAdmin ? '🏫 班主任' : '📝 生活老师');
 
         // 先隐藏所有菜单
-        var menuIds = ['navHierarchy', 'navAdd', 'navStats', 'navInspection', 'navStudents', 'navItems', 'navLeaveManage', 'navExport', 'navNotifications'];
+        var menuIds = ['navHierarchy', 'navAdd', 'navStats', 'navInspection', 'navFloorChange', 'navStudents', 'navItems', 'navLeaveManage', 'navExport', 'navNotifications'];
         menuIds.forEach(function(id) {
             var el = document.getElementById(id);
             if (el) el.style.display = 'none';
@@ -152,6 +156,7 @@
             document.getElementById('navAdd').style.display = 'flex';
             document.getElementById('navStats').style.display = staffMobile ? 'none' : 'flex';
             document.getElementById('navInspection').style.display = 'flex';
+            document.getElementById('navFloorChange').style.display = 'flex';
             document.getElementById('navLeaveManage').style.display = staffMobile ? 'none' : 'flex';
             // 数据管理菜单对 staff 隐藏
             document.getElementById('navExport').style.display = 'none';
@@ -286,10 +291,10 @@
         }
     }
 
-    // ==================== 字体缩放（仅STAFF移动端） ====================
+    // ==================== 字体缩放（全部角色移动端） ====================
     var FONT_SCALE_KEY='dorm_font_scale_staff';
     var FONT_BASE=14; // 基准字号 14px
-    var FONT_MIN=100, FONT_MAX=140, FONT_STEP=5; // 最大140%，再大容易导致移动端布局溢出
+    var FONT_MIN=100, FONT_MAX=160, FONT_STEP=5; // 可调范围 100%~160%，步进 5%
 
     function applyFontScale(scale){
         scale=Math.max(FONT_MIN,Math.min(FONT_MAX,scale));
@@ -316,9 +321,22 @@
         var v=parseInt(localStorage.getItem(FONT_SCALE_KEY));
         return (isNaN(v)||v<FONT_MIN||v>FONT_MAX)?100:v;
     }
+    /**
+     * 加载字体缩放偏好（全部角色在移动端生效）。
+     * 移动端（≤768px）：为 body 加 staff-font-scale 类（显示字体按钮/面板），应用已保存的缩放值；
+     * PC 端（>768px）：移除类并恢复 100%，避免影响 PC 布局。
+     * 注：类名 staff-font-scale 沿用历史命名（现对所有角色生效），不改名以免牵动多处 CSS。
+     */
     function loadFontScaleForStaff(){
-        if(!currentUser||currentUser.role!=='STAFF') return;
-        if(window.innerWidth>768) return;
+        var isMobile = window.innerWidth <= 768;
+        if(!isMobile){
+            // PC 端不启用字体缩放：移类 + 恢复默认
+            document.body.classList.remove('staff-font-scale');
+            applyFontScale(100);
+            var panelPc = document.getElementById('fontScalePanel');
+            if(panelPc) panelPc.classList.remove('show');
+            return;
+        }
         document.body.classList.add('staff-font-scale');
         var scale=getStoredFontScale();
         applyFontScale(scale);
@@ -380,6 +398,7 @@
         else if(currentView==='add') renderAddView(c);
         else if(currentView==='stats') renderStatsView(c);
         else if(currentView==='inspection') renderInspectionView(c);
+        else if(currentView==='floorchange') renderFloorChangeView(c);
         else if(currentView==='students') renderStudentsView(c);
         else if(currentView==='items') renderItemsView(c);
         else if(currentView==='leavemanage') renderLeaveManageView(c);
@@ -425,6 +444,8 @@
             }
             // 端型切换后按当前屏宽重算侧边栏菜单与底栏（移动端生活老师隐藏统计报表/学生管理）
             if (currentUser) updateHeaderForUser(currentUser);
+            // 端型切换后重新应用/清除字体缩放（PC 切移动启用，移动切 PC 恢复默认）
+            if (currentUser) loadFontScaleForStaff();
             renderTree();
             updateNavActive(currentView);
             renderView();
@@ -3500,6 +3521,216 @@
         toast('分工已保存：'+u.username+' → '+(floors.length?floors.slice().sort(function(a,b){return a-b;}).join('、')+'楼':'全部楼层'));
         var box=document.getElementById('floorAssignBody');
         if(box) box.innerHTML=buildFloorAssignHtml();
+    }
+
+    // ==================== 楼层调整申请：业务逻辑 ====================
+    /**
+     * 生活老师点击楼层芯片：切换选中态。
+     * @param {number} fid - 楼层 ID
+     */
+    function toggleFloorChangeTarget(fid){
+        var idx = floorChangeSelection.indexOf(fid);
+        if(idx === -1) floorChangeSelection.push(fid);
+        else floorChangeSelection.splice(idx, 1);
+        document.querySelectorAll('.floor-change-chips .chip').forEach(function(el){
+            var elFid = parseInt(el.getAttribute('data-fid'), 10);
+            if(floorChangeSelection.indexOf(elFid) !== -1) el.classList.add('active');
+            else el.classList.remove('active');
+        });
+    }
+    /**
+     * 生活老师提交楼层调整申请：
+     *   校验权限/选中/原因/是否已有 pending；
+     *   生成记录并标脏，通知所有管理员，落库并重绘。
+     */
+    function submitFloorChangeRequest(){
+        if(!currentUser || currentUser.role !== 'STAFF'){ toast('无权限','error'); return; }
+        if(floorChangeSelection.length === 0){ toast('请至少选择一个楼层','error'); return; }
+        var reasonEl = document.getElementById('floorChangeReason');
+        var reason = reasonEl ? String(reasonEl.value||'').trim() : '';
+        if(!reason){ toast('请填写申请原因','error'); return; }
+        var existing = getPendingFloorChangeRequestByStaff(currentUser.id);
+        if(existing){ toast('你有一条待审核的申请，请等待管理员处理','error'); return; }
+        var fromFloors = (currentUser.assignedFloors || []).slice();
+        var toFloors = floorChangeSelection.slice();
+        var now = Date.now();
+        var rec = {
+            id: generateRecordId(),
+            staffId: currentUser.id,
+            staffUsername: currentUser.username,
+            staffName: currentUser.realName || currentUser.username,
+            buildingName: currentUser.buildingName || '',
+            fromFloors: fromFloors,
+            toFloors: toFloors,
+            reason: reason,
+            status: 'pending',
+            createdAt: now,
+            reviewedBy: null,
+            reviewedByName: '',
+            reviewedAt: null,
+            reviewRemark: '',
+            applied: false,
+            lastModified: now,
+            localNew: true
+        };
+        if(!Array.isArray(DB.floorChangeRequests)) DB.floorChangeRequests = [];
+        DB.floorChangeRequests.push(rec);
+        v3MarkDirty('floor_change_request', rec.id);
+        // 通知所有管理员
+        function floorsText(arr){
+            if(!Array.isArray(arr) || arr.length === 0) return '全部楼层';
+            return arr.slice().sort(function(a,b){return a-b;}).map(function(fid){
+                var f = getFloorById(fid);
+                return f ? (f.sortOrder + '楼') : (fid + '楼');
+            }).join('、');
+        }
+        var vars = {
+            staffName: rec.staffName,
+            fromFloors: floorsText(rec.fromFloors),
+            toFloors: floorsText(rec.toFloors),
+            reason: reason
+        };
+        var tpl = getNotificationTemplateById('floor_change_request');
+        var title = tpl ? renderNotificationTemplate({content: tpl.title||''}, vars) : '📝 新的楼层调整申请';
+        var content = tpl ? renderNotificationTemplate(tpl, vars)
+            : (rec.staffName + ' 申请将负责楼层由 ' + vars.fromFloors + ' 调整为 ' + vars.toFloors + '，原因：' + reason + '，请及时审核。');
+        var adminUsers = (DB.users||[]).filter(function(u){ return u && u.role === 'ADMIN'; });
+        adminUsers.forEach(function(admin){
+            addNotification(admin.id, 'approval', title, content, rec.id);
+        });
+        saveDB();
+        floorChangeSelection = [];
+        toast('申请已提交，等待管理员审核');
+        renderView();
+    }
+
+    /**
+     * 管理员审核通过楼层调整申请：
+     *   校验权限/状态；
+     *   立即覆盖被申请老师的 assignedFloors，标记 user 脏；
+     *   更新申请记录为 approved（applied=true）并标脏；
+     *   通知发起人；局部刷新楼层分配管理卡片。
+     * @param {string} id - 申请记录 ID
+     */
+    function approveFloorChangeRequest(id){
+        if(!isAdmin()){ toast('无权限','error'); return; }
+        var r = findFloorChangeRequestById(id);
+        if(!r){ toast('申请不存在','error'); return; }
+        if(r.status !== 'pending'){ toast('该申请已处理','error'); return; }
+        if(r.applied){ toast('该申请已应用，请勿重复操作','error'); return; }
+        var u = DB.users.find(function(x){ return String(x.id) === String(r.staffId); });
+        if(!u){ toast('申请人账号不存在','error'); return; }
+        // 立即生效：完全覆盖 assignedFloors
+        u.assignedFloors = Array.isArray(r.toFloors) ? r.toFloors.slice() : [];
+        u.lastModified = Date.now();
+        v3MarkDirty('user', u.id);
+        // 更新申请记录
+        r.status = 'approved';
+        r.reviewedBy = currentUser.id;
+        r.reviewedByName = currentUser.realName || currentUser.username;
+        r.reviewedAt = Date.now();
+        r.applied = true;
+        r.lastModified = Date.now();
+        v3MarkDirty('floor_change_request', r.id);
+        saveDB();
+        // 通知发起人
+        function floorsText(arr){
+            if(!Array.isArray(arr) || arr.length === 0) return '全部楼层';
+            return arr.slice().sort(function(a,b){return a-b;}).map(function(fid){
+                var f = getFloorById(fid);
+                return f ? (f.sortOrder + '楼') : (fid + '楼');
+            }).join('、');
+        }
+        var vars = { toFloors: floorsText(r.toFloors), staffName: r.staffName };
+        var tpl = getNotificationTemplateById('approval_floor_change');
+        var title = tpl ? renderNotificationTemplate({content: tpl.title||''}, vars) : '✅ 楼层调整申请已通过';
+        var content = tpl ? renderNotificationTemplate(tpl, vars)
+            : ('你申请的楼层调整已通过审核，当前负责楼层已更新为 ' + vars.toFloors + '。');
+        addNotification(r.staffId, 'approval', title, content, r.id);
+        toast('已通过，'+ (r.staffName||'该老师') +' 的负责楼层已更新');
+        var box = document.getElementById('floorAssignBody');
+        if(box) box.innerHTML = buildFloorAssignHtml();
+    }
+
+    /**
+     * 管理员打开驳回弹层。
+     * @param {string} id - 申请记录 ID
+     */
+    function openFloorChangeRejectModal(id){
+        if(!isAdmin()){ toast('无权限','error'); return; }
+        var r = findFloorChangeRequestById(id);
+        if(!r){ toast('申请不存在','error'); return; }
+        if(r.status !== 'pending'){ toast('该申请已处理','error'); return; }
+        floorChangeRejectId = id;
+        var html = '<div class="em-header"><span>❌ 驳回申请</span><button class="em-close" aria-label="关闭" onclick="closeFloorChangeRejectModal()">✕</button></div>'
+            + '<div class="em-body">'
+            + '<div class="form-group"><label>驳回原因（可选）</label>'
+            + '<input type="text" id="floorChangeRejectRemark" placeholder="如：与另一位老师冲突" maxlength="200">'
+            + '</div></div>'
+            + '<div class="em-footer">'
+            + '<button class="btn btn-danger" onclick="confirmFloorChangeReject()">确认驳回</button>'
+            + '<button class="btn btn-outline" onclick="closeFloorChangeRejectModal()">取消</button>'
+            + '</div>';
+        document.getElementById('floorChangeRejectModalBox').innerHTML = html;
+        document.getElementById('floorChangeRejectModal').classList.add('show');
+    }
+
+    /** 关闭驳回弹层 */
+    function closeFloorChangeRejectModal(){
+        var m = document.getElementById('floorChangeRejectModal');
+        if(m) m.classList.remove('show');
+        floorChangeRejectId = null;
+    }
+
+    /**
+     * 确认驳回：更新状态、通知发起人、局部刷新卡片。
+     */
+    function confirmFloorChangeReject(){
+        if(!isAdmin()){ toast('无权限','error'); closeFloorChangeRejectModal(); return; }
+        if(floorChangeRejectId == null){ closeFloorChangeRejectModal(); return; }
+        var r = findFloorChangeRequestById(floorChangeRejectId);
+        if(!r){ toast('申请不存在','error'); closeFloorChangeRejectModal(); return; }
+        if(r.status !== 'pending'){ toast('该申请已处理','error'); closeFloorChangeRejectModal(); return; }
+        var remarkEl = document.getElementById('floorChangeRejectRemark');
+        var remark = remarkEl ? String(remarkEl.value||'').trim() : '';
+        r.status = 'rejected';
+        r.reviewedBy = currentUser.id;
+        r.reviewedByName = currentUser.realName || currentUser.username;
+        r.reviewedAt = Date.now();
+        r.reviewRemark = remark;
+        r.lastModified = Date.now();
+        v3MarkDirty('floor_change_request', r.id);
+        saveDB();
+        // 通知发起人（reviewRemark 有原因时传"驳回原因：xxx"，无则传空串）
+        var vars = {
+            staffName: r.staffName,
+            reviewRemark: remark ? ('驳回原因：' + remark) : ''
+        };
+        var tpl = getNotificationTemplateById('reject_floor_change');
+        var title = tpl ? renderNotificationTemplate({content: tpl.title||''}, vars) : '❌ 楼层调整申请被驳回';
+        var content = tpl ? renderNotificationTemplate(tpl, vars)
+            : ('你申请的楼层调整未通过审核。' + vars.reviewRemark);
+        addNotification(r.staffId, 'approval', title, content, r.id);
+        toast('已驳回');
+        closeFloorChangeRejectModal();
+        var box = document.getElementById('floorAssignBody');
+        if(box) box.innerHTML = buildFloorAssignHtml();
+    }
+
+    /**
+     * 管理员清空全部楼层调整记录（危险操作，双重确认）。
+     *   逐条打 V3 墓碑后清空数组，落库后局部刷新。
+     */
+    function deleteAllFloorChangeRecords(){
+        if(!isAdmin()){ toast('无权限','error'); return; }
+        if(!confirm('确认删除全部楼层调整记录吗？此操作不可恢复！')) return;
+        (DB.floorChangeRequests||[]).forEach(function(r){
+            if(r && r.id != null) v3MarkDeleted('floor_change_request', r.id);
+        });
+        DB.floorChangeRequests = [];
+        saveDB();
+        toast('已删除全部楼层调整记录');
+        if(currentView === 'export') renderExportView(document.getElementById('contentArea'));
     }
 
     // ==================== 初始化 ====================
