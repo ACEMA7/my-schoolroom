@@ -633,7 +633,7 @@
                 var total=calcCheckboxTotal(cls, base, isBonus);
                 var el=document.getElementById(scoreId);
                 if(el){
-                    el.value=total;
+                    el.value=formatScoreText(total, isBonus ? 'bonus' : 'deduct');
                 } else {
                     console.warn('[扣分登记] 合计输入框不存在，无法更新分数：', scoreId);
                 }
