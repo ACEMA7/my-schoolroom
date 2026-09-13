@@ -3525,6 +3525,61 @@
 
     // ==================== 楼层调整申请：业务逻辑 ====================
     /**
+     * 楼层调整：把楼层 ID 数组转为中文短名串。
+     * 连接规则：1 个直接返回；2 个用"和"；3 个及以上"顿号…+ 和最后一个"。
+     * 空数组返回"全部楼层"。
+     * @param {number[]} arr - 楼层 ID 数组
+     * @returns {string} 如 "1楼" / "1楼和2楼" / "1楼、2楼和3楼"
+     */
+    function fcFloorsTextShort(arr){
+        if(!Array.isArray(arr) || arr.length === 0) return '全部楼层';
+        var names = arr.slice().sort(function(a,b){ return a-b; }).map(function(fid){
+            var f = getFloorById(fid);
+            return f ? (f.sortOrder + '楼') : (fid + '楼');
+        });
+        if(names.length === 1) return names[0];
+        if(names.length === 2) return names[0] + '和' + names[1];
+        return names.slice(0, -1).join('、') + '和' + names[names.length - 1];
+    }
+
+    /**
+     * 楼层调整：根据当前勾选状态自动填充"申请原因"输入框。
+     * 规则：
+     *   - 目标为空 → 清空输入框，隐藏提示；
+     *   - 目标 = 当前负责楼层 → 清空输入框，显示红字提示；
+     *   - 其他 → 填充 "两周轮换，由【from】调整到【to】"，隐藏提示。
+     * 每次调用都覆盖输入框内容（含用户手动修改的内容），符合"减少老人输入"的初衷。
+     */
+    function autoFillFloorChangeReason(){
+        var input = document.getElementById('floorChangeReason');
+        var hint = document.getElementById('floorChangeReasonHint');
+        if(!input) return;
+        // 表单禁用（有待审核申请）时不做任何自动填充
+        if(input.disabled){ if(hint) hint.style.display = 'none'; return; }
+        var fromFloors = (currentUser && Array.isArray(currentUser.assignedFloors)) ? currentUser.assignedFloors.slice() : [];
+        var toFloors = Array.isArray(floorChangeSelection) ? floorChangeSelection.slice() : [];
+        // 目标为空：清空并隐藏提示
+        if(toFloors.length === 0){
+            input.value = '';
+            if(hint) hint.style.display = 'none';
+            return;
+        }
+        // 目标 = 当前负责楼层：清空 + 显示红字提示
+        var sortedFrom = fromFloors.slice().sort(function(a,b){ return a-b; });
+        var sortedTo = toFloors.slice().sort(function(a,b){ return a-b; });
+        var sameSet = (sortedFrom.length === sortedTo.length)
+            && sortedFrom.every(function(fid, i){ return fid === sortedTo[i]; });
+        if(sameSet){
+            input.value = '';
+            if(hint) hint.style.display = '';
+            return;
+        }
+        // 正常情况：填充自动文案
+        input.value = '两周轮换，由' + fcFloorsTextShort(fromFloors) + '调整到' + fcFloorsTextShort(toFloors);
+        if(hint) hint.style.display = 'none';
+    }
+
+    /**
      * 生活老师点击楼层芯片：切换选中态。
      * @param {number} fid - 楼层 ID
      */
@@ -3537,6 +3592,8 @@
             if(floorChangeSelection.indexOf(elFid) !== -1) el.classList.add('active');
             else el.classList.remove('active');
         });
+        // 根据最新勾选状态刷新申请原因
+        autoFillFloorChangeReason();
     }
     /**
      * 生活老师提交楼层调整申请：
@@ -3549,6 +3606,14 @@
         var reasonEl = document.getElementById('floorChangeReason');
         var reason = reasonEl ? String(reasonEl.value||'').trim() : '';
         if(!reason){ toast('请填写申请原因','error'); return; }
+        // 双重保险：目标楼层与当前负责楼层完全相同，拦截提交
+        var fromSet = (currentUser.assignedFloors || []).slice().sort(function(a,b){ return a-b; });
+        var toSet = floorChangeSelection.slice().sort(function(a,b){ return a-b; });
+        var sameSet = (fromSet.length === toSet.length) && fromSet.every(function(fid, i){ return fid === toSet[i]; });
+        if(sameSet){
+            toast('当前选择的楼层与负责楼层相同，无需提交','error');
+            return;
+        }
         var existing = getPendingFloorChangeRequestByStaff(currentUser.id);
         if(existing){ toast('你有一条待审核的申请，请等待管理员处理','error'); return; }
         var fromFloors = (currentUser.assignedFloors || []).slice();

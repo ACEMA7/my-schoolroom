@@ -1091,7 +1091,8 @@
             + '<div class="floor-change-chips'+(disabled?' disabled':'')+'">'+floorChips+'</div>'
             + '</div>'
             + '<div class="form-group"><label>申请原因 *</label>'
-            + '<input type="text" id="floorChangeReason" placeholder="如：两周轮换，5、6楼与1、2楼对调" maxlength="200" '+(disabled?'disabled':'')+'>'
+            + '<input type="text" id="floorChangeReason" placeholder="勾选楼层后自动填写，也可手动修改" maxlength="200" '+(disabled?'disabled':'')+'>'
+            + '<div id="floorChangeReasonHint" style="display:none;color:var(--danger);font-size:0.8571rem;margin-top:4px">⚠️ 当前选择的楼层与负责楼层相同，无需调整</div>'
             + '</div>'
             + '<button class="btn btn-primary" onclick="submitFloorChangeRequest()" '+(disabled?'disabled style="opacity:.5;cursor:not-allowed"':'')+'>📤 提交申请</button>'
             + '</div></div>';
