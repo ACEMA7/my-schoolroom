@@ -880,6 +880,7 @@
             +'</div>';
 
         // —— 按楼层→宿舍分组 ——
+        var isMobileLayout = window.innerWidth <= 768;
         var floorMap={};
         function roomBucket(fid, room){
             if(!floorMap[fid]) floorMap[fid]={ floor:getFloorById(fid), rooms:{} };
@@ -918,24 +919,49 @@
                 bucket.items.forEach(function(it){
                     var conf=getInspectionConfirmation(it.recordType, it.recordId, date);
                     var timeRange=it.startDate&&it.endDate ? (it.startDate===it.endDate?it.startDate:it.startDate+' ~ '+it.endDate) : '';
-                    html+='<div style="display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--gray-100)">'
-                        +'<div style="flex:1 1 auto;min-width:0"><b>'+escapeHtmlAttr(it.name||'')+'</b> <span class="'+inspectionTagCls(it.recordType)+'">'+(INSPECTION_TYPE_LABELS[it.recordType]||'')+'</span>'
-                        +'<div style="color:var(--gray-500);font-size:0.8571rem;margin-top:2px">'+escapeHtmlAttr(it.className||'-')+' · 床号'+escapeHtmlAttr(it.bed||'-')+(timeRange?' · '+timeRange:'')+'</div></div>'
-                        +'<div style="flex-shrink:0;margin-left:auto;text-align:right">'
-                        +(conf
-                            ? '<span class="status-tag status-green">✅ 已确认（'+escapeHtmlAttr(conf.confirmedByName||'')+(formatConfirmedTime(conf.confirmedAt)?' · '+formatConfirmedTime(conf.confirmedAt):'')+'）</span>'
-                            : (isToday
-                                ? '<button class="btn btn-danger btn-xs" onclick="confirmInspection(\''+it.recordType+'\',\''+String(it.recordId).replace(/'/g,'')+'\')">✅ 确认属实</button>'
-                                : '<span class="status-tag" style="background:var(--gray-100);color:var(--gray-500)">⏳ 待确认</span>'))
-                        +'</div></div>';
+                    var inspNameLine = '<b>'+escapeHtmlAttr(it.name||'')+'</b> <span class="'+inspectionTagCls(it.recordType)+'">'+(INSPECTION_TYPE_LABELS[it.recordType]||'')+'</span>';
+                    var inspInfoLine = escapeHtmlAttr(it.className||'-')+' · 床号'+escapeHtmlAttr(it.bed||'-')+(timeRange?' · '+timeRange:'');
+                    var inspActionHtml = conf
+                        ? '<span class="status-tag status-green">✅ 已确认（'+escapeHtmlAttr(conf.confirmedByName||'')+(formatConfirmedTime(conf.confirmedAt)?' · '+formatConfirmedTime(conf.confirmedAt):'')+'）</span>'
+                        : (isToday
+                            ? '<button class="btn btn-danger btn-xs" onclick="confirmInspection(\''+it.recordType+'\',\''+String(it.recordId).replace(/'/g,'')+'\')">✅ 确认属实</button>'
+                            : '<span class="status-tag" style="background:var(--gray-100);color:var(--gray-500)">⏳ 待确认</span>');
+                    if(isMobileLayout){
+                        // 移动端三行式：姓名+标签 / 班级·床号·日期 / 按钮或状态标签靠右
+                        html+='<div style="padding:8px 0">'
+                            +'<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:3px">'+inspNameLine+'</div>'
+                            +'<div style="color:var(--gray-500);font-size:0.8571rem;margin-bottom:4px">'+inspInfoLine+'</div>'
+                            +'<div style="text-align:right">'+inspActionHtml+'</div>'
+                            +'</div>';
+                    }else{
+                        // PC 端保持原两栏布局
+                        html+='<div style="display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--gray-100)">'
+                            +'<div style="flex:1 1 auto;min-width:0">'+inspNameLine
+                            +'<div style="color:var(--gray-500);font-size:0.8571rem;margin-top:2px">'+inspInfoLine+'</div></div>'
+                            +'<div style="flex-shrink:0;margin-left:auto;text-align:right">'+inspActionHtml
+                            +'</div></div>';
+                    }
                 });
                 bucket.anomalies.forEach(function(a){
                     // 无假条但该生当天已有覆盖当晚的请假记录 → 展示层标注"已补请假"（数据不改动）
                     var corrected = a.anomalyType==='no_note' && _studentHasAbsenceOnDate(a, date);
-                    html+='<div style="display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--gray-100)">'
-                        +'<div style="flex:1 1 auto;min-width:0"><b>'+escapeHtmlAttr(a.studentName||'')+'</b> <span class="'+inspectionTagCls(a.anomalyType)+'">'+(a.anomalyType==='picked_up'?'家长接走':'无假条')+'</span>'+(corrected?'<span class="badge-tag badge-warning" style="margin-left:4px">⚠️ 已补请假</span>':'')
-                        +'<div style="color:var(--gray-500);font-size:0.8571rem;margin-top:2px">'+escapeHtmlAttr(a.className||'-')+' · 床号'+escapeHtmlAttr(a.bed||'-')+' · 上报人：'+escapeHtmlAttr(a.reportedByName||'-')+(a.note?' · '+escapeHtmlAttr(a.note):'')+'</div></div>'
-                        +'</div>';
+                    var anoNameLine = '<b>'+escapeHtmlAttr(a.studentName||'')+'</b> <span class="'+inspectionTagCls(a.anomalyType)+'">'+(a.anomalyType==='picked_up'?'家长接走':'无假条')+'</span>'+(corrected?'<span class="badge-tag badge-warning" style="margin-left:4px">⚠️ 已补请假</span>':'');
+                    var anoInfoLine = escapeHtmlAttr(a.className||'-')+' · 床号'+escapeHtmlAttr(a.bed||'-')+' · 上报人：'+escapeHtmlAttr(a.reportedByName||'-');
+                    var anoNoteLine = a.note ? escapeHtmlAttr(a.note) : '';
+                    if(isMobileLayout){
+                        // 移动端三行式：姓名+标签 / 班级·床号·上报人 / 备注（有则显示）
+                        html+='<div style="padding:8px 0">'
+                            +'<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:3px">'+anoNameLine+'</div>'
+                            +'<div style="color:var(--gray-500);font-size:0.8571rem">'+anoInfoLine+'</div>'
+                            +(anoNoteLine?'<div style="color:var(--gray-500);font-size:0.8571rem;margin-top:3px">'+anoNoteLine+'</div>':'')
+                            +'</div>';
+                    }else{
+                        // PC 端保持原两栏布局（备注追加在信息行末尾）
+                        html+='<div style="display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--gray-100)">'
+                            +'<div style="flex:1 1 auto;min-width:0">'+anoNameLine
+                            +'<div style="color:var(--gray-500);font-size:0.8571rem;margin-top:2px">'+anoInfoLine+(a.note?' · '+escapeHtmlAttr(a.note):'')+'</div></div>'
+                            +'</div>';
+                    }
                 });
                 html+='</div></div>';
             });
