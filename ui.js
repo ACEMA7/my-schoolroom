@@ -357,11 +357,11 @@
             }
             var total=getTotalScore(filterRecordsByClass(getRecordsByFloor(f.id)));
             var isOpen = (f.id === selectedFloorId);
-            html+='<div class="tree-floor"><div class="tree-floor-header" onclick="toggleFloor('+f.id+',\''+p+'\')"><span id="'+p+'arrow-'+f.id+'">'+(isOpen?'▼':'▶')+'</span>📁 '+f.name+' <span class="badge-tag badge-danger">'+total+'分</span></div><div class="tree-rooms'+(isOpen?' open':'')+'" id="'+p+'rooms-'+f.id+'">';
+            html+='<div class="tree-floor"><div class="tree-floor-header" onclick="toggleFloor('+f.id+',\''+p+'\')"><span id="'+p+'arrow-'+f.id+'">'+(isOpen?'▼':'▶')+'</span>📁 '+f.name+' <span class="badge-tag badge-danger">'+formatScoreText(total,'deduct')+'分</span></div><div class="tree-rooms'+(isOpen?' open':'')+'" id="'+p+'rooms-'+f.id+'">';
             rooms.forEach(function(r){
                 var score=getTotalScore(filterRecordsByClass(getRecordsByDormitory(r.id)));
                 var isActive = (r.id === selectedDormitoryId);
-                html+='<div class="tree-room'+(isActive?' active':'')+'" id="'+p+'tree-room-'+r.id+'" onclick="selectDormitory('+r.id+')">🚪 '+r.roomNumber+' <span class="badge-tag '+(score>10?'badge-danger':score>3?'badge-warning':'badge-primary')+'">'+score+'分</span></div>';
+                html+='<div class="tree-room'+(isActive?' active':'')+'" id="'+p+'tree-room-'+r.id+'" onclick="selectDormitory('+r.id+')">🚪 '+r.roomNumber+' <span class="badge-tag '+(score>10?'badge-danger':score>3?'badge-warning':'badge-primary')+'">'+formatScoreText(score,'deduct')+'分</span></div>';
             });
             html+='</div></div>';
         });
@@ -482,24 +482,26 @@
         var studentHtml=students.map(function(s){
             var sr=records.filter(function(r){return r.studentId===s.id;});
             var ss=getNetScore(sr);
+            var ssCls = ss>0 ? 'score-deduct' : (ss<0 ? 'score-bonus' : 'score-zero');
             var st=getStudentStatus(s.id);
             var ops = '';
             if(isAdmin()){
                 ops = '<td data-label="操作"><button class="btn btn-outline btn-xs" onclick="openTransferModal('+s.id+')">调宿</button> <button class="btn btn-danger btn-xs" onclick="moveOutStudent('+s.id+')">迁出</button></td>';
             }
-            return '<tr><td data-label="姓名"><b>'+s.name+'</b></td><td data-label="班级">'+(s.className||'-')+'</td><td data-label="床号">'+(s.bedNumber||'-')+'</td><td data-label="状态"><span class="status-tag '+st.cls+'">'+st.label+'</span></td><td data-label="个人净分" class="'+(ss>0?'highlight-red':'')+'">'+ss+'</td>'+ops+'</tr>';
+            return '<tr><td data-label="姓名"><b>'+s.name+'</b></td><td data-label="班级">'+(s.className||'-')+'</td><td data-label="床号">'+(s.bedNumber||'-')+'</td><td data-label="状态"><span class="status-tag '+st.cls+'">'+st.label+'</span></td><td data-label="个人净分" class="'+ssCls+'">'+formatScoreText(ss,'net')+'</td>'+ops+'</tr>';
         }).join('')||'<tr><td colspan="5" style="text-align:center;color:#aaa">该宿舍暂无成员</td></tr>';
         // 移动端成员单行紧凑列表：姓名 + 彩色圆点状态（圆点与文字同色）+ 班级·床号，右侧个人扣分（0分绿色/有分红色）
         var memberCardHtml=students.map(function(s){
             var sr=records.filter(function(r){return r.studentId===s.id;});
             var ss=getNetScore(sr);
+            var ssCls = ss>0 ? 'score-deduct' : (ss<0 ? 'score-bonus' : 'score-zero');
             var st=getStudentStatus(s.id);
             var dotColor=statusColorMap[st.label]||'#9ca3af';
             var memOps = '';
             if(isAdmin()){
                 memOps = '<span class="mem-ops"><button class="btn btn-outline btn-xs" style="padding:2px 6px;font-size:0.7857rem" onclick="openTransferModal('+s.id+')">调宿</button><button class="btn btn-danger btn-xs" style="padding:2px 6px;font-size:0.7857rem" onclick="moveOutStudent('+s.id+')">迁出</button></span>';
             }
-            return '<div class="mem-row"><span class="mem-name">'+s.name+'</span><span class="mem-status" style="color:'+dotColor+'"><span class="mem-dot" style="background:'+dotColor+'"></span>'+st.label+'</span><span class="mem-sub">'+(s.className||'-')+'·床号'+(s.bedNumber||'-')+'</span><span class="mem-score'+(ss>0?' has':'')+'">'+ss+'分</span>'+memOps+'</div>';
+            return '<div class="mem-row"><span class="mem-name">'+s.name+'</span><span class="mem-status" style="color:'+dotColor+'"><span class="mem-dot" style="background:'+dotColor+'"></span>'+st.label+'</span><span class="mem-sub">'+(s.className||'-')+'·床号'+(s.bedNumber||'-')+'</span><span class="mem-score '+ssCls+'">'+formatScoreText(ss,'net')+'分</span>'+memOps+'</div>';
         }).join('')||'<div class="empty-state" style="padding:18px">该宿舍暂无成员</div>';
         // 按日期倒序排列：当天记录显示在最顶部（同日内较新记录优先；兼容字符串ID与旧数字ID）
         var sortedRecords=records.slice().sort(function(a,b){
@@ -518,14 +520,12 @@
             var nameGetter = isBonusRec ? getBonusItemNameByIdOrCustom : getItemNameByIdOrCustom;
             var hyNames=(r.hygieneItemIds||[]).map(nameGetter).filter(Boolean).join('、');
             var disNames=(r.disciplineItemIds||[]).map(nameGetter).filter(Boolean).join('、');
-            var scorePrefix = isBonusRec ? '+' : '-';
-            var scoreColor = isBonusRec ? '#34c759' : '#ff3b30';
             var modeTag = isBonusRec ? '<span class="badge-tag badge-primary" style="margin-right:4px">加分</span>' : '';
             // 操作列：管理员可删除，生活老师（STAFF）可修改，其他角色无操作（ID为字符串需加引号传参）
             var actionHtml='<td data-label="操作">-</td>';
             if(isAdmin()) actionHtml='<td data-label="操作"><button class="btn btn-danger btn-xs" onclick="deleteRecord(\''+r.id+'\')">删除</button></td>';
             else if(staffMode) actionHtml='<td data-label="操作"><button class="btn btn-primary btn-xs" onclick="editRecord(\''+r.id+'\')">修改</button></td>';
-            return '<tr>'+actionHtml+'<td data-label="日期">'+r.recordDate+'</td><td data-label="对象">'+modeTag+(student?student.name:'宿舍集体')+'</td><td data-label="卫生项目">'+(hyNames||'-')+'</td><td data-label="卫生分值" style="color:'+scoreColor+'">'+scorePrefix+(r.hygieneScore||0)+'</td><td data-label="纪律项目">'+(disNames||'-')+'</td><td data-label="纪律分值" style="color:'+scoreColor+'">'+scorePrefix+(r.disciplineScore||0)+'</td><td data-label="备注">'+escapeHtmlAttr(r.remark||'-')+'</td></tr>';
+            return '<tr>'+actionHtml+'<td data-label="日期">'+r.recordDate+'</td><td data-label="对象">'+modeTag+(student?student.name:'宿舍集体')+'</td><td data-label="卫生项目">'+(hyNames||'-')+'</td><td data-label="卫生分值" class="'+(isBonusRec?'score-bonus':'score-deduct')+'">'+formatScoreText(r.hygieneScore||0, isBonusRec?'bonus':'deduct')+'</td><td data-label="纪律项目">'+(disNames||'-')+'</td><td data-label="纪律分值" class="'+(isBonusRec?'score-bonus':'score-deduct')+'">'+formatScoreText(r.disciplineScore||0, isBonusRec?'bonus':'deduct')+'</td><td data-label="备注">'+escapeHtmlAttr(r.remark||'-')+'</td></tr>';
         }
         // 手机端顶部导航卡：楼层芯片(每行4个均匀分布) + 宿舍横滑条，与扣分登记页交互一致；桌面端不渲染（侧边栏树保留）
         var topCard='';
@@ -551,7 +551,7 @@
                 +'</div></div>';
         }
         // 三个统计卡片内容（宿舍人数/扣分记录数/累计扣分）：PC 端合并在统计大卡内；移动端移至成员列表下方
-        var statThreeInner='<div class="stat-card"><div class="number">'+students.length+'</div><div class="label">👥 宿舍人数</div></div><div class="stat-card warning"><div class="number">'+records.length+'</div><div class="label">📋 扣分记录数</div></div><div class="stat-card danger"><div class="number">'+total+'</div><div class="label">📊 累计扣分</div></div>';
+        var statThreeInner='<div class="stat-card"><div class="number">'+students.length+'</div><div class="label">👥 宿舍人数</div></div><div class="stat-card warning"><div class="number">'+records.length+'</div><div class="label">📋 扣分记录数</div></div><div class="stat-card danger"><div class="number">'+formatScoreText(total,'deduct')+'</div><div class="label">📊 累计扣分</div></div>';
         // PC 端宿舍信息统计大卡：状态汇总行 + 三张统计卡片（保持原样）
         var statsCard='<div class="card"><div class="card-header">📊 宿舍信息统计</div><div class="card-body">'
             +'<div style="display:flex;flex-wrap:wrap;gap:8px 18px;padding:10px 14px;background:var(--gray-50);border-radius:6px;margin-bottom:14px">'+statusRowHtml+'</div>'
@@ -561,12 +561,12 @@
         var statusCard='<div class="card"><div class="card-header">📊 宿舍信息统计</div><div class="card-body">'
             +'<div style="display:flex;flex-wrap:wrap;gap:8px 18px;padding:10px 14px;background:var(--gray-50);border-radius:6px">'+statusRowHtml+'</div>'
             +'</div></div>';
-        var statThreeMobile='<div class="stat-cards-mobile"><div class="stat-item"><div class="number">'+students.length+'</div><div class="label">👥 宿舍人数</div></div><div class="stat-item"><div class="number" style="color:#f59e0b">'+records.length+'</div><div class="label">📋 扣分记录数</div></div><div class="stat-item"><div class="number" style="color:#ff3b30">'+total+'</div><div class="label">📊 累计扣分</div></div></div>';
+        var statThreeMobile='<div class="stat-cards-mobile"><div class="stat-item"><div class="number">'+students.length+'</div><div class="label">👥 宿舍人数</div></div><div class="stat-item"><div class="number" style="color:#f59e0b">'+records.length+'</div><div class="label">📋 扣分记录数</div></div><div class="stat-item"><div class="number" style="color:#ff3b30">'+formatScoreText(total,'deduct')+'</div><div class="label">📊 累计扣分</div></div></div>';
         // 页头仅保留标题（登记扣分入口统一收敛到功能首页/侧边栏/底部导航，住宿信息页只读）
         var memberOpsTh = isAdmin() ? '<th>操作</th>' : '';
         var membersCardPc='<div class="card"><div class="card-header">👥 宿舍成员</div><div style="overflow-x:auto"><table><thead><tr><th>姓名</th><th>班级</th><th>床号</th><th>状态</th><th>个人净分</th>'+memberOpsTh+'</tr></thead><tbody>'+studentHtml+'</tbody></table></div></div>';
         var membersCardMobile='<div class="card"><div class="card-header">👥 宿舍成员</div><div class="card-body" style="padding:2px 14px">'+memberCardHtml+'</div></div>';
-        var recordsCard='<div class="card"><div class="card-header">📜 历史记录 <span class="badge-tag badge-danger">'+total+'分</span><span style="font-weight:400;font-size:0.8571rem;color:var(--gray-500);margin-left:6px">按日期倒序</span></div><div style="overflow-x:auto"><table><thead><tr><th>操作</th><th>日期</th><th>对象</th><th>卫生项目</th><th>分值</th><th>纪律项目</th><th>分值</th><th>备注</th></tr></thead><tbody id="historyTbody"></tbody></table></div></div>';
+        var recordsCard='<div class="card"><div class="card-header">📜 历史记录 <span class="badge-tag badge-danger">'+formatScoreText(total,'deduct')+'分</span><span style="font-weight:400;font-size:0.8571rem;color:var(--gray-500);margin-left:6px">按日期倒序</span></div><div style="overflow-x:auto"><table><thead><tr><th>操作</th><th>日期</th><th>对象</th><th>卫生项目</th><th>分值</th><th>纪律项目</th><th>分值</th><th>备注</th></tr></thead><tbody id="historyTbody"></tbody></table></div></div>';
         // 移动端顺序：楼层/宿舍芯片 → 状态汇总 → 宿舍成员（单行紧凑）→ 三个统计卡片 → 历史扣分记录
         // PC 端顺序保持不变：统计大卡（状态+三卡片）→ 历史扣分记录 → 宿舍成员表
         container.innerHTML='<div class="content-header"><h2>📋 宿舍 '+dorm.roomNumber+'（'+floor.name+'）</h2></div>'+topCard+(isMobileH?(statusCard+membersCardMobile+statThreeMobile+recordsCard):(statsCard+recordsCard+membersCardPc));
@@ -702,7 +702,7 @@
         var disScoreId = isBonus ? 'disBonusScore' : 'disScore';
         var hyScoreRestoreKey = isBonus ? 'hygieneBonusScore' : 'hygieneScore';
         var disScoreRestoreKey = isBonus ? 'disciplineBonusScore' : 'disciplineScore';
-        var scorePrefix = isBonus ? '+' : '-';
+        var itemKind = isBonus ? 'bonus' : 'deduct';
         var scoreLabel = isBonus ? '加分' : '扣分';
         var defaultHyCustom = isBonus ? 0.2 : 0.2;
         var defaultDisCustom = isBonus ? 1 : 1;
@@ -725,16 +725,20 @@
         var hySection = '';
         var disSection = '';
         if (showHygiene) {
-            var hyCheckboxes=hyItems.map(function(i){return '<label><input type="checkbox" value="'+i.id+'" class="'+hyCls+'"> '+i.name+' ('+scorePrefix+i.defaultScore+'分)</label>';}).join('');
-            hyCheckboxes+='<label><input type="checkbox" value="custom" class="'+hyCls+' '+hyCustomCls+'"> ✏️ 自定义('+defaultHyCustom+'分)</label>';
+            var hyCheckboxes=hyItems.map(function(i){return '<label><input type="checkbox" value="'+i.id+'" class="'+hyCls+'"> '+i.name+' ('+formatScoreText(i.defaultScore, itemKind)+'分)</label>';}).join('');
+            hyCheckboxes+='<label><input type="checkbox" value="custom" class="'+hyCls+' '+hyCustomCls+'"> ✏️ 自定义('+formatScoreText(defaultHyCustom, itemKind)+'分)</label>';
             hyCheckboxes+='<span id="'+hyCustomWrapId+'" style="display:none;margin-left:8px;"><input type="text" id="'+hyCustomNameId+'" placeholder="自定义项目名称" style="padding:4px 8px;border:1px dashed #ccc;border-radius:4px;"></span>';
-            hySection = '<div class="form-group"><label>🧹 卫生'+scoreLabel+'（可多选）</label><div class="checkbox-group">'+hyCheckboxes+'</div><div style="margin-top:5px">卫生'+scoreLabel+'合计：<input type="number" id="'+hyScoreId+'" value="'+(addFormState[hyScoreRestoreKey]||0)+'" min="0" step="0.1" inputmode="decimal" style="width:80px;padding:4px" onchange="addFormChange(\''+hyScoreRestoreKey+'\')"> 分</div></div>';
+            var hyScoreVal = addFormState[hyScoreRestoreKey] || 0;
+            var hyScoreText = formatScoreText(hyScoreVal, itemKind);
+            hySection = '<div class="form-group"><label>🧹 卫生'+scoreLabel+'（可多选）</label><div class="checkbox-group">'+hyCheckboxes+'</div><div style="margin-top:5px">卫生'+scoreLabel+'合计：<input type="text" id="'+hyScoreId+'" value="'+hyScoreText+'" inputmode="decimal" style="width:80px;padding:4px" onchange="addFormChange(\''+hyScoreRestoreKey+'\')"> 分</div></div>';
         }
         if (showDiscipline) {
-            var disCheckboxes=disItems.map(function(i){return '<label><input type="checkbox" value="'+i.id+'" class="'+disCls+'"> '+i.name+' ('+scorePrefix+i.defaultScore+'分)</label>';}).join('');
-            disCheckboxes+='<label><input type="checkbox" value="custom" class="'+disCls+' '+disCustomCls+'"> ✏️ 自定义('+defaultDisCustom+'分)</label>';
+            var disCheckboxes=disItems.map(function(i){return '<label><input type="checkbox" value="'+i.id+'" class="'+disCls+'"> '+i.name+' ('+formatScoreText(i.defaultScore, itemKind)+'分)</label>';}).join('');
+            disCheckboxes+='<label><input type="checkbox" value="custom" class="'+disCls+' '+disCustomCls+'"> ✏️ 自定义('+formatScoreText(defaultDisCustom, itemKind)+'分)</label>';
             disCheckboxes+='<span id="'+disCustomWrapId+'" style="display:none;margin-left:8px;"><input type="text" id="'+disCustomNameId+'" placeholder="自定义项目名称" style="padding:4px 8px;border:1px dashed #ccc;border-radius:4px;"></span>';
-            disSection = '<div class="form-group"><label>📏 纪律'+scoreLabel+'（可多选）</label><div class="checkbox-group">'+disCheckboxes+'</div><div style="margin-top:5px">纪律'+scoreLabel+'合计：<input type="number" id="'+disScoreId+'" value="'+(addFormState[disScoreRestoreKey]||0)+'" min="0" step="0.1" inputmode="decimal" style="width:80px;padding:4px" onchange="addFormChange(\''+disScoreRestoreKey+'\')"> 分</div></div>';
+            var disScoreVal = addFormState[disScoreRestoreKey] || 0;
+            var disScoreText = formatScoreText(disScoreVal, itemKind);
+            disSection = '<div class="form-group"><label>📏 纪律'+scoreLabel+'（可多选）</label><div class="checkbox-group">'+disCheckboxes+'</div><div style="margin-top:5px">纪律'+scoreLabel+'合计：<input type="text" id="'+disScoreId+'" value="'+disScoreText+'" inputmode="decimal" style="width:80px;padding:4px" onchange="addFormChange(\''+disScoreRestoreKey+'\')"> 分</div></div>';
         }
         var submitLabel = isBonus ? '✅ 提交加分' : '✅ 提交扣分';
         var tailHtml='<div class="form-group"><label>备注</label><input type="text" id="addRemark" placeholder="可填写具体原因..." onchange="addFormChange(\'remark\')" value="'+(addFormState.remark||'')+'"></div><div style="display:flex;gap:8px;margin-top:8px"><button class="btn btn-primary" onclick="submitDeduction()">'+submitLabel+'</button><button class="btn btn-outline" onclick="resetAddForm()">🔄 重置</button></div>';
@@ -1039,22 +1043,23 @@
         dormStatsAll.sort(function(a,b){ if(a.score!==b.score) return b.score-a.score; return a.roomNumber.localeCompare(b.roomNumber,'zh-Hans-CN',{numeric:true}); });
         statsCache.dormAll = dormStatsAll;
         // 楼层条形图（两端共用）
-        var floorBarsHtml = floorStats.map(function(f,i){ var max=floorStats[0].score||1; var pct=max>0?(f.score/max*100):0; var colors=['#4f6ef7','#7c5cfc','#a855f7','#ec4899','#f43f5e','#f97316','#eab308','#22c55e']; return '<div style="display:flex;align-items:center;gap:10px;margin-bottom:8px"><span style="font-weight:700;width:30px">#'+(i+1)+'</span><span style="width:50px">'+f.name+'</span><div style="flex:1;height:22px;background:#f0f0f0;border-radius:11px;overflow:hidden;"><div style="height:100%;width:'+pct+'%;background:'+colors[i%colors.length]+';border-radius:11px;display:flex;align-items:center;justify-content:flex-end;padding-right:8px;"><span style="color:#fff;font-size:0.7857rem;font-weight:700">'+f.score+'分</span></div></div><span style="min-width:40px;font-size:0.8571rem;color:#6b7280;">'+f.count+'条</span></div>'; }).join('');
+        var floorBarsHtml = floorStats.map(function(f,i){ var max=floorStats[0].score||1; var pct=max>0?(f.score/max*100):0; var colors=['#4f6ef7','#7c5cfc','#a855f7','#ec4899','#f43f5e','#f97316','#eab308','#22c55e']; return '<div style="display:flex;align-items:center;gap:10px;margin-bottom:8px"><span style="font-weight:700;width:30px">#'+(i+1)+'</span><span style="width:50px">'+f.name+'</span><div style="flex:1;height:22px;background:#f0f0f0;border-radius:11px;overflow:hidden;"><div style="height:100%;width:'+pct+'%;background:'+colors[i%colors.length]+';border-radius:11px;display:flex;align-items:center;justify-content:flex-end;padding-right:8px;"><span style="color:#fff;font-size:0.7857rem;font-weight:700">'+formatScoreText(f.score,'deduct')+'分</span></div></div><span style="min-width:40px;font-size:0.8571rem;color:#6b7280;">'+f.count+'条</span></div>'; }).join('');
         // 全校宿舍排行榜：默认 TOP20，可展开全部（含 0 分）
         // PC 端表格行（供分片渲染逐条调用）
         function dormRankRowHtml(d, i){
-            return '<tr><td data-label="排名">'+(i+1)+'</td><td data-label="宿舍"><b>'+d.name+'</b></td><td data-label="班级">'+(d.className||'-')+'</td><td data-label="扣分" class="highlight-red">'+d.score+'</td><td data-label="记录数">'+d.count+'</td></tr>';
+            return '<tr><td data-label="排名">'+(i+1)+'</td><td data-label="宿舍"><b>'+d.name+'</b></td><td data-label="班级">'+(d.className||'-')+'</td><td data-label="扣分" class="score-deduct">'+formatScoreText(d.score,'deduct')+'</td><td data-label="记录数">'+d.count+'</td></tr>';
         }
         // 移动端卡片行（复用 dorm-row-mobile / rank-item 样式，供分片渲染逐条调用）
         function dormRankCardHtml(item, idx){
             var rank = idx+1;
             var topCls = rank<=3 ? ' top' : '';
             var scoreHas = item.score>0 ? ' has' : '';
+            var scoreCls = item.score>0 ? 'score-deduct' : 'score-zero';
             return '<div class="dorm-row-mobile">'
                 + '<div class="rank-item rank-idx-1'+topCls+'"><span class="rank-label">排名</span><span class="rank-value">#'+rank+'</span></div>'
                 + '<div class="rank-item rank-idx-2"><span class="rank-label">宿舍</span><span class="rank-value">'+item.roomNumber+'</span></div>'
                 + '<div class="rank-item rank-idx-3"><span class="rank-label">班级</span><span class="rank-value">'+(item.className||'—')+'</span></div>'
-                + '<div class="rank-item rank-idx-4"><span class="rank-label">扣分</span><span class="rank-value'+scoreHas+'">'+item.score+'分</span></div>'
+                + '<div class="rank-item rank-idx-4"><span class="rank-label">扣分</span><span class="rank-value '+scoreCls+'">'+formatScoreText(item.score,'deduct')+'分</span></div>'
                 + '<div class="rank-item rank-idx-5"><span class="rank-label">记录数</span><span class="rank-value">'+item.count+'条</span></div>'
                 + '</div>';
         }
@@ -1096,11 +1101,12 @@
             var rank = idx+1;
             var topCls = rank<=3 ? ' top' : '';
             var scoreHas = item.score>0 ? ' has' : '';
+            var scoreCls = item.score>0 ? 'score-deduct' : 'score-zero';
             return '<div class="dorm-row-mobile">'
                 + '<div class="rank-item rank-idx-1'+topCls+'"><span class="rank-label">排名</span><span class="rank-value">#'+rank+'</span></div>'
                 + '<div class="rank-item rank-idx-2"><span class="rank-label">宿舍</span><span class="rank-value">'+item.roomNumber+'</span></div>'
                 + '<div class="rank-item rank-idx-3"><span class="rank-label">班级</span><span class="rank-value">'+(item.className||'—')+'</span></div>'
-                + '<div class="rank-item rank-idx-4"><span class="rank-label">扣分</span><span class="rank-value'+scoreHas+'">'+item.score+'分</span></div>'
+                + '<div class="rank-item rank-idx-4"><span class="rank-label">扣分</span><span class="rank-value '+scoreCls+'">'+formatScoreText(item.score,'deduct')+'分</span></div>'
                 + '<div class="rank-item rank-idx-5"><span class="rank-label">记录数</span><span class="rank-value">'+item.count+'条</span></div>'
                 + '</div>';
         }
@@ -1157,20 +1163,20 @@
         }
         // PC 端表格行（排名/宿舍/班级/扣分/加分/净分/记录数 7 列完整表格）
         function netDormRowHtml(d, i){
-            var netCls = d.net > 0 ? 'highlight-red' : (d.net < 0 ? 'highlight-green' : '');
-            return '<tr><td data-label="排名">'+(i+1)+'</td><td data-label="宿舍"><b>'+d.roomNumber+'</b></td><td data-label="班级">'+(d.className||'-')+'</td><td data-label="扣分" class="highlight-red">'+d.deduct+'</td><td data-label="加分" class="highlight-green">'+d.bonus+'</td><td data-label="净分" class="'+netCls+'"><b>'+d.net+'</b></td><td data-label="记录数">'+d.count+'</td></tr>';
+            var netCls = d.net > 0 ? 'score-deduct' : (d.net < 0 ? 'score-bonus' : 'score-zero');
+            return '<tr><td data-label="排名">'+(i+1)+'</td><td data-label="宿舍"><b>'+d.roomNumber+'</b></td><td data-label="班级">'+(d.className||'-')+'</td><td data-label="扣分" class="score-deduct">'+formatScoreText(d.deduct,'deduct')+'</td><td data-label="加分" class="score-bonus">'+formatScoreText(d.bonus,'bonus')+'</td><td data-label="净分" class="'+netCls+'"><b>'+formatScoreText(d.net,'net')+'</b></td><td data-label="记录数">'+d.count+'</td></tr>';
         }
         // 移动端卡片行：核心 4 列（排名/宿舍/净分/记录数），班级/扣分/加分以小字提示，避免堆叠
         function netDormCardHtml(d, idx){
-            var netColor = d.net > 0 ? '#ff3b30' : (d.net < 0 ? '#34c759' : '#9ca3af');
+            var netColor = d.net > 0 ? 'var(--danger)' : (d.net < 0 ? 'var(--success)' : 'var(--gray-800)');
             var rank = idx+1;
             var topCls = rank<=3 ? ' top' : '';
             return '<div class="dorm-row-mobile">'
                 + '<div class="rank-item rank-idx-1'+topCls+'"><span class="rank-label">排名</span><span class="rank-value">#'+rank+'</span></div>'
                 + '<div class="rank-item rank-idx-2"><span class="rank-label">宿舍</span><span class="rank-value">'+d.roomNumber+'</span></div>'
-                + '<div class="rank-item rank-idx-3"><span class="rank-label">净分</span><span class="rank-value" style="color:'+netColor+'"><b>'+d.net+'分</b></span></div>'
+                + '<div class="rank-item rank-idx-3"><span class="rank-label">净分</span><span class="rank-value" style="color:'+netColor+'"><b>'+formatScoreText(d.net,'net')+'分</b></span></div>'
                 + '<div class="rank-item rank-idx-4"><span class="rank-label">记录数</span><span class="rank-value">'+d.count+'条</span></div>'
-                + '<div style="flex:0 0 100%;margin-top:4px;padding-top:6px;border-top:1px dashed #e5e7eb;font-size:0.7857rem;color:#6b7280;text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+(d.className||'—')+' · 扣'+d.deduct+'分 · 加'+d.bonus+'分</div>'
+                + '<div style="flex:0 0 100%;margin-top:4px;padding-top:6px;border-top:1px dashed #e5e7eb;font-size:0.7857rem;color:#6b7280;text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+(d.className||'—')+' · 扣'+formatScoreText(d.deduct,'deduct')+'分 · 加'+formatScoreText(d.bonus,'bonus')+'分</div>'
                 + '</div>';
         }
         // 净分榜骨架（楼层芯片 + 空容器，内容由 fillNetList 分片填充）
@@ -1200,7 +1206,7 @@
         var mobileDetailBody = '<div id="statsFloorDetailWrap">'+floorDetailHtml()+'</div>';
         var pcDetailBody = '<div style="padding:14px">'+floorDormLowTables+'</div>';
         container.innerHTML = '<div class="content-header"><h2>📊 统计报表</h2></div>'
-            + '<div class="stat-cards"><div class="stat-card"><div class="number">'+allRecords.length+'</div><div class="label">总扣分记录</div></div><div class="stat-card warning"><div class="number">'+total+'</div><div class="label">总扣分</div></div><div class="stat-card danger"><div class="number">'+dormStatsAll.filter(function(d){return d.score>0;}).length+'</div><div class="label">有扣分宿舍</div></div></div>'
+            + '<div class="stat-cards"><div class="stat-card"><div class="number">'+allRecords.length+'</div><div class="label">总扣分记录</div></div><div class="stat-card warning"><div class="number">'+formatScoreText(total,'deduct')+'</div><div class="label">总扣分</div></div><div class="stat-card danger"><div class="number">'+dormStatsAll.filter(function(d){return d.score>0;}).length+'</div><div class="label">有扣分宿舍</div></div></div>'
             + foldBlock('fold-stats-floor','🏆 楼层扣分排名','<div style="padding:18px">'+floorBarsHtml+'</div>')
             + foldBlock('fold-stats-top', topTitle, topBody)
             + foldBlock('fold-stats-net','📊 净分排行榜 <span class="fold-sub">净分=扣分-加分 · 按楼层查看</span>', netBody)
@@ -1215,7 +1221,7 @@
         floorLowFillJobs.forEach(function(job){
             var tb=document.getElementById(job.tbId);
             if(tb) renderListInChunks(tb, job.list, function(item, idx){
-                return '<tr><td data-label="排名">'+(idx+1)+'</td><td data-label="宿舍">'+item.roomNumber+'</td><td data-label="班级">'+item.className+'</td><td data-label="扣分">'+item.score+'</td><td data-label="记录数">'+item.count+'</td></tr>';
+                return '<tr><td data-label="排名">'+(idx+1)+'</td><td data-label="宿舍">'+item.roomNumber+'</td><td data-label="班级">'+item.className+'</td><td data-label="扣分" class="score-deduct">'+formatScoreText(item.score,'deduct')+'</td><td data-label="记录数">'+item.count+'</td></tr>';
             }, 50, null, {emptyHtml:floorLowEmpty});
         });
     }
@@ -1384,7 +1390,9 @@
         var hyBonusItems=DB.deductionItems.hygieneBonus||[];
         var disBonusItems=DB.deductionItems.disciplineBonus||[];
         function itemRows(items,delFn,prefix){
-            return items.map(function(i){return '<div class="item-row"><span><b>'+i.name+'</b> <span class="badge-tag '+(prefix==='+'?'badge-primary':'badge-danger')+'">'+prefix+i.defaultScore+'分</span></span><button class="btn btn-danger btn-xs" onclick="'+delFn+'('+i.id+')">删除</button></div>';}).join('');
+            var kind = (prefix === '+') ? 'bonus' : 'deduct';
+            var badgeCls = (prefix === '+') ? 'badge-bonus' : 'badge-danger';
+            return items.map(function(i){return '<div class="item-row"><span><b>'+i.name+'</b> <span class="badge-tag '+badgeCls+'">'+formatScoreText(i.defaultScore, kind)+'分</span></span><button class="btn btn-danger btn-xs" onclick="'+delFn+'('+i.id+')">删除</button></div>';}).join('');
         }
         function addForm(opts){
             return '<div style="display:flex;gap:8px;margin-top:12px"><input type="text" id="'+opts.nameId+'" placeholder="新项目名称" style="flex:1;padding:8px;border:1.5px solid #ddd;border-radius:6px"><input type="number" id="'+opts.scoreId+'" value="'+opts.defaultScore+'" min="0.1" step="0.1" style="width:70px;padding:8px;border:1.5px solid #ddd;border-radius:6px"><button class="btn btn-primary btn-sm" onclick="'+opts.addFn+'()">添加</button></div>'
@@ -2652,8 +2660,12 @@
         function queryDeductionRowHtml(r) {
             var dorm = getDormitoryById(r.dormitoryId);
             var student = r.studentId ? getStudentById(r.studentId) : null;
-            var hyNames = (r.hygieneItemIds || []).map(getItemNameByIdOrCustom).filter(Boolean).join('、');
-            var disNames = (r.disciplineItemIds || []).map(getItemNameByIdOrCustom).filter(Boolean).join('、');
+            var isBonusRec = (r.recordMode === 'bonus');
+            var nameGetter = isBonusRec ? getBonusItemNameByIdOrCustom : getItemNameByIdOrCustom;
+            var hyNames = (r.hygieneItemIds || []).map(nameGetter).filter(Boolean).join('、');
+            var disNames = (r.disciplineItemIds || []).map(nameGetter).filter(Boolean).join('、');
+            var scoreCls = isBonusRec ? 'score-bonus' : 'score-deduct';
+            var kind = isBonusRec ? 'bonus' : 'deduct';
             var bedNumber = student ? (student.bedNumber || '-') : '-';
             var classNameVal = getClassNameForRecord(r);
             var studentNameVal = student ? student.name : '宿舍集体';
@@ -2664,9 +2676,9 @@
                 + '<td data-label="班级">' + classNameVal + '</td>'
                 + '<td data-label="学生">' + studentNameVal + '</td>'
                 + '<td data-label="卫生项目">' + (hyNames || '-') + '</td>'
-                + '<td data-label="卫生扣分">' + (r.hygieneScore || 0) + '</td>'
+                + '<td data-label="卫生分值" class="' + scoreCls + '">' + formatScoreText(r.hygieneScore || 0, kind) + '</td>'
                 + '<td data-label="纪律项目">' + (disNames || '-') + '</td>'
-                + '<td data-label="纪律扣分">' + (r.disciplineScore || 0) + '</td>'
+                + '<td data-label="纪律分值" class="' + scoreCls + '">' + formatScoreText(r.disciplineScore || 0, kind) + '</td>'
                 + '<td data-label="备注">' + escapeHtmlAttr(r.remark || '-') + '</td>'
                 + '</tr>';
         }
@@ -2674,7 +2686,7 @@
         resultArea.innerHTML = '<div class="card">'
             + '<div class="card-header">查询结果（' + records.length + '条记录）</div>'
             + '<div style="overflow-x:auto;"><table>'
-            + '<thead><tr><th>日期</th><th>宿舍号</th><th>床号</th><th>班级</th><th>学生</th><th>卫生加扣分</th><th>卫生分值</th><th>纪律加扣分</th><th>纪律分值</th><th>备注</th></tr></thead>'
+            + '<thead><tr><th>日期</th><th>宿舍号</th><th>床号</th><th>班级</th><th>学生</th><th>卫生项目</th><th>卫生分值</th><th>纪律项目</th><th>纪律分值</th><th>备注</th></tr></thead>'
             + '<tbody id="queryDeductionTbody"></tbody>'
             + '</table></div></div>';
         renderListInChunks(document.getElementById('queryDeductionTbody'), records, queryDeductionRowHtml, 50);
@@ -2788,16 +2800,20 @@
             var bedA=getBedNumberForSort(a); var bedB=getBedNumberForSort(b);
             return bedA-bedB;
         });
-        var csv='\uFEFF日期,宿舍号,床号,班级,学生,卫生加扣分,扣分值,纪律加扣分,扣分值,备注\n';
+        var csv='\uFEFF日期,宿舍号,床号,班级,学生,卫生项目,卫生分值,纪律项目,纪律分值,备注\n';
         records.forEach(function(r){
             var dorm=getDormitoryById(r.dormitoryId);
             var student=r.studentId?getStudentById(r.studentId):null;
-            var hyNames=(r.hygieneItemIds||[]).map(getItemNameByIdOrCustom).filter(Boolean).join('、');
-            var disNames=(r.disciplineItemIds||[]).map(getItemNameByIdOrCustom).filter(Boolean).join('、');
+            var isBonusRec=(r.recordMode==='bonus');
+            var nameGetter=isBonusRec?getBonusItemNameByIdOrCustom:getItemNameByIdOrCustom;
+            var kind=isBonusRec?'bonus':'deduct';
+            var hyNames=(r.hygieneItemIds||[]).map(nameGetter).filter(Boolean).join('、');
+            var disNames=(r.disciplineItemIds||[]).map(nameGetter).filter(Boolean).join('、');
             var bedNumber=student?(student.bedNumber||'-'):'-';
             var classNameVal=getClassNameForRecord(r);
             var studentNameVal=student?student.name:'宿舍集体';
-            csv+=r.recordDate+','+getDormDisplayNameById(r.dormitoryId)+','+bedNumber+','+classNameVal+','+studentNameVal+','+(hyNames||'-')+','+(r.hygieneScore||0)+','+(disNames||'-')+','+(r.disciplineScore||0)+','+escapeHtmlAttr(r.remark||'').replace(/,/g,'，')+'\n';
+            // 分值列用双引号包裹，确保 Excel 打开时保留 "+4" 的正号不被吞掉
+            csv+=r.recordDate+','+getDormDisplayNameById(r.dormitoryId)+','+bedNumber+','+classNameVal+','+studentNameVal+','+(hyNames||'-')+',"'+formatScoreText(r.hygieneScore||0,kind)+'",'+(disNames||'-')+',"'+formatScoreText(r.disciplineScore||0,kind)+'",'+escapeHtmlAttr(r.remark||'').replace(/,/g,'，')+'\n';
         });
         var fileName;
         if(startDate===endDate && !className && !dormRoom && !bed && !studentName){
@@ -2842,16 +2858,20 @@
             var bedA=getBedNumberForSort(a); var bedB=getBedNumberForSort(b);
             return bedA-bedB;
         });
-        var csv='\uFEFF日期,宿舍号,床号,班级,学生,卫生加扣分,扣分值,纪律加扣分,扣分值,备注\n';
+        var csv='\uFEFF日期,宿舍号,床号,班级,学生,卫生项目,卫生分值,纪律项目,纪律分值,备注\n';
         records.forEach(function(r){
             var dorm=getDormitoryById(r.dormitoryId);
             var student=r.studentId?getStudentById(r.studentId):null;
-            var hyNames=(r.hygieneItemIds||[]).map(getItemNameByIdOrCustom).filter(Boolean).join('、');
-            var disNames=(r.disciplineItemIds||[]).map(getItemNameByIdOrCustom).filter(Boolean).join('、');
+            var isBonusRec=(r.recordMode==='bonus');
+            var nameGetter=isBonusRec?getBonusItemNameByIdOrCustom:getItemNameByIdOrCustom;
+            var kind=isBonusRec?'bonus':'deduct';
+            var hyNames=(r.hygieneItemIds||[]).map(nameGetter).filter(Boolean).join('、');
+            var disNames=(r.disciplineItemIds||[]).map(nameGetter).filter(Boolean).join('、');
             var bedNumber=student?(student.bedNumber||'-'):'-';
             var classNameVal=getClassNameForRecord(r);
             var studentNameVal=student?student.name:'宿舍集体';
-            csv+=r.recordDate+','+getDormDisplayNameById(r.dormitoryId)+','+bedNumber+','+classNameVal+','+studentNameVal+','+(hyNames||'-')+','+(r.hygieneScore||0)+','+(disNames||'-')+','+(r.disciplineScore||0)+','+escapeHtmlAttr(r.remark||'').replace(/,/g,'，')+'\n';
+            // 分值列用双引号包裹，确保 Excel 打开时保留 "+4" 的正号不被吞掉
+            csv+=r.recordDate+','+getDormDisplayNameById(r.dormitoryId)+','+bedNumber+','+classNameVal+','+studentNameVal+','+(hyNames||'-')+',"'+formatScoreText(r.hygieneScore||0,kind)+'",'+(disNames||'-')+',"'+formatScoreText(r.disciplineScore||0,kind)+'",'+escapeHtmlAttr(r.remark||'').replace(/,/g,'，')+'\n';
         });
         var blob=new Blob([csv],{type:'text/csv;charset=utf-8;'});
         var link=document.createElement('a');
@@ -3034,7 +3054,7 @@
         function buildChecks(items,recordIds,prefix,customLabel,customScoreText){
             var html=items.map(function(i){
                 var checked=(recordIds||[]).indexOf(i.id)!==-1?' checked':'';
-                return '<label><input type="checkbox" value="'+i.id+'" class="'+prefix+'-item"'+checked+' onchange="updateEditScores()"> '+i.name+' (-'+i.defaultScore+'分)</label>';
+                return '<label><input type="checkbox" value="'+i.id+'" class="'+prefix+'-item"'+checked+' onchange="updateEditScores()"> '+i.name+' ('+formatScoreText(i.defaultScore,'deduct')+'分)</label>';
             }).join('');
             var customName='';
             (recordIds||[]).forEach(function(v){ if(typeof v==='string'&&v.indexOf('custom:')===0) customName=v.substring(7); });

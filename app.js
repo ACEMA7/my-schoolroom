@@ -606,8 +606,8 @@
             return roundScore1(total);
         }
         var hy=sum('em-hy',0.2), dis=sum('em-dis',1);
-        var hyEl=document.getElementById('emHyScore'); if(hyEl) hyEl.textContent=hy;
-        var disEl=document.getElementById('emDisScore'); if(disEl) disEl.textContent=dis;
+        var hyEl=document.getElementById('emHyScore'); if(hyEl) hyEl.textContent=formatScoreText(hy,'deduct');
+        var disEl=document.getElementById('emDisScore'); if(disEl) disEl.textContent=formatScoreText(dis,'deduct');
         return {hy:hy,dis:dis};
     }
     /**
@@ -692,10 +692,10 @@
     function syncAddFormInputs(){
         var d=document.getElementById('addDate'); if(d&&d.value) addFormState.recordDate=d.value;
         var r=document.getElementById('addRemark'); if(r) addFormState.remark=r.value;
-        var hs=document.getElementById('hyScore'); if(hs) addFormState.hygieneScore=parseFloat(hs.value)||0;
-        var dsc=document.getElementById('disScore'); if(dsc) addFormState.disciplineScore=parseFloat(dsc.value)||0;
-        var hbs=document.getElementById('hyBonusScore'); if(hbs) addFormState.hygieneBonusScore=parseFloat(hbs.value)||0;
-        var dbsc=document.getElementById('disBonusScore'); if(dbsc) addFormState.disciplineBonusScore=parseFloat(dbsc.value)||0;
+        var hs=document.getElementById('hyScore'); if(hs) addFormState.hygieneScore=roundScore1(Math.abs(parseFloat(String(hs.value).replace(/[^\d.\-]/g,''))||0));
+        var dsc=document.getElementById('disScore'); if(dsc) addFormState.disciplineScore=roundScore1(Math.abs(parseFloat(String(dsc.value).replace(/[^\d.\-]/g,''))||0));
+        var hbs=document.getElementById('hyBonusScore'); if(hbs) addFormState.hygieneBonusScore=roundScore1(Math.abs(parseFloat(String(hbs.value).replace(/[^\d.\-]/g,''))||0));
+        var dbsc=document.getElementById('disBonusScore'); if(dbsc) addFormState.disciplineBonusScore=roundScore1(Math.abs(parseFloat(String(dbsc.value).replace(/[^\d.\-]/g,''))||0));
         // 仅同步当前 DOM 中实际存在的复选框组：扣分/加分模式的复选框不同时出现，
         // 避免把另一模式已选项目误清空（例如扣分模式下切宿舍不应清掉加分模式的选择）
         function syncChecks(cls,stateKeyName){
@@ -758,7 +758,7 @@
             if(overwriteScore!==false){
                 var total=calcCheckboxTotal(cls,t,isBonus);
                 var input=document.getElementById(scoreId);
-                if(input) input.value=total;
+                if(input) input.value=formatScoreText(total, isBonus?'bonus':'deduct');
                 else console.warn('[扣分登记] recompute 找不到合计输入框：', scoreId);
                 addFormState[stateKey]=total;
             }
@@ -801,10 +801,26 @@
         else if(type==='dorm'){syncAddFormInputs();addFormState.dormitoryId=parseInt(document.getElementById('addDormitory').value);addFormState.studentId=null;renderAddView(document.getElementById('contentArea'));}
         else if(type==='student'){addFormState.studentId=document.getElementById('addStudent').value?parseInt(document.getElementById('addStudent').value):null;}
         else if(type==='date'){addFormState.recordDate=document.getElementById('addDate').value;}
-        else if(type==='hygieneScore'){addFormState.hygieneScore=parseFloat(document.getElementById('hyScore').value)||0;}
-        else if(type==='disciplineScore'){addFormState.disciplineScore=parseFloat(document.getElementById('disScore').value)||0;}
-        else if(type==='hygieneBonusScore'){addFormState.hygieneBonusScore=parseFloat(document.getElementById('hyBonusScore').value)||0;}
-        else if(type==='disciplineBonusScore'){addFormState.disciplineBonusScore=parseFloat(document.getElementById('disBonusScore').value)||0;}
+        else if(type==='hygieneScore'){
+            var hv=Math.abs(parseFloat(String(document.getElementById('hyScore').value).replace(/[^\d.\-]/g,''))||0);
+            addFormState.hygieneScore=roundScore1(hv);
+            document.getElementById('hyScore').value=formatScoreText(addFormState.hygieneScore,'deduct');
+        }
+        else if(type==='disciplineScore'){
+            var dv=Math.abs(parseFloat(String(document.getElementById('disScore').value).replace(/[^\d.\-]/g,''))||0);
+            addFormState.disciplineScore=roundScore1(dv);
+            document.getElementById('disScore').value=formatScoreText(addFormState.disciplineScore,'deduct');
+        }
+        else if(type==='hygieneBonusScore'){
+            var hbv=Math.abs(parseFloat(String(document.getElementById('hyBonusScore').value).replace(/[^\d.\-]/g,''))||0);
+            addFormState.hygieneBonusScore=roundScore1(hbv);
+            document.getElementById('hyBonusScore').value=formatScoreText(addFormState.hygieneBonusScore,'bonus');
+        }
+        else if(type==='disciplineBonusScore'){
+            var dbv=Math.abs(parseFloat(String(document.getElementById('disBonusScore').value).replace(/[^\d.\-]/g,''))||0);
+            addFormState.disciplineBonusScore=roundScore1(dbv);
+            document.getElementById('disBonusScore').value=formatScoreText(addFormState.disciplineBonusScore,'bonus');
+        }
         else if(type==='remark'){addFormState.remark=document.getElementById('addRemark').value;}
     }
     function resetAddForm(){
@@ -855,7 +871,7 @@
                     hygieneItemIds.push('custom:'+customName);
                 } else hygieneItemIds.push(parseInt(hyChecked[i].value));
             }
-            hygieneScore=roundScore1(parseFloat(hyScoreEl.value)||0);
+            hygieneScore=roundScore1(Math.abs(parseFloat(String(hyScoreEl.value).replace(/[^\d.\-]/g,''))||0));
         }
         if(disScoreEl){
             var disChecked=document.querySelectorAll(disCls);
@@ -866,7 +882,7 @@
                     disciplineItemIds.push('custom:'+customName);
                 } else disciplineItemIds.push(parseInt(disChecked[i].value));
             }
-            disciplineScore=roundScore1(parseFloat(disScoreEl.value)||0);
+            disciplineScore=roundScore1(Math.abs(parseFloat(String(disScoreEl.value).replace(/[^\d.\-]/g,''))||0));
         }
         if(hygieneItemIds.length===0 && disciplineItemIds.length===0){toast('请至少选择一个项目','error');return;}
         var mode = isBonus ? 'bonus' : 'deduct';
@@ -2478,7 +2494,7 @@
                     var vars = {
                         studentName: student.name,
                         className: student.className,
-                        score: netScore,
+                        score: formatScoreText(netScore, 'net'),
                         threshold: threshold,
                         dormRoom: dormRoom,
                         bedNumber: student.bedNumber != null ? String(student.bedNumber) : ''

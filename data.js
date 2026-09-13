@@ -236,6 +236,28 @@
     }
 
     /**
+     * 统一分值文本格式化：扣分显示负数（-4），加分显示正数（+4），
+     * 净分按"实际效果符号"显示（净扣 → -3；净加 → +3；0 → 0）。
+     * 仅用于展示与导出，不改变任何底层数值（底层仍存正数）。
+     * @param {number} value - 分值（底层正数语义）
+     * @param {string} kind - 'deduct' | 'bonus' | 'net'
+     * @returns {string} 带符号的文本，如 '-4' / '+4' / '0'
+     */
+    function formatScoreText(value, kind){
+        var v = roundScore1(Number(value) || 0);
+        if(v === 0) return '0';
+        if(kind === 'bonus'){
+            return '+' + Math.abs(v);
+        }
+        if(kind === 'net'){
+            // 底层：正数=净扣、负数=净加；显示时取反号，突出"实际加分/扣分"
+            return (v > 0 ? '-' : '+') + Math.abs(v);
+        }
+        // deduct（默认）：正数扣分 → 显示负数
+        return '-' + Math.abs(v);
+    }
+
+    /**
      * 计算一组扣分记录的累计扣分（卫生分 + 纪律分）。
      * @param {Array} records - 扣分记录数组
      * @returns {number} 总扣分（保留 1 位小数，已消除浮点尾差）
@@ -1625,4 +1647,5 @@ window.migrateUserPasswords = migrateUserPasswords;
 window.formatLocalDate = formatLocalDate;
 window.getTodayLocalStr = getTodayLocalStr;
 window.roundScore1 = roundScore1;
+window.formatScoreText = formatScoreText;
 window.getDefaultNotificationTemplate = getDefaultNotificationTemplate;
