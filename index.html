@@ -440,6 +440,14 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
         .edit-modal .em-footer{flex-shrink:0;display:flex;gap:10px;padding:12px 16px;border-top:1px solid var(--gray-200);background:#fff}
         .edit-modal .em-footer .btn{flex:1;min-height:44px}
         .edit-modal .checkbox-group label{font-size:1rem}
+        /* 修改密码：带眼睛图标的输入框 */
+        .pwd-input-wrap{position:relative;display:flex;align-items:center}
+        .pwd-input-wrap input{flex:1 1 auto;padding-right:44px !important}
+        .pwd-eye-btn{position:absolute;right:6px;top:50%;transform:translateY(-50%);width:36px;height:36px;border:none;background:transparent;border-radius:8px;cursor:pointer;font-size:1.1rem;line-height:1;color:var(--gray-500);display:flex;align-items:center;justify-content:center}
+        .pwd-eye-btn:active{background:var(--gray-100)}
+        .pwd-hint{color:var(--gray-500);font-size:0.7857rem;margin-top:4px;line-height:1.4}
+        .pwd-error{color:var(--danger);font-size:0.8571rem;margin-top:6px;display:none}
+        .pwd-error.show{display:block}
 
         /* ========== 移动端适配 ========== */
         .sidebar-toggle{
@@ -938,6 +946,7 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
                     <div class="nav-item" data-view="leavemanage" id="navLeaveManage" style="display:none" onclick="switchView('leavemanage')">🏠 学生管理</div>
                     <div class="nav-item" data-view="export" id="navExport" style="display:none" onclick="switchView('export')">📊 数据管理</div>
                     <div class="nav-item" data-view="notifications" id="navNotifications" style="display:none" onclick="switchView('notifications')">📢 通知管理</div>
+                    <div class="nav-item" data-view="__changepwd" id="navChangePwd" style="display:none" onclick="openChangePasswordModal()">🔑 修改密码</div>
                 </div>
                 <div class="sidebar-tree" id="sidebarTree"></div>
             </div>
@@ -978,6 +987,9 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
     <div class="modal-overlay" id="notifTemplateModal" onclick="if(event.target===this) closeNotifTemplateModal()"><div class="edit-modal" id="notifTemplateModalBox" role="dialog" aria-label="编辑通知模板"></div></div>
     <div class="modal-overlay" id="floorChangeRejectModal" onclick="if(event.target===this) closeFloorChangeRejectModal()">
         <div class="edit-modal" id="floorChangeRejectModalBox" role="dialog" aria-label="驳回申请"></div>
+    </div>
+    <div class="modal-overlay" id="changePwdModal" onclick="if(event.target===this) closeChangePasswordModal()">
+        <div class="edit-modal" id="changePwdModalBox" role="dialog" aria-label="修改密码"></div>
     </div>
 
     <!-- 业务逻辑模块化拆分：config -> data -> sync -> ui -> app（经典脚本，全局作用域） -->

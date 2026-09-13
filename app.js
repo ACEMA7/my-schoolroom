@@ -132,7 +132,7 @@
         document.getElementById('roleBadge').textContent = admin ? '👨‍💼 管理人员' : (classAdmin ? '🏫 班主任' : '📝 生活老师');
 
         // 先隐藏所有菜单
-        var menuIds = ['navHierarchy', 'navAdd', 'navStats', 'navInspection', 'navFloorChange', 'navStudents', 'navItems', 'navLeaveManage', 'navExport', 'navNotifications'];
+        var menuIds = ['navHierarchy', 'navAdd', 'navStats', 'navInspection', 'navFloorChange', 'navStudents', 'navItems', 'navLeaveManage', 'navExport', 'navNotifications', 'navChangePwd'];
         menuIds.forEach(function(id) {
             var el = document.getElementById(id);
             if (el) el.style.display = 'none';
@@ -148,6 +148,7 @@
             document.getElementById('navHierarchy').style.display = 'flex';
             document.getElementById('navLeaveManage').style.display = 'flex';
             document.getElementById('navExport').style.display = 'flex';
+            document.getElementById('navChangePwd').style.display = 'flex';
         } else {
             // 普通生活老师（staff）：住宿信息 + 扣分登记 + 统计报表 + 巡查核实 + 学生管理
             // 移动端（<=768px）额外隐藏"统计报表"和"学生管理"，侧边栏/底栏更聚焦日常操作；桌面端保持不变
@@ -157,6 +158,7 @@
             document.getElementById('navStats').style.display = staffMobile ? 'none' : 'flex';
             document.getElementById('navInspection').style.display = 'flex';
             document.getElementById('navFloorChange').style.display = 'flex';
+            document.getElementById('navChangePwd').style.display = 'flex';
             document.getElementById('navLeaveManage').style.display = staffMobile ? 'none' : 'flex';
             // 数据管理菜单对 staff 隐藏
             document.getElementById('navExport').style.display = 'none';
@@ -3796,6 +3798,155 @@
         saveDB();
         toast('已删除全部楼层调整记录');
         if(currentView === 'export') renderExportView(document.getElementById('contentArea'));
+    }
+
+    // ==================== 修改密码：业务逻辑 ====================
+    /**
+     * 打开「修改密码」弹层（仅 STAFF / CLASS_ADMIN）。
+     * 弹层 HTML 由 ui.js 的 buildChangePasswordModalHtml 拼装。
+     */
+    function openChangePasswordModal(){
+        if(!currentUser){ toast('请先登录','error'); return; }
+        if(currentUser.role !== 'STAFF' && currentUser.role !== 'CLASS_ADMIN'){
+            toast('当前角色不支持修改密码，请联系管理员','error');
+            return;
+        }
+        document.getElementById('changePwdModalBox').innerHTML = buildChangePasswordModalHtml();
+        document.getElementById('changePwdModal').classList.add('show');
+        // 聚焦第一个输入框（移动端弹起键盘）
+        setTimeout(function(){
+            var el = document.getElementById('pwdCurrent');
+            if(el) el.focus();
+        }, 120);
+    }
+
+    /** 关闭「修改密码」弹层 */
+    function closeChangePasswordModal(){
+        var m = document.getElementById('changePwdModal');
+        if(m) m.classList.remove('show');
+    }
+
+    /**
+     * 切换密码输入框明文/密文显示。
+     * @param {string} inputId - 输入框 ID
+     * @param {HTMLElement} btn - 点击的按钮（用于切换自身图标）
+     */
+    function togglePwdVisibility(inputId, btn){
+        var el = document.getElementById(inputId);
+        if(!el) return;
+        if(el.type === 'password'){
+            el.type = 'text';
+            if(btn) btn.textContent = '🙈';
+        }else{
+            el.type = 'password';
+            if(btn) btn.textContent = '👁';
+        }
+    }
+
+    /**
+     * 显示/隐藏弹层内的红字错误提示。
+     * @param {string} msg - 错误文案（空字符串则隐藏）
+     */
+    function showChangePwdError(msg){
+        var el = document.getElementById('changePwdError');
+        if(!el) return;
+        if(msg){ el.textContent = msg; el.classList.add('show'); }
+        else{ el.textContent = ''; el.classList.remove('show'); }
+    }
+
+    /**
+     * 提交修改密码入口（防重入 + safeAsync 统一异常处理）。
+     */
+    function saveNewPassword(){
+        if(saveNewPassword._busy) return;
+        saveNewPassword._busy = true;
+        setTimeout(function(){ saveNewPassword._busy = false; }, 1000);
+        safeAsync(saveNewPasswordImpl, '修改密码', { retry: false });
+    }
+
+    /**
+     * 修改密码实际逻辑：
+     *   1) 读取并 trim 三个字段；
+     *   2) 校验：当前密码非空、新密码非空、确认密码非空；
+     *   3) 校验：新密码 ≥ 6 位，且至少含 1 个字母（a-z/A-Z）；
+     *   4) 校验：新密码 ≠ 当前密码；
+     *   5) 校验：两次新密码一致；
+     *   6) 校验：当前密码哈希与账号 passwordHash 匹配；
+     *   7) 通过后：更新 passwordHash → v3MarkDirty('user') → saveDB()；
+     *   8) 若本机记住密码里存的是该账号的旧哈希，同步更新为新哈希；
+     *   9) 发站内通知；关闭弹层 + toast。
+     * @returns {Promise}
+     */
+    function saveNewPasswordImpl(){
+        if(!currentUser){ toast('请先登录','error'); return Promise.resolve(); }
+        if(currentUser.role !== 'STAFF' && currentUser.role !== 'CLASS_ADMIN'){
+            toast('当前角色不支持修改密码','error');
+            return Promise.resolve();
+        }
+        var curEl = document.getElementById('pwdCurrent');
+        var newEl = document.getElementById('pwdNew');
+        var cfmEl = document.getElementById('pwdConfirm');
+        if(!curEl || !newEl || !cfmEl){ return Promise.resolve(); }
+        var curPwd = String(curEl.value || '').trim();
+        var newPwd = String(newEl.value || '').trim();
+        var cfmPwd = String(cfmEl.value || '').trim();
+        // 1) 非空校验
+        if(!curPwd){ showChangePwdError('请输入当前密码'); return Promise.resolve(); }
+        if(!newPwd){ showChangePwdError('请输入新密码'); return Promise.resolve(); }
+        if(!cfmPwd){ showChangePwdError('请再次输入新密码'); return Promise.resolve(); }
+        // 2) 长度 + 字母校验
+        if(newPwd.length < 6){ showChangePwdError('新密码至少 6 位'); return Promise.resolve(); }
+        if(!/[a-zA-Z]/.test(newPwd)){ showChangePwdError('新密码必须包含至少一个字母（大小写均可）'); return Promise.resolve(); }
+        // 3) 新旧不相同
+        if(newPwd === curPwd){ showChangePwdError('新密码不能与当前密码相同'); return Promise.resolve(); }
+        // 4) 两次一致
+        if(newPwd !== cfmPwd){ showChangePwdError('两次输入的新密码不一致'); return Promise.resolve(); }
+        showChangePwdError('');
+        // 5) 校验当前密码：先算哈希，再与账号 passwordHash 比对
+        var user = currentUser;
+        var target = DB.users.find(function(u){ return String(u.id) === String(user.id); });
+        if(!target){ showChangePwdError('账号不存在，请重新登录'); return Promise.resolve(); }
+        var hasHash = typeof target.passwordHash === 'string' && target.passwordHash.length > 0;
+        var hasPlain = typeof target.password === 'string' && target.password.length > 0;
+        return hashPassword(curPwd).then(function(curHash){
+            // 兼容旧明文账号：若账号仅有明文 password，则明文比对
+            var ok = false;
+            if(hasHash){
+                ok = (target.passwordHash === curHash);
+                // 兼容"记住密码"回填的哈希直比场景：用户直接粘贴的是 64 位 hex 哈希
+                if(!ok && /^[0-9a-f]{64}$/i.test(curPwd) && curPwd === target.passwordHash){ ok = true; }
+            }else if(hasPlain){
+                ok = (target.password === curPwd);
+            }
+            if(!ok){ showChangePwdError('当前密码不正确'); return Promise.resolve(); }
+            // 6) 计算新密码哈希并落库
+            return hashPassword(newPwd).then(function(newHash){
+                target.passwordHash = newHash;
+                delete target.password; // 兼容：清除可能残留的明文字段
+                target.lastModified = Date.now();
+                v3MarkDirty('user', target.id);
+                saveDB();
+                // 7) 同步本机"记住密码"（仅当存的就是本账号时）
+                try {
+                    var savedName = localStorage.getItem('rememberedUsername');
+                    if(savedName && savedName === target.username){
+                        localStorage.setItem('rememberedPassword', newHash);
+                    }
+                }catch(e){}
+                // 8) 发站内通知（发送失败不影响主流程）
+                try {
+                    var nowStr = formatLocalDate(new Date()) + ' ' + (function(){
+                        var d = new Date();
+                        function p2(n){ return String(n).padStart(2,'0'); }
+                        return p2(d.getHours()) + ':' + p2(d.getMinutes());
+                    })();
+                    addNotification(target.id, 'warning', '🔐 密码已修改', '你的账号密码已于 ' + nowStr + ' 修改成功。如非本人操作，请立即联系管理员。', null);
+                }catch(e){ /* 通知失败静默 */ }
+                // 9) 收尾
+                closeChangePasswordModal();
+                toast('密码修改成功，下次登录请使用新密码');
+            });
+        });
     }
 
     // ==================== 初始化 ====================

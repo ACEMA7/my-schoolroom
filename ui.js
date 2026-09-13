@@ -325,6 +325,7 @@
             {view:'students',   icon:'👥', name:'学生名单管理',     color:'#ff3b30', roles:['ADMIN']},
             {view:'items',      icon:'📋', name:'扣分项目管理', color:'#a855f7', roles:['ADMIN']},
             {view:'leavemanage',icon:'🏠', name:'学生管理', color:'#0891b2', roles:['ADMIN','STAFF','CLASS_ADMIN']},
+            {view:'__changepwd', icon:'🔑', name:'修改密码', color:'#0891b2', roles:['STAFF','CLASS_ADMIN'], isModal:true},
             {view:'export',     icon:'📊', name:'数据管理',     color:'#eab308', roles:['ADMIN','CLASS_ADMIN']},
             {view:'notifications', icon:'📢', name:'通知管理', color:'#f43f5e', roles:['ADMIN']}
         ];
@@ -333,7 +334,9 @@
             if (hideStaffMobile && (it.view === 'stats' || it.view === 'leavemanage')) return false;
             return true;
         }).map(function(it){
-            return '<div class="home-card" style="background:'+it.color+'" onclick="switchView(\''+it.view+'\')"><span class="hc-icon">'+it.icon+'</span><span class="hc-name">'+it.name+'</span></div>';
+            // isModal=true 的卡片不切换视图，而是打开弹层（如"修改密码"）
+            var clickHandler = it.isModal ? ('openChangePasswordModal()') : ('switchView(\'' + it.view + '\')');
+            return '<div class="home-card" style="background:'+it.color+'" onclick="'+clickHandler+'"><span class="hc-icon">'+it.icon+'</span><span class="hc-name">'+it.name+'</span></div>';
         }).join('');
         var welcome = currentUser ? ('你好，' + currentUser.realName + '，请选择要使用的功能') : '请选择要使用的功能';
         container.innerHTML = '<div class="content-header"><h2>🏠 功能首页</h2></div><div class="home-welcome">'+welcome+'</div><div class="home-grid">'+cards+'</div>';
@@ -3174,6 +3177,40 @@
     // 以下函数仅负责生成弹层 HTML 字符串；业务校验/状态变更/落库仍在 app.js。
     // 所依赖的 DB、查询函数（getStudentById 等）、状态变量（transferStudentId/
     // anomalyModalState/batchUserState）均为全局，可直接访问。
+
+    /**
+     * 拼装「修改密码」弹层 HTML。
+     * 三个密码字段均带 👁 显示/隐藏切换按钮；底部灰色小字提示忘记密码请联系管理员。
+     * @returns {string}
+     */
+    function buildChangePasswordModalHtml(){
+        var u = currentUser || {};
+        var roleLabel = u.role === 'CLASS_ADMIN' ? '班主任' : (u.role === 'STAFF' ? '生活老师' : '');
+        var acctText = escapeHtmlAttr(u.username || '') + '（' + escapeHtmlAttr(u.realName || '') + (roleLabel ? ' · ' + roleLabel : '') + '）';
+        function pwdField(id, label, hint){
+            return '<div class="form-group">'
+                + '<label>' + label + ' *</label>'
+                + '<div class="pwd-input-wrap">'
+                + '<input type="password" id="' + id + '" autocomplete="new-password" placeholder="请输入' + label + '">'
+                + '<button type="button" class="pwd-eye-btn" onclick="togglePwdVisibility(\'' + id + '\',this)" aria-label="显示/隐藏密码">👁</button>'
+                + '</div>'
+                + (hint ? '<div class="pwd-hint">' + hint + '</div>' : '')
+                + '</div>';
+        }
+        return '<div class="em-header"><span>🔑 修改密码</span><button class="em-close" aria-label="关闭" onclick="closeChangePasswordModal()">✕</button></div>'
+            + '<div class="em-body">'
+            + '<div class="form-group"><label>账号</label><div style="padding:8px 12px;background:var(--gray-50);border-radius:6px;font-size:0.9286rem">' + acctText + '</div></div>'
+            + pwdField('pwdCurrent', '当前密码', '')
+            + pwdField('pwdNew', '新密码', '💡 至少 6 位，必须包含字母（大小写均可）')
+            + pwdField('pwdConfirm', '确认新密码', '')
+            + '<div class="pwd-error" id="changePwdError"></div>'
+            + '<div class="pwd-hint" style="margin-top:10px;text-align:center">⚠️ 忘记密码请联系管理员重置</div>'
+            + '</div>'
+            + '<div class="em-footer">'
+            + '<button class="btn btn-primary" onclick="saveNewPassword()">💾 确认修改</button>'
+            + '<button class="btn btn-outline" onclick="closeChangePasswordModal()">取消</button>'
+            + '</div>';
+    }
 
     /**
      * 生成"调换床位/宿舍"弹层 HTML。
