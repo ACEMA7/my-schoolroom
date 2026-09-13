@@ -525,7 +525,7 @@
             var actionHtml='<td data-label="操作">-</td>';
             if(isAdmin()) actionHtml='<td data-label="操作"><button class="btn btn-danger btn-xs" onclick="deleteRecord(\''+r.id+'\')">删除</button></td>';
             else if(staffMode) actionHtml='<td data-label="操作"><button class="btn btn-primary btn-xs" onclick="editRecord(\''+r.id+'\')">修改</button></td>';
-            return '<tr><td data-label="日期">'+r.recordDate+'</td><td data-label="对象">'+modeTag+(student?student.name:'宿舍集体')+'</td><td data-label="卫生项目">'+(hyNames||'-')+'</td><td data-label="卫生分值" style="color:'+scoreColor+'">'+scorePrefix+(r.hygieneScore||0)+'</td><td data-label="纪律项目">'+(disNames||'-')+'</td><td data-label="纪律分值" style="color:'+scoreColor+'">'+scorePrefix+(r.disciplineScore||0)+'</td><td data-label="备注">'+escapeHtmlAttr(r.remark||'-')+'</td>'+actionHtml+'</tr>';
+            return '<tr>'+actionHtml+'<td data-label="日期">'+r.recordDate+'</td><td data-label="对象">'+modeTag+(student?student.name:'宿舍集体')+'</td><td data-label="卫生项目">'+(hyNames||'-')+'</td><td data-label="卫生分值" style="color:'+scoreColor+'">'+scorePrefix+(r.hygieneScore||0)+'</td><td data-label="纪律项目">'+(disNames||'-')+'</td><td data-label="纪律分值" style="color:'+scoreColor+'">'+scorePrefix+(r.disciplineScore||0)+'</td><td data-label="备注">'+escapeHtmlAttr(r.remark||'-')+'</td></tr>';
         }
         // 手机端顶部导航卡：楼层芯片(每行4个均匀分布) + 宿舍横滑条，与扣分登记页交互一致；桌面端不渲染（侧边栏树保留）
         var topCard='';
@@ -566,7 +566,7 @@
         var memberOpsTh = isAdmin() ? '<th>操作</th>' : '';
         var membersCardPc='<div class="card"><div class="card-header">👥 宿舍成员</div><div style="overflow-x:auto"><table><thead><tr><th>姓名</th><th>班级</th><th>床号</th><th>状态</th><th>个人净分</th>'+memberOpsTh+'</tr></thead><tbody>'+studentHtml+'</tbody></table></div></div>';
         var membersCardMobile='<div class="card"><div class="card-header">👥 宿舍成员</div><div class="card-body" style="padding:2px 14px">'+memberCardHtml+'</div></div>';
-        var recordsCard='<div class="card"><div class="card-header">📜 历史记录 <span class="badge-tag badge-danger">'+total+'分</span><span style="font-weight:400;font-size:0.8571rem;color:var(--gray-500);margin-left:6px">按日期倒序</span></div><div style="overflow-x:auto"><table><thead><tr><th>日期</th><th>对象</th><th>卫生项目</th><th>分值</th><th>纪律项目</th><th>分值</th><th>备注</th><th>操作</th></tr></thead><tbody id="historyTbody"></tbody></table></div></div>';
+        var recordsCard='<div class="card"><div class="card-header">📜 历史记录 <span class="badge-tag badge-danger">'+total+'分</span><span style="font-weight:400;font-size:0.8571rem;color:var(--gray-500);margin-left:6px">按日期倒序</span></div><div style="overflow-x:auto"><table><thead><tr><th>操作</th><th>日期</th><th>对象</th><th>卫生项目</th><th>分值</th><th>纪律项目</th><th>分值</th><th>备注</th></tr></thead><tbody id="historyTbody"></tbody></table></div></div>';
         // 移动端顺序：楼层/宿舍芯片 → 状态汇总 → 宿舍成员（单行紧凑）→ 三个统计卡片 → 历史扣分记录
         // PC 端顺序保持不变：统计大卡（状态+三卡片）→ 历史扣分记录 → 宿舍成员表
         container.innerHTML='<div class="content-header"><h2>📋 宿舍 '+dorm.roomNumber+'（'+floor.name+'）</h2></div>'+topCard+(isMobileH?(statusCard+membersCardMobile+statThreeMobile+recordsCard):(statsCard+recordsCard+membersCardPc));

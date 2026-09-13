@@ -2641,9 +2641,17 @@
      */
     function saveNotifTemplate(){
         if(!isAdmin()){ toast('无权限','error'); return; }
-        var id = String((document.getElementById('notifTplEditId') || {}).value || notifTemplateEditId || '');
-        if(!id){ toast('模板标识缺失','error'); return; }
-        var t = getNotificationTemplateById(id);
+        var id = String((document.getElementById('notifTplEditId') || {}).value || notifTemplateEditId || '').trim();
+        var isNew = !id;
+        if(isNew){
+            id = String((document.getElementById('notifTplIdInput') || {}).value || '').trim();
+            if(!id){ toast('请输入模板ID','error'); return; }
+            if(id.indexOf('warn_') === 0 || id.indexOf('approval_') === 0 || id.indexOf('reject_') === 0){
+                toast('模板ID不能以系统保留前缀（warn_/approval_/reject_）开头','error'); return;
+            }
+            if(getNotificationTemplateById(id)){ toast('模板ID已存在，请更换','error'); return; }
+        }
+        var t = isNew ? { id: id } : getNotificationTemplateById(id);
         if(!t){ toast('模板不存在或已被删除','error'); closeNotifTemplateModal(); return; }
         var title = String(document.getElementById('notifTplTitle').value || '').trim();
         var content = String(document.getElementById('notifTplContent').value || '').trim();
@@ -2652,10 +2660,11 @@
         t.content = content;
         t.enabled = !!document.getElementById('notifTplEnabled').checked;
         t.lastModified = Date.now();
+        if(isNew && Array.isArray(DB.notificationTemplates)) DB.notificationTemplates.push(t);
         v3MarkDirty('notification_template', t.id);
         saveDB();
         closeNotifTemplateModal();
-        toast('模板已保存');
+        toast(isNew ? '模板已新增' : '模板已保存');
         if(currentView === 'notifications') renderView();
     }
     /**
