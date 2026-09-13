@@ -2341,9 +2341,9 @@
         var nameSet={}; pool.forEach(function(s){ if(s.name) nameSet[s.name]=true; });
         var names=Object.keys(nameSet);
         nameEl.innerHTML='<option value="">全部学生</option>'+names.map(function(n){return '<option value="'+n+'">'+n+'</option>';}).join('');
-        // 当前选中值仍在名单中则保留；否则默认选中该班级第一个学生（与原 datalist 版行为一致）
+        // 当前选中值仍在名单中则保留；否则回到"全部学生"（空值），不默认选中第一个学生
         if(nameEl.value && nameSet[nameEl.value]) return;
-        nameEl.value=names.length>0?names[0]:'';
+        nameEl.value='';
     }
 
     // 统一读取数据管理页筛选条件；班级账号强制锁定本班
