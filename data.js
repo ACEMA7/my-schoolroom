@@ -953,6 +953,54 @@
         });
     }
 
+    /**
+     * 构造一个"空数据库"（不是默认数据库）。
+     * 用于"绑定主控设备"场景：清空本地全部业务数据，但保留必需的空结构，
+     * 让后续的 loadFromCloud 能从云端拉取一份完整数据填充进来。
+     * 与 initDatabase 的区别：initDatabase 会生成默认学生/账号/项目等示例数据，
+     * 本函数生成的是"完全空、等待云端填充"的空壳。
+     * @returns {void}
+     */
+    function initEmptyDB() {
+        DB = {
+            floors: [],
+            dormitories: [],
+            dormitoryList: [],
+            students: [],
+            users: [],
+            deductionItems: { hygiene: [], discipline: [], hygieneBonus: [], disciplineBonus: [] },
+            deductionRecords: [],
+            leaveRecords: [],
+            absenceRecords: [],
+            inspectionConfirmations: [],
+            anomalyReports: [],
+            dailyInspectionSummaries: [],
+            notifications: [],
+            notificationTemplates: [],
+            floorChangeRequests: [],
+            nextIds: {
+                floor: 1, dormitory: 1, student: 1, item: 300, record: 1,
+                leave: 1, absence: 1, user: 1, confirmation: 1, anomaly: 1, summary: 1
+            },
+            syncEpoch: 0,
+            lastSyncTime: 0,
+            dirtyByType: {},
+            deletedByType: {},
+            syncedRecordIds: [],
+            deletedRecordIds: [],
+            dirtyRecordIds: []
+        };
+        // 补齐 V3 各类型的空脏标记桶，避免同步流程访问 undefined
+        if(typeof V3_RECORD_TYPES !== 'undefined'){
+            V3_RECORD_TYPES.forEach(function(m){
+                if(!DB.dirtyByType[m.type]) DB.dirtyByType[m.type] = {};
+                if(!DB.deletedByType[m.type]) DB.deletedByType[m.type] = {};
+            });
+        }
+        saveDBToLocal();
+        console.log('[绑定主控] 已构造空数据库，等待从云端拉取完整数据');
+    }
+
     // ==================== 本地存储（含压缩回退 + 容量预警） ====================
 
     var storageWarned = false;

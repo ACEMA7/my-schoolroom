@@ -192,12 +192,19 @@
             return;
         }
         try{
+            // 【关键】先清除本地全部业务数据（清空 DB_KEY），再设置强制拉取标志，
+            // 让下次启动走"空库 → 从云端拉取"流程，防止设备 B 本地残留的旧数据
+            // 被当成"主控设备本地宝贵数据"上传污染云端。
+            // 提前弹出确认，让用户明确知道本机数据将被丢弃、改用云端数据。
+            if(!confirm('绑定主控设备前，本机现有的全部数据（学生名单、扣分记录、请假记录等）将被清除，改为从云端下载最新数据。\n\n如果本机数据是你现在要用的正确数据，请先点"取消"，改用其它方式处理。\n\n确认绑定并清除本机数据？')) return;
+            try { localStorage.removeItem(DB_KEY); } catch(e) {}
+            localStorage.setItem('dorm_force_pull_from_cloud', 'true');
             localStorage.setItem('dorm_device_id', MASTER_DEVICE_ID);
         }catch(e){
             toast('绑定失败：无法写入本地存储（'+(e&&e.message||e)+'）','error');
             return;
         }
-        toast('绑定成功！即将刷新页面...');
+        toast('绑定成功！本机数据已清除，即将刷新并从云端重新下载...');
         setTimeout(function(){ window.location.reload(); }, 1500);
     }
 

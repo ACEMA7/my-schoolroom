@@ -1269,8 +1269,25 @@
      * @returns {Promise} 初始化完成（无论云端是否可用）
      */
     function initializeData() {
-        // initDatabase/ensureCorrectUsers 为异步（含密码哈希计算），先等待其完成再继续初始化
-        var boot = loadDBFromLocal() ? Promise.resolve() : initDatabase();
+        // 【绑定主控设备·强制从云端拉取】识别标志：
+        //   用户在数据管理页点了"将当前设备设为主控设备"后，会写入此标志。
+        //   本次启动强制走"空库 → 从云端拉取"流程，彻底丢弃本地旧缓存，
+        //   避免旧数据被当成"主控设备本地宝贵数据"而上传污染云端。
+        var forcePull = false;
+        try {
+            forcePull = localStorage.getItem('dorm_force_pull_from_cloud') === 'true';
+            if(forcePull) localStorage.removeItem('dorm_force_pull_from_cloud');
+        } catch(e) {}
+        var boot;
+        if(forcePull){
+            console.log('[绑定主控] 检测到强制拉取标志，清空本地后从云端重新下载');
+            initEmptyDB();
+            boot = Promise.resolve();
+        } else {
+            // 正常启动：本地有存档则加载，否则创建默认数据库
+            // initDatabase/ensureCorrectUsers 为异步（含密码哈希计算），先等待其完成再继续初始化
+            boot = loadDBFromLocal() ? Promise.resolve() : initDatabase();
+        }
         return boot.then(function(){ return ensureCorrectUsers(); }).then(function(){
         // DB 已由 loadDBFromLocal / initDatabase 完成实例化，挂载到 window
         // 确保外部脚本与控制台访问的始终是最新数据库实例
