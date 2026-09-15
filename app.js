@@ -58,7 +58,10 @@
      * （登录走哈希直比），旧版 rememberedCredentials 一次性拆分迁移；
      * 更早期的明文凭证最后一次回填并后台升级为哈希存储。
      */
-    function checkSavedLogin() {
+    async function checkSavedLogin() {
+        // 【版本守卫】会话恢复前强制比对版本：版本落后则遮罩+刷新并终止恢复流程，
+        // 绝不允许旧版本 JS 以已登录状态继续运行（防止旧逻辑产生脏数据）
+        if(!await checkLatestVersion()) return;
         var savedUser = sessionStorage.getItem('currentUser');
         if (savedUser) {
             try {
@@ -166,12 +169,120 @@
         buildBottomNav();
     }
 
+    // ==================== 版本守卫（登录/同步前置强制检查） ====================
+    // 防止旧版本 JS 继续运行产生脏数据：登录与同步前从网络强行拉取最新 sw.js 的
+    // APP_VERSION，与当前运行的 SW 版本比对，不一致即全屏遮罩 + 强制刷新，直至版本对齐。
+    var _verCheckLastPass = 0; // 最近一次"版本一致"通过的时间戳（30 秒内免重复网络检查，syncWithRetry 高频触发）
+
+    /**
+     * 显示全屏升级遮罩（阻断一切操作，等待强制刷新）。
+     * 动态创建，无需修改 index.html；重复调用不叠加。
+     */
+    function showForceUpgradeOverlay(){
+        if(document.getElementById('forceUpgradeOverlay')) return;
+        var overlay = document.createElement('div');
+        overlay.id = 'forceUpgradeOverlay';
+        overlay.style.cssText = 'position:fixed;left:0;top:0;right:0;bottom:0;z-index:99999;background:rgba(255,255,255,0.98);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px';
+        overlay.innerHTML = '<style>@keyframes _fusSpin{to{transform:rotate(360deg)}}</style>'
+            + '<div style="width:36px;height:36px;border:4px solid var(--gray-200,#e5e7eb);border-top-color:#4f6ef7;border-radius:50%;animation:_fusSpin 0.8s linear infinite"></div>'
+            + '<div style="font-size:1.05rem;color:#374151;font-weight:600">系统检测到新版本，正在自动升级，请稍候...</div>';
+        document.body.appendChild(overlay);
+    }
+
+    /**
+     * 版本强制对齐检查（登录/同步前调用）：
+     *   1) 离线直接放行（离线不产生云端同步，允许本地离线使用）；
+     *   2) fetch('./sw.js', {cache:'no-store'}) 绕过 HTTP 缓存拉最新文本
+     *      （URL 加时间戳参数，避免命中 SW fetch handler 的动态缓存副本）；
+     *   3) 正则提取 self.APP_VERSION 的版本号 netVersion；
+     *   4) 经 MessageChannel 向 SW 发 GET_VERSION 取当前运行版本 localVersion
+     *      （controller 缺失或 3 秒未应答均视为版本落后）；
+     *   5) 不一致 → 全屏遮罩提示 + reload(true) 强制刷新，返回 false 阻断调用方；
+     *      一致 → 返回 true；网络失败/解析异常 → 放行容错，不阻断正常使用。
+     * @returns {Promise<boolean>} true=版本对齐或离线放行；false=版本落后（即将刷新）
+     */
+    function checkLatestVersion(){
+        if(typeof navigator !== 'undefined' && navigator.onLine === false){
+            return Promise.resolve(true); // 离线放行
+        }
+        if(Date.now() - _verCheckLastPass < 30000){
+            return Promise.resolve(true); // 30 秒内刚检查通过，免重复网络请求
+        }
+        // 【防死循环兜底】双重保险，应对"版本号永远拉不到最新"的极端情况：
+        //   1) 同一会话内因版本检查触发的强制刷新最多 2 次，超过则提示网络异常并放行（不卡死设备）；
+        //   2) 刷新后 30 秒内放行（覆盖刷新早期 SW 尚未接管/未对齐的短暂窗口）。
+        try {
+            var rc = parseInt(sessionStorage.getItem('_verReloadCount') || '0', 10);
+            if(rc >= 2){
+                console.warn('[版本守卫] 已连续刷新 ' + rc + ' 次仍未对齐版本，疑似网络异常，放行本次操作');
+                toast('网络异常，版本检测未完成，请稍后手动刷新页面', 'error');
+                return Promise.resolve(true);
+            }
+            var lastReload = parseInt(sessionStorage.getItem('_verReloadAt') || '0', 10);
+            if(lastReload && Date.now() - lastReload < 30000) return Promise.resolve(true);
+        } catch(e){}
+        return new Promise(function(resolve){
+            var settled = false;
+            function finish(ok){
+                if(settled) return;
+                settled = true;
+                clearTimeout(timeoutId);
+                resolve(ok);
+            }
+            // SW 应答兜底：3 秒未回视为版本落后（controller 无响应/消息丢失）
+            var timeoutId = setTimeout(function(){ finish(false); }, 3000);
+            try {
+                // 1) 网络强行拉取最新 sw.js 文本
+                fetch('./sw.js?v=' + Date.now(), { cache: 'no-store' }).then(function(res){
+                    if(!res.ok) throw new Error('HTTP ' + res.status);
+                    return res.text();
+                }).then(function(text){
+                    // 2) 提取最新版本号
+                    var m = text.match(/self\.APP_VERSION\s*=\s*'([^']+)'/);
+                    var netVersion = m ? m[1] : '';
+                    if(!netVersion){ finish(true); return; } // 解析失败放行，避免误杀
+                    // 3) 获取当前运行的 SW 版本
+                    if(!(navigator.serviceWorker && navigator.serviceWorker.controller)){
+                        finish(false); return; // 无 controller：视为版本落后，强制刷新
+                    }
+                    var mc = new MessageChannel();
+                    mc.port1.onmessage = function(ev){
+                        if(!ev.data || ev.data.type !== 'APP_VERSION') return;
+                        var localVersion = ev.data.version || '';
+                        if(localVersion && localVersion === netVersion){
+                            _verCheckLastPass = Date.now();
+                            finish(true); // 版本一致：放行
+                        }else{
+                            // 版本不一致：遮罩提示 + 强制刷新（计入刷新次数，防死循环），阻断调用方流程
+                            showForceUpgradeOverlay();
+                            try {
+                                sessionStorage.setItem('_verReloadAt', String(Date.now()));
+                                var cnt = parseInt(sessionStorage.getItem('_verReloadCount') || '0', 10);
+                                sessionStorage.setItem('_verReloadCount', String(cnt + 1));
+                            } catch(e){}
+                            setTimeout(function(){ window.location.reload(true); }, 1200);
+                            finish(false);
+                        }
+                    };
+                    navigator.serviceWorker.controller.postMessage({ type: 'GET_VERSION' }, [mc.port2]);
+                }).catch(function(){
+                    finish(true); // 网络失败（离线边界）：放行，允许本地离线使用
+                });
+            }catch(e){
+                finish(true); // 意外异常：放行，不阻断正常使用
+            }
+        });
+    }
+
     // ==================== 登录/登出 ====================
     // 登录入口经 safeAsync 统一捕获异常（本地数据加载/哈希计算等），失败后可点击重试
     /**
-     * 登录入口（登录按钮/回车调用）：经 safeAsync 统一捕获异常，失败可点击重试。
+     * 登录入口（登录按钮/回车调用）：先经版本守卫强制比对版本，
+     * 版本落后则遮罩+刷新并终止登录；通过后经 safeAsync 统一捕获异常，失败可点击重试。
      */
-    function handleLogin(){
+    async function handleLogin(){
+        // 【版本守卫】版本不匹配时 checkLatestVersion 内部已弹出遮罩并安排刷新，直接终止登录
+        if(!await checkLatestVersion()) return;
         safeAsync(handleLoginImpl, '登录', { retry: true });
     }
     /**

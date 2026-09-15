@@ -731,6 +731,20 @@
      */
     function syncWithRetry(){
         if(!syncEnabled||!supabaseClient||!DB) return Promise.resolve(false);
+        // 【版本双重检测机制·后台同步入口】在 running 防重入判断之前强制比对版本：
+        // 版本落后时绝不执行后续的 syncToCloud()/pullFromCloud()（checkLatestVersion
+        // 内部已弹全屏遮罩并安排 1.2 秒强制刷新），阻断旧版本上传脏数据；
+        // 断网时 checkLatestVersion 直接放行，离线分支不受影响。
+        return checkLatestVersion().then(function(verOk){
+            if(!verOk){
+                toast('当前版本过旧，已阻断同步，请刷新页面', 'error');
+                return false;
+            }
+            return doSyncWithRetryInner();
+        });
+    }
+    /** syncWithRetry 的原有逻辑（版本守卫通过后执行）：防重入 + 指数退避重试 */
+    function doSyncWithRetryInner(){
         if(_retryState.running) return Promise.resolve(false); // 防重入
         _retryState.running=true;
         _retryState.attempt=0;
@@ -1165,7 +1179,26 @@
      * 上传失败绝不误报"同步完成"，保留脏标记并入重试队列；
      * 检测到重置窗口（aborted）提示稍后再试，检测到版本重置（reset）刷新界面。
      */
+    /**
+     * 手动同步入口（点"同步"按钮触发）。
+     * 【版本双重检测机制·手动同步入口】函数最开头（manualSync._busy 判断之前）
+     * 先经 checkLatestVersion() 强制比对版本：
+     *   - 版本落后 → 醒目 toast + checkLatestVersion 内部已安排 1.2 秒强制刷新，立即阻断同步；
+     *   - 断网 → checkLatestVersion 直接放行（离线同步不污染云端），走离线入队分支；
+     *   - 版本一致 → 执行 manualSyncInner 原有同步逻辑。
+     * @returns {Promise<boolean>}
+     */
     function manualSync(){
+        return checkLatestVersion().then(function(verOk){
+            if(!verOk){
+                toast('⚠️ 系统已更新，当前版本过旧，为保护数据安全已阻断同步。即将强制刷新页面，请稍后重试。', 'error');
+                return false;
+            }
+            return manualSyncInner();
+        });
+    }
+    /** manualSync 的原有同步逻辑（版本双重检测通过后执行） */
+    function manualSyncInner(){
         if(!syncEnabled||!supabaseClient){toast('云端同步未启用','error');return;}
         // 离线提示：加入重试队列，网络恢复后自动上传
         if(typeof navigator!=='undefined' && navigator.onLine===false){
