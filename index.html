@@ -211,6 +211,8 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
         .offline-label{display:none;color:#ff3b30;font-size:0.7143rem;font-weight:600;line-height:1;letter-spacing:.5px;flex-shrink:0;white-space:nowrap}
         /* 顶栏版本号：低调灰色小字，不参与交互，不挤压布局 */
         .app-version-text{font-size:0.72rem;color:#9ca3af;white-space:nowrap;user-select:none;line-height:1}
+        /* 非主控设备受限标签：醒目红底白字，提醒当前设备为只读模式 */
+        .device-restricted-badge{display:inline-flex;align-items:center;flex-shrink:0;background:#ff3b30;color:#fff;padding:4px 10px;border-radius:20px;font-size:0.78rem;font-weight:700;white-space:nowrap;line-height:1.2;box-shadow:0 1px 4px rgba(255,59,48,.35)}
         /* 字体调节按钮：默认隐藏，仅STAFF移动端通过JS加body.staff-font-scale显示 */
         .font-scale-btn{display:none}
         .font-scale-panel{display:none}
@@ -907,6 +909,7 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
                 <button class="sidebar-toggle" id="sidebarToggle" aria-label="打开菜单" onclick="toggleSidebar()">☰</button>
                 <span class="header-logo">🏠 宿舍管理</span>
                 <span class="header-badge" id="roleBadge"></span>
+                <span class="device-restricted-badge" id="deviceRestrictedBadge" style="display:none" title="当前设备非主控设备，仅可读取数据，无法修改基础数据">⚠️ 受限设备（只读）</span>
             </div>
             <div class="header-right">
                 <div class="user-avatar" id="userAvatar"></div>

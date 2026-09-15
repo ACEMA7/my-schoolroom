@@ -134,6 +134,12 @@
         var classAdmin = user.role === 'CLASS_ADMIN';
         document.getElementById('roleBadge').textContent = admin ? '👨‍💼 管理人员' : (classAdmin ? '🏫 班主任' : '📝 生活老师');
 
+        // 非主控设备 UI 熔断：顶栏显示醒目红色"受限设备（只读）"标签
+        var restrictedBadge = document.getElementById('deviceRestrictedBadge');
+        if (restrictedBadge) {
+            restrictedBadge.style.display = IS_MASTER_DEVICE ? 'none' : '';
+        }
+
         // 先隐藏所有菜单
         var menuIds = ['navHierarchy', 'navAdd', 'navStats', 'navInspection', 'navFloorChange', 'navStudents', 'navItems', 'navLeaveManage', 'navExport', 'navNotifications', 'navChangePwd'];
         menuIds.forEach(function(id) {
@@ -167,6 +173,32 @@
             document.getElementById('navExport').style.display = 'none';
         }
         buildBottomNav();
+    }
+
+    /**
+     * 将当前设备绑定为主控设备：
+     *   弹出 prompt 要求输入绑定密码（MASTER_BIND_PASSWORD）；
+     *   密码正确则把 localStorage 中的 dorm_device_id 覆盖为 MASTER_DEVICE_ID，
+     *   刷新页面后 IS_MASTER_DEVICE 自动变为 true，获得主控权限。
+     * 仅管理员可调用（UI 层已限制入口）；非管理员调用直接拒绝。
+     */
+    function bindCurrentDeviceAsMaster(){
+        if(!isAdmin()){ toast('无权限，仅管理员可绑定主控设备','error'); return; }
+        if(IS_MASTER_DEVICE){ toast('当前设备已是主控设备，无需重复绑定','success'); return; }
+        var pwd = prompt('请输入主控设备绑定密码：\n（绑定后当前设备将获得修改基础数据、重置云端等主控权限）');
+        if(pwd === null) return; // 用户点了取消
+        if(String(pwd) !== MASTER_BIND_PASSWORD){
+            toast('绑定密码错误，请重试','error');
+            return;
+        }
+        try{
+            localStorage.setItem('dorm_device_id', MASTER_DEVICE_ID);
+        }catch(e){
+            toast('绑定失败：无法写入本地存储（'+(e&&e.message||e)+'）','error');
+            return;
+        }
+        toast('绑定成功！即将刷新页面...');
+        setTimeout(function(){ window.location.reload(); }, 1500);
     }
 
     // ==================== 版本守卫（登录/同步前置强制检查） ====================
@@ -366,6 +398,25 @@
         // 登录成功：立即刷新通知未读角标，并启动 60 秒定时轮询（仅启动一次）
         updateNotifBadge();
         startNotifBadgeTimer();
+        // 登录成功后清理陈旧脏标记：业务记录中，记录已不存在 或 最后修改时间超过 3 天的脏标记直接清除，
+        // 防止离线恢复后历史废弃数据被误上传到云端。
+        if(DB && DB.dirtyByType){
+            var threeDaysAgo = Date.now() - 3 * 24 * 60 * 60 * 1000;
+            V3_MUTABLE_TYPES.forEach(function(type){
+                var ds = DB.dirtyByType[type];
+                if(!ds) return;
+                var meta = V3_RECORD_TYPES.find(function(m){ return m.type === type; });
+                var arr = (meta && meta.dbPath) ? (DB[meta.dbPath[0]] || []) : [];
+                Object.keys(ds).forEach(function(rid){
+                    var rec = arr.find(function(x){ return String(x[meta.idField]) === rid; });
+                    if(!rec || ((rec.lastModified || rec.createdAt || 0) < threeDaysAgo)){
+                        delete ds[rid];
+                    }
+                });
+            });
+            saveDBToLocal();
+            console.log('已清理陈旧脏标记');
+        }
         toast('欢迎，'+user.realName+'！');
     }
     /**
@@ -621,6 +672,7 @@
      * @param {number} studentId - 学生 ID
      */
     function moveOutStudent(studentId){
+        if(!IS_MASTER_DEVICE){toast('当前设备为受限设备，无权限修改基础数据！请在主控设备操作。','error');return;}
         if(!isAdmin()){toast('无权限操作','error');return;}
         var s = getStudentById(studentId);
         if(!s){toast('学生不存在','error');return;}
@@ -665,6 +717,7 @@
      * 落库同步后关闭弹层并刷新视图。
      */
     function saveTransfer(){
+        if(!IS_MASTER_DEVICE){toast('当前设备为受限设备，无权限修改基础数据！请在主控设备操作。','error');return;}
         if(!isAdmin()){toast('无权限操作','error');return;}
         if(transferStudentId === null){toast('参数错误','error');return;}
         var s = getStudentById(transferStudentId);
@@ -1111,6 +1164,7 @@
      */
     function updateSelectedCount(){ var checked=document.querySelectorAll('.student-checkbox:checked'); var selectAll=document.getElementById('selectAllStudents'); if(selectAll){var total=document.querySelectorAll('.student-checkbox').length; selectAll.checked=total>0&&checked.length===total;} }
     function deleteSelectedStudents(){
+        if(!IS_MASTER_DEVICE){toast('当前设备为受限设备，无权限修改基础数据！请在主控设备操作。','error');return;}
         if(!isAdmin()){toast('无权限','error');return;}
         var checkedBoxes=document.querySelectorAll('.student-checkbox:checked');
         if(checkedBoxes.length===0){toast('请先选择要删除的学生','error');return;}
@@ -1127,6 +1181,7 @@
      * 写入 DB.students 并标脏，saveDB 后刷新名单/树。
      */
     function addStudent(){
+        if(!IS_MASTER_DEVICE){toast('当前设备为受限设备，无权限修改基础数据！请在主控设备操作。','error');return;}
         if(!isAdmin()){toast('无权限','error');return;}
         var name=document.getElementById('newStuName').value.trim();
         var className=document.getElementById('newStuClass').value.trim();
@@ -1160,6 +1215,7 @@
     }
     // 确保宿舍号存在（导入学生名单时自动补建）：返回 {dorm, autoAdded}，无效返回 null
     function ensureDormitoryRoom(roomNumber){
+        if(!IS_MASTER_DEVICE){toast('当前设备为受限设备，无权限修改基础数据！请在主控设备操作。','error');return null;}
         roomNumber = String(roomNumber).trim();
         if(!/^[1-8][0-9]{2}$/.test(roomNumber)) return null;
         var existing = getDormitoryByRoomNumber(roomNumber);
@@ -1190,6 +1246,7 @@
         safeAsync(batchImportStudentsImpl, '导入学生（粘贴）', { retry: true });
     }
     function batchImportStudentsImpl(){
+        if(!IS_MASTER_DEVICE){toast('当前设备为受限设备，无权限修改基础数据！请在主控设备操作。','error');return;}
         if(!isAdmin()){toast('无权限','error');return;}
         var text=document.getElementById('batchImportText').value.trim();
         if(!text){toast('请粘贴学生数据','error');return;}
@@ -1247,6 +1304,7 @@
      * @param {File} file - .xlsx 文件
      */
     function handleExcelImportImpl(file){
+        if(!IS_MASTER_DEVICE){toast('当前设备为受限设备，无权限修改基础数据！请在主控设备操作。','error');return;}
         if(!isAdmin()){toast('无权限','error');return;}
         var reader=new FileReader();
         // 文件读取失败（权限/损坏/被占用等）：统一错误处理
@@ -1303,6 +1361,7 @@
      * @param {number} id - 学生 ID
      */
     function deleteStudent(id){
+        if(!IS_MASTER_DEVICE){toast('当前设备为受限设备，无权限修改基础数据！请在主控设备操作。','error');return;}
         if(!isAdmin()){toast('无权限','error');return;}
         if(!confirm('确认删除该学生？')) return;
         DB.students=DB.students.filter(function(s){return s.id!==id;});
@@ -1346,6 +1405,7 @@
      * 并加入 dormitoryList 权威名单，标脏落库后刷新管理弹层与树。
      */
     function addDormitory(){
+        if(!IS_MASTER_DEVICE){toast('当前设备为受限设备，无权限修改基础数据！请在主控设备操作。','error');return;}
         if(!isAdmin()){toast('无权限','error');return;}
         var input = document.getElementById('newDormRoom');
         var val = input ? input.value.trim() : '';
@@ -1391,6 +1451,7 @@
      * @param {string} roomNumber - 宿舍号（如 '305'）
      */
     function deleteDormitory(roomNumber){
+        if(!IS_MASTER_DEVICE){toast('当前设备为受限设备，无权限修改基础数据！请在主控设备操作。','error');return;}
         if(!isAdmin()){toast('无权限','error');return;}
         roomNumber = String(roomNumber);
         var dorm = getDormitoryByRoomNumber(roomNumber);
@@ -1416,6 +1477,7 @@
     }
 
     function addHygieneItem(){
+        if(!IS_MASTER_DEVICE){toast('当前设备为受限设备，无权限修改基础数据！请在主控设备操作。','error');return;}
         if(!isAdmin()){toast('无权限','error');return;}
         var name=document.getElementById('newHyItemName').value.trim();
         var score=parseFloat(document.getElementById('newHyItemScore').value);
@@ -1426,8 +1488,9 @@
         v3MarkDirty('deduction_item', newItemId);
         saveDB(); toast('✅ 卫生项目添加成功！'); renderItemsView(document.getElementById('contentArea'));
     }
-    function deleteHygieneItem(id){ if(!isAdmin()){toast('无权限','error');return;} if(!confirm('确认删除？'))return; DB.deductionItems.hygiene=DB.deductionItems.hygiene.filter(function(i){return i.id!==id;}); v3MarkDeleted('deduction_item', id); saveDB(); toast('已删除'); renderItemsView(document.getElementById('contentArea')); }
+    function deleteHygieneItem(id){ if(!IS_MASTER_DEVICE){toast('当前设备为受限设备，无权限修改基础数据！请在主控设备操作。','error');return;} if(!isAdmin()){toast('无权限','error');return;} if(!confirm('确认删除？'))return; DB.deductionItems.hygiene=DB.deductionItems.hygiene.filter(function(i){return i.id!==id;}); v3MarkDeleted('deduction_item', id); saveDB(); toast('已删除'); renderItemsView(document.getElementById('contentArea')); }
     function addDisciplineItem(){
+        if(!IS_MASTER_DEVICE){toast('当前设备为受限设备，无权限修改基础数据！请在主控设备操作。','error');return;}
         if(!isAdmin()){toast('无权限','error');return;}
         var name=document.getElementById('newDisItemName').value.trim();
         var score=parseFloat(document.getElementById('newDisItemScore').value);
@@ -1438,8 +1501,9 @@
         v3MarkDirty('deduction_item', newItemId2);
         saveDB(); toast('✅ 纪律项目添加成功！'); renderItemsView(document.getElementById('contentArea'));
     }
-    function deleteDisciplineItem(id){ if(!isAdmin()){toast('无权限','error');return;} if(!confirm('确认删除？'))return; DB.deductionItems.discipline=DB.deductionItems.discipline.filter(function(i){return i.id!==id;}); v3MarkDeleted('deduction_item', id); saveDB(); toast('已删除'); renderItemsView(document.getElementById('contentArea')); }
+    function deleteDisciplineItem(id){ if(!IS_MASTER_DEVICE){toast('当前设备为受限设备，无权限修改基础数据！请在主控设备操作。','error');return;} if(!isAdmin()){toast('无权限','error');return;} if(!confirm('确认删除？'))return; DB.deductionItems.discipline=DB.deductionItems.discipline.filter(function(i){return i.id!==id;}); v3MarkDeleted('deduction_item', id); saveDB(); toast('已删除'); renderItemsView(document.getElementById('contentArea')); }
     function batchImportHygieneItems(){
+        if(!IS_MASTER_DEVICE){toast('当前设备为受限设备，无权限修改基础数据！请在主控设备操作。','error');return;}
         if(!isAdmin()){toast('无权限','error');return;}
         var text=document.getElementById('hyBatchImport').value.trim();
         if(!text){toast('请输入数据','error');return;}
@@ -1458,6 +1522,7 @@
         saveDB(); toast('成功导入'+imported+'个卫生项目'); renderItemsView(document.getElementById('contentArea'));
     }
     function batchImportDisciplineItems(){
+        if(!IS_MASTER_DEVICE){toast('当前设备为受限设备，无权限修改基础数据！请在主控设备操作。','error');return;}
         if(!isAdmin()){toast('无权限','error');return;}
         var text=document.getElementById('disBatchImport').value.trim();
         if(!text){toast('请输入数据','error');return;}
@@ -1477,6 +1542,7 @@
     }
     // ===== 加分项目管理（与扣分项逻辑一致，_subType 区分） =====
     function addHygieneBonusItem(){
+        if(!IS_MASTER_DEVICE){toast('当前设备为受限设备，无权限修改基础数据！请在主控设备操作。','error');return;}
         if(!isAdmin()){toast('无权限','error');return;}
         var name=document.getElementById('newHyBonusItemName').value.trim();
         var score=parseFloat(document.getElementById('newHyBonusItemScore').value);
@@ -1488,6 +1554,7 @@
         saveDB(); toast('✅ 卫生加分项目添加成功！'); renderItemsView(document.getElementById('contentArea'));
     }
     function deleteHygieneBonusItem(id){
+        if(!IS_MASTER_DEVICE){toast('当前设备为受限设备，无权限修改基础数据！请在主控设备操作。','error');return;}
         if(!isAdmin()){toast('无权限','error');return;}
         if(!confirm('确认删除？'))return;
         DB.deductionItems.hygieneBonus=DB.deductionItems.hygieneBonus.filter(function(i){return i.id!==id;});
@@ -1495,6 +1562,7 @@
         saveDB(); toast('已删除'); renderItemsView(document.getElementById('contentArea'));
     }
     function batchImportHygieneBonusItems(){
+        if(!IS_MASTER_DEVICE){toast('当前设备为受限设备，无权限修改基础数据！请在主控设备操作。','error');return;}
         if(!isAdmin()){toast('无权限','error');return;}
         var text=document.getElementById('hyBonusBatchImport').value.trim();
         if(!text){toast('请输入数据','error');return;}
@@ -1513,6 +1581,7 @@
         saveDB(); toast('成功导入'+imported+'个卫生加分项目'); renderItemsView(document.getElementById('contentArea'));
     }
     function addDisciplineBonusItem(){
+        if(!IS_MASTER_DEVICE){toast('当前设备为受限设备，无权限修改基础数据！请在主控设备操作。','error');return;}
         if(!isAdmin()){toast('无权限','error');return;}
         var name=document.getElementById('newDisBonusItemName').value.trim();
         var score=parseFloat(document.getElementById('newDisBonusItemScore').value);
@@ -1524,6 +1593,7 @@
         saveDB(); toast('✅ 纪律加分项目添加成功！'); renderItemsView(document.getElementById('contentArea'));
     }
     function deleteDisciplineBonusItem(id){
+        if(!IS_MASTER_DEVICE){toast('当前设备为受限设备，无权限修改基础数据！请在主控设备操作。','error');return;}
         if(!isAdmin()){toast('无权限','error');return;}
         if(!confirm('确认删除？'))return;
         DB.deductionItems.disciplineBonus=DB.deductionItems.disciplineBonus.filter(function(i){return i.id!==id;});
@@ -1531,6 +1601,7 @@
         saveDB(); toast('已删除'); renderItemsView(document.getElementById('contentArea'));
     }
     function batchImportDisciplineBonusItems(){
+        if(!IS_MASTER_DEVICE){toast('当前设备为受限设备，无权限修改基础数据！请在主控设备操作。','error');return;}
         if(!isAdmin()){toast('无权限','error');return;}
         var text=document.getElementById('disBonusBatchImport').value.trim();
         if(!text){toast('请输入数据','error');return;}
@@ -1708,7 +1779,14 @@
                     DB[k] = parsed[k];
                 });
                 // 清理可能存在的残留字段（备份中没有的旧字段不主动删除，避免破坏向后兼容）
+                // 全量标脏：备份数据本身不带任何脏标记，不标脏则增量同步认为无变更，
+                // 云端不会更新，下次 loadFromCloudV3 会把云端旧数据写回、覆盖恢复结果。
+                v3MarkAllLocalDirty();
                 saveDB();
+                // 非主控设备：基础数据脏标记会在 syncToCloudV3 被跳过，仅业务记录可上行
+                if(typeof IS_MASTER_DEVICE !== 'undefined' && !IS_MASTER_DEVICE){
+                    toast('注意：基础数据需要在主控设备上恢复才能同步到云端；业务记录已标脏等待上传。', 'error');
+                }
                 backupPendingFile = null;
                 var nameEl = document.getElementById('backupFileName');
                 if(nameEl) nameEl.textContent = '未选择文件';
@@ -1723,6 +1801,50 @@
             toast('读取备份文件失败','error');
         };
         reader.readAsText(file, 'utf-8');
+    }
+
+    /**
+     * 回滚到上次云端同步前的本地数据：
+     *   hardResetFromCloud 在覆盖本地前会将 DB 快照存入 localStorage 的 dormitory_system_backup。
+     *   本函数读取该快照，用 Object.assign 覆盖回 DB，实现"撤销云端覆盖"。
+     * 适用场景：管理员误操作重置云端后，普通设备的本地数据被错误覆盖，可一键回滚到覆盖前状态。
+     */
+    function rollbackToLastBackup(){
+        if(!isAdmin()){ toast('无权限，仅管理员可执行回滚','error'); return; }
+        var raw;
+        try{
+            raw = localStorage.getItem('dormitory_system_backup');
+        }catch(e){
+            toast('读取本地备份失败：'+(e&&e.message||e),'error'); return;
+        }
+        if(!raw){
+            toast('未找到本地备份快照（尚未发生过云端覆盖）','error'); return;
+        }
+        var parsed;
+        try{
+            parsed = JSON.parse(raw);
+        }catch(e){
+            toast('备份数据损坏，无法解析','error'); return;
+        }
+        if(!parsed || typeof parsed !== 'object'){
+            toast('备份数据格式不正确','error'); return;
+        }
+        // 二次确认：回滚会覆盖当前全部数据
+        if(!confirm('确定要回滚到上次云端同步前的数据吗？\n此操作将覆盖当前全部数据，不可撤销。')) return;
+        // 保持 DB 引用不变：Object.assign 仅覆盖顶层字段（与 restoreFromBackup 同策略，向后兼容）
+        Object.assign(DB, parsed);
+        // 全量标脏：快照数据不带脏标记，不标脏则增量同步不会把回滚结果上传覆盖云端，
+        // 下次 loadFromCloudV3 又会把云端旧数据写回，回滚事实上不生效。
+        v3MarkAllLocalDirty();
+        saveDB();
+        // 非主控设备：基础数据脏标记会在 syncToCloudV3 被跳过，仅业务记录可上行
+        if(typeof IS_MASTER_DEVICE !== 'undefined' && !IS_MASTER_DEVICE){
+            toast('注意：基础数据需要在主控设备上恢复才能同步到云端；业务记录已标脏等待上传。', 'error');
+        }
+        // 重绘整个界面
+        renderTree();
+        renderView();
+        toast('已成功回滚到上次同步前！');
     }
 
     // 日期选择说明：所有日期输入框统一由内嵌 flatpickr 渲染（class="date-picker"），
@@ -2793,6 +2915,7 @@
      * 保存模板编辑：更新标题/正文/启用状态，按 notification_template 基础数据标脏并同步。
      */
     function saveNotifTemplate(){
+        if(!IS_MASTER_DEVICE){toast('当前设备为受限设备，无权限修改基础数据！请在主控设备操作。','error');return;}
         if(!isAdmin()){ toast('无权限','error'); return; }
         var id = String((document.getElementById('notifTplEditId') || {}).value || notifTemplateEditId || '').trim();
         var isNew = !id;
@@ -2827,6 +2950,7 @@
      * @param {string} templateId - 模板 id
      */
     function resetNotifTemplate(templateId){
+        if(!IS_MASTER_DEVICE){toast('当前设备为受限设备，无权限修改基础数据！请在主控设备操作。','error');return;}
         if(!isAdmin()){ toast('无权限','error'); return; }
         var t = getNotificationTemplateById(templateId);
         if(!t){ toast('模板不存在','error'); return; }
@@ -3265,6 +3389,7 @@
      * @returns {Promise}
      */
     function saveAccountImpl(){
+        if(!IS_MASTER_DEVICE){toast('当前设备为受限设备，无权限修改基础数据！请在主控设备操作。','error');return Promise.resolve();}
         var editId=parseInt((document.getElementById('acctEditId')||{}).value, 10) || 0;
         var username=String(document.getElementById('acctUsername').value||'').trim();
         var realName=String(document.getElementById('acctRealName').value||'').trim();
@@ -3348,6 +3473,7 @@
      * @param {number} id - 用户 ID
      */
     function deleteUser(id){
+        if(!IS_MASTER_DEVICE){toast('当前设备为受限设备，无权限修改基础数据！请在主控设备操作。','error');return;}
         if(!isAdmin()){ toast('无权限','error'); return; }
         var u=DB.users.find(function(x){ return String(x.id)===String(id); });
         if(!u){ toast('账号不存在','error'); return; }
@@ -3365,6 +3491,7 @@
      * @param {number} id - 用户 ID
      */
     function resetUserPassword(id){
+        if(!IS_MASTER_DEVICE){toast('当前设备为受限设备，无权限修改基础数据！请在主控设备操作。','error');return;}
         if(!isAdmin()){ toast('无权限','error'); return; }
         var u=DB.users.find(function(x){ return String(x.id)===String(id); });
         if(!u){ toast('账号不存在','error'); return; }
@@ -3393,6 +3520,7 @@
      * 双保险：即使复选框被绕过，内置 admin/staff 与当前登录账号也会被过滤掉。
      */
     function deleteSelectedUsers(){
+        if(!IS_MASTER_DEVICE){toast('当前设备为受限设备，无权限修改基础数据！请在主控设备操作。','error');return;}
         if(!isAdmin()){ toast('无权限','error'); return; }
         var ids=Array.from(document.querySelectorAll('.acct-check:checked')).map(function(cb){ return cb.getAttribute('data-user-id'); });
         if(ids.length===0){ toast('请先勾选要删除的账号','error'); return; }
@@ -3456,6 +3584,7 @@
     }
     /** 批量导入入口：按当前 Tab 分发（Excel 走 safeAsync，可重试） */
     function submitBatchUsers(){
+        if(!IS_MASTER_DEVICE){toast('当前设备为受限设备，无权限修改基础数据！请在主控设备操作。','error');return;}
         if(!isAdmin()){ toast('无权限','error'); return; }
         if(batchUserState.tab==='text'){
             safeAsync(submitBatchUsersFromText, '批量导入账号（文本）', { retry: true });
@@ -3546,6 +3675,7 @@
      * @returns {Promise<number>} 跳过的重复账号数
      */
     function createBatchUsers(list){
+        if(!IS_MASTER_DEVICE){toast('当前设备为受限设备，无权限修改基础数据！请在主控设备操作。','error');return Promise.resolve(0);}
         var dupCount=0;
         var seen={};
         var unique=list.filter(function(r){
@@ -3902,6 +4032,7 @@
      * assignedFloors（空数组=全部楼层）与 buildingName，标脏落库后局部刷新卡片。
      */
     function saveFloorAssign(){
+        if(!IS_MASTER_DEVICE){toast('当前设备为受限设备，无权限修改基础数据！请在主控设备操作。','error');return;}
         if(!isAdmin()){ toast('无权限','error'); return; }
         var sel=document.getElementById('assignStaffSelect');
         var uid=sel ? parseInt(sel.value,10) : (typeof floorAssignState!=='undefined'?floorAssignState.staffId:null);
@@ -4075,6 +4206,7 @@
      * @param {string} id - 申请记录 ID
      */
     function approveFloorChangeRequest(id){
+        if(!IS_MASTER_DEVICE){toast('当前设备为受限设备，无权限修改基础数据！请在主控设备操作。','error');return;}
         if(!isAdmin()){ toast('无权限','error'); return; }
         var r = findFloorChangeRequestById(id);
         if(!r){ toast('申请不存在','error'); return; }

@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>溯源清洗逻辑 · 单元测试</title>
+<style>
+  body{font-family:-apple-system,"Segoe UI",sans-serif;margin:24px;line-height:1.6;background:#f5f6fa}
+  h1{font-size:1.3rem;margin-bottom:4px}
+  .sub{color:#666;margin-bottom:20px;font-size:0.9rem}
+  .summary{font-weight:700;margin-bottom:16px;padding:10px 14px;border-radius:6px}
+  .pass{background:#e8f5e9;color:#2e7d32}
+  .fail{background:#ffebee;color:#c62828}
+  .case{background:#fff;border:1px solid #e0e0e0;border-radius:6px;padding:10px 14px;margin-bottom:8px;font-size:0.9rem}
+  .case.ok{border-left:4px solid #43a047}
+  .case.bad{border-left:4px solid #e53935;background:#fff5f5}
+  .tag{display:inline-block;padding:1px 8px;border-radius:10px;font-size:0.75rem;margin-right:6px;font-weight:700}
+  .tag.ok{background:#e8f5e9;color:#2e7d32}
+  .tag.bad{background:#ffebee;color:#c62828}
+  .desc{color:#555;margin-top:4px}
+  pre{background:#263238;color:#eeffff;padding:10px;border-radius:4px;font-size:0.8rem;overflow-x:auto;margin:6px 0}
+</style>
+</head>
+<body>
+<h1>🧪 溯源清洗逻辑 · 单元测试</h1>
+<div class="sub">被测函数：<code>v3ShouldKeepMutableRecord(r, dirtySet, lastSyncTime, inCloudLive, inCloudTomb)</code><br>
+来源：sync.js（由 mergeArrayType 中业务记录分支提取的纯函数）</div>
+<div id="summary" class="summary">运行中...</div>
+<div id="results"></div>
+
+<!-- 被测函数依赖的配置常量 -->
+<script src="config.js"></script>
+<!-- 被测函数所在的脚本（仅加载，不执行 initializeData） -->
+<script src="sync.js"></script>
+
+<script>
+(function(){
+  var passed = 0, failed = 0;
+  var resultsEl = document.getElementById('results');
+  var summaryEl = document.getElementById('summary');
+
+  function assert(name, expected, actual, desc){
+    var ok = (expected === actual);
+    if(ok) passed++; else failed++;
+    var div = document.createElement('div');
+    div.className = 'case ' + (ok ? 'ok' : 'bad');
+    div.innerHTML =
+      '<span class="tag ' + (ok ? 'ok' : 'bad') + '">' + (ok ? 'PASS' : 'FAIL') + '</span>' +
+      '<strong>' + name + '</strong>' +
+      (ok ? '' : ' <span style="color:#c62828">期望 ' + JSON.stringify(expected) + '，实际 ' + JSON.stringify(actual) + '</span>') +
+      (desc ? '<div class="desc">' + desc + '</div>' : '');
+    resultsEl.appendChild(div);
+  }
+
+  // 公共时间基准：lastSyncTime = 1000
+  var LAST_SYNC = 1000;
+  function mk(createdAt, id){ return { id: id || 'r1', createdAt: createdAt }; }
+
+  // ===== 测试用例 =====
+
+  // 1. 历史废弃数据：云端不存在 + 有脏标记 + createdAt < lastSyncTime → 丢弃
+  assert('历史废弃数据（有脏标记但 createdAt < lastSyncTime）应丢弃',
+    false,
+    v3ShouldKeepMutableRecord(mk(500), {'r1': true}, LAST_SYNC, false, false),
+    '记录在云端无活行无墓碑，虽有脏标记但创建时间早于上次同步，判定为历史废弃数据');
+
+  // 2. 离线新登记数据：云端不存在 + 有脏标记 + createdAt > lastSyncTime → 保留
+  assert('离线新登记数据（有脏标记且 createdAt > lastSyncTime）应保留',
+    true,
+    v3ShouldKeepMutableRecord(mk(1500), {'r1': true}, LAST_SYNC, false, false),
+    '离线期间刚登记的正常行为，createdAt 晚于上次同步，应保留待上传');
+
+  // 3. 云端活行：存在于云端活行 → 保留
+  assert('云端活行记录应保留',
+    true,
+    v3ShouldKeepMutableRecord(mk(500), {}, LAST_SYNC, true, false),
+    '云端有活行，交给后续 updated_at 合并逻辑处理');
+
+  // 4. 墓碑删除：云端墓碑 + 无脏标记 → 删除
+  assert('云端墓碑且无脏标记应删除',
+    false,
+    v3ShouldKeepMutableRecord(mk(500), {}, LAST_SYNC, false, true),
+    '云端明确删除信号，本地无未上传修改，执行删除');
+
+  // 5. 墓碑但有脏标记：保留（本地有未上传修改）
+  assert('云端墓碑但有脏标记应保留',
+    true,
+    v3ShouldKeepMutableRecord(mk(1500), {'r1': true}, LAST_SYNC, false, true),
+    '本地有未上传的修改，保护本地变更不被墓碑删除');
+
+  // 6. 无脏标记的历史数据：云端不存在 + 无脏标记 → 丢弃
+  assert('云端不存在且无脏标记应丢弃',
+    false,
+    v3ShouldKeepMutableRecord(mk(1500), {}, LAST_SYNC, false, false),
+    '无脏标记说明非本次登记，云端无痕迹视为已废弃');
+
+  // 7. 边界：createdAt === lastSyncTime → 丢弃（严格大于才保留）
+  assert('边界 createdAt === lastSyncTime 应丢弃',
+    false,
+    v3ShouldKeepMutableRecord(mk(LAST_SYNC), {'r1': true}, LAST_SYNC, false, false),
+    '条件为严格大于 >，等于时判定为非新登记，丢弃');
+
+  // 8. 边界：lastSyncTime 为 0（首次同步）→ 有脏标记即保留
+  assert('首次同步（lastSyncTime=0）有脏标记应保留',
+    true,
+    v3ShouldKeepMutableRecord(mk(1500), {'r1': true}, 0, false, false),
+    'lastSyncTime 为 0 时，任何 createdAt > 0 的脏记录都视为新登记');
+
+  // 9. 边界：lastSyncTime 为 undefined → 有脏标记即保留
+  assert('lastSyncTime 为 undefined 有脏标记应保留',
+    true,
+    v3ShouldKeepMutableRecord(mk(1500), {'r1': true}, undefined, false, false),
+    'lastSyncTime 为空时按 0 处理，新登记记录保留');
+
+  // 10. 记录无 createdAt 字段：默认 0，小于 lastSyncTime → 丢弃
+  assert('记录无 createdAt 字段（默认 0）应丢弃',
+    false,
+    v3ShouldKeepMutableRecord({id:'r1'}, {'r1': true}, LAST_SYNC, false, false),
+    'createdAt 缺失时取 0，小于 lastSyncTime，丢弃');
+
+  // 11. 记录 id 为数字：String 归一化后匹配脏标记
+  assert('数字 id 归一化后匹配脏标记应保留',
+    true,
+    v3ShouldKeepMutableRecord({id: 123, createdAt: 1500}, {'123': true}, LAST_SYNC, false, false),
+    'rid 经 String() 归一化，数字 id 与字符串 key 正常匹配');
+
+  // 12. 综合场景：混合判断 — 云端活行 + 有脏标记仍保留
+  assert('云端活行即使有脏标记也保留',
+    true,
+    v3ShouldKeepMutableRecord(mk(500), {'r1': true}, LAST_SYNC, true, false),
+    '云端有活行时无论脏标记如何都保留，由合并逻辑处理版本');
+
+  // ===== 汇总 =====
+  var total = passed + failed;
+  summaryEl.textContent = '共 ' + total + ' 条用例：通过 ' + passed + '，失败 ' + failed;
+  summaryEl.className = 'summary ' + (failed === 0 ? 'pass' : 'fail');
+})();
+</script>
+</body>
+</html>

@@ -2315,6 +2315,16 @@
             + '</div></div>';
 
         if (!isClassAdmin) {
+            // 主控设备绑定入口：管理员可将当前设备设为主控（非主控设备可见，主控设备也显示但点击提示已绑定）
+            if (isAdmin()) {
+                html += '<div class="card"><div class="card-header">🔑 主控设备管理</div><div class="card-body">'
+                    + '<p style="margin:0 0 10px;color:var(--text-light);font-size:0.9rem">主控设备拥有修改基础数据（学生/宿舍/账号/扣分项等）、重置云端数据等最高权限。如需将本设备设为主控，请点击下方按钮并输入绑定密码。</p>'
+                    + '<button class="btn btn-warning" onclick="bindCurrentDeviceAsMaster()">🔑 将当前设备设为主控设备</button>'
+                    + (IS_MASTER_DEVICE ? '<span style="margin-left:12px;color:var(--success);font-weight:600">✓ 当前设备已是主控设备</span>' : '')
+                    + '</div></div>';
+            }
+            // 非主控设备 UI 熔断：仅主控设备显示"危险操作（删除全部记录）"与"重置云端数据"卡片
+            if (IS_MASTER_DEVICE) {
             // 扣分记录专属操作卡片：切换到退宿/停宿类型时自动隐藏（onExportDataTypeChange）
             html += '<div id="deductionOnlyCards">'
                 + '<div class="card"><div class="card-header">危险操作</div><div class="card-body">'
@@ -2331,6 +2341,7 @@
                 + '<button class="btn btn-danger" id="btnResetCloud" onclick="resetCloudData()">🔁 重置云端数据（以下发为准）</button>'
                 + '<p style="color:var(--danger);margin-top:8px;font-size:0.8571rem">此操作会永久清空云端全部数据！执行时请让其它设备暂时不要点同步。</p></div></div>'
                 + '</div>';
+            }
             // 数据备份与恢复：导出当前完整 DB 为 JSON，或从 JSON 恢复（覆盖全部数据）
             html += '<div class="card"><div class="card-header">📦 数据备份与恢复</div><div class="card-body">'
                 + '<p style="margin:0 0 10px;color:var(--text-light);font-size:0.9rem">备份将导出当前全部数据（含账号、学生、宿舍、扣分/请假/退宿记录、同步元数据等）为 JSON 文件；恢复会用备份文件覆盖当前全部数据，请谨慎操作。</p>'
@@ -2339,14 +2350,19 @@
                 + '<span class="file-upload-wrapper"><span class="file-upload-btn">📂 选择备份文件</span><input type="file" id="backupFileInput" accept=".json" onchange="onBackupFileChange(this.files[0])"></span>'
                 + '<span id="backupFileName" style="color:var(--gray-600);font-size:0.8571rem">未选择文件</span>'
                 + '<button class="btn btn-outline" onclick="restoreFromBackup()">📥 从备份恢复</button>'
+                + '<button class="btn btn-warning" onclick="rollbackToLastBackup()">⏪ 回滚到上次同步前</button>'
                 + '</div>'
                 + '<p style="color:var(--danger);margin-top:8px;font-size:0.8571rem">恢复操作将覆盖当前全部数据，不可撤销！建议恢复前先执行一次备份。</p>'
+                + '<p style="color:var(--warning);margin-top:4px;font-size:0.8571rem">如果云端数据被错误覆盖，可点击此按钮恢复本机同步前的数据。</p>'
                 + '</div></div>';
+            // 非主控设备 UI 熔断：仅主控设备显示"账号管理"与"楼层分配管理"卡片（均涉及基础数据修改）
+            if (IS_MASTER_DEVICE) {
             // 账号管理 + 楼层分配管理（仅管理员）：互斥折叠，默认收起，节省纵向空间
             html += '<div class="fold-block'+(foldState['fold-account-manage']?' open':'')+'" id="fold-account-manage"><div class="fold-header" onclick="toggleAccountOrFloor(\'fold-account-manage\')">👤 账号管理<span class="fold-arrow">▶</span></div><div class="fold-body"><div class="card-body" id="accountManageBody">'
                 + buildAccountManageHtml() + '</div></div></div>';
             html += '<div class="fold-block'+(foldState['fold-floor-manage']?' open':'')+'" id="fold-floor-manage"><div class="fold-header" onclick="toggleAccountOrFloor(\'fold-floor-manage\')">🏢 楼层分配管理（生活老师负责楼层）<span class="fold-arrow">▶</span></div><div class="fold-body"><div class="card-body" id="floorAssignBody">'
                 + buildFloorAssignHtml() + '</div></div></div>';
+            }
         }
 
         html += '<div id="queryResultArea" style="margin-top:16px;"></div>';

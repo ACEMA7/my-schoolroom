@@ -119,6 +119,7 @@
         var rows = [];
         var nowIso = new Date().toISOString();
         var didAnything = false;
+        var staleFilteredCount = 0;
         // 遍历所有记录类型，收集脏记录和删除标记
         V3_RECORD_TYPES.forEach(function(meta){
             // 【主控设备锁定·防污染】基础数据仅允许管理员的主控设备上传
@@ -130,10 +131,21 @@
             }
             var dirtySet = (DB.dirtyByType && DB.dirtyByType[meta.type]) || {};
             var deletedSet = (DB.deletedByType && DB.deletedByType[meta.type]) || {};
+            var isMutable = V3_MUTABLE_TYPES.indexOf(meta.type) !== -1;
             // 1) 脏记录：从 DB 读取当前数据，构造 upsert 行
             Object.keys(dirtySet).forEach(function(rid){
                 var rec = v3GetRecordById(meta.type, rid);
                 if(!rec) return; // 记录不存在了（可能已被删除），交给 deleted 处理
+                // 【终极过滤】业务记录：createdAt/lastModified 早于上次同步时间 = 历史遗留废弃数据，
+                // 直接跳过不上传，并清除其脏标记，杜绝废弃数据污染云端。
+                if(isMutable){
+                    var recTime = rec.lastModified || rec.createdAt || 0;
+                    if(recTime < (DB.lastSyncTime || 0)){
+                        staleFilteredCount++;
+                        delete DB.dirtyByType[meta.type][rid];
+                        return;
+                    }
+                }
                 didAnything = true;
                 rows.push(v3BuildUpsertRow(meta.type, rid, rec, false, nowIso));
             });
@@ -143,6 +155,9 @@
                 rows.push(v3BuildUpsertRow(meta.type, rid, null, true, nowIso));
             });
         });
+        if(staleFilteredCount > 0){
+            console.log('已过滤掉 ' + staleFilteredCount + ' 条陈旧废弃数据，未上传云端');
+        }
         if(!didAnything){
             console.log('[V3] 无脏记录需要上传');
             DB.lastSyncTime = Date.now();
@@ -203,6 +218,36 @@
             updated_at: updatedAt,
             device_id: DEVICE_ID
         };
+    }
+
+    /**
+     * 溯源清洗·业务记录保留决策（纯函数，零副作用，可独立单元测试）。
+     *
+     * 判断一条业务记录（V3_MUTABLE_TYPES，如 deduction_record）在云端拉取合并时是否应保留。
+     *
+     * 规则（与 mergeArrayType 中业务记录分支完全一致）：
+     *   1. 云端墓碑(inCloudTomb=true) 且 本地无脏标记 → 删除（返回 false）
+     *   2. 云端不存在（无活行无墓碑）→ 仅当「有脏标记 且 createdAt > lastSyncTime」
+     *      （离线期间新登记的正常行为）才保留（true），否则为历史废弃数据丢弃（false）
+     *   3. 云端有活行 → 保留（true，交给后续 updated_at 合并逻辑处理）
+     *
+     * @param {object} r 本地记录对象（需含 id、createdAt 字段）
+     * @param {object} dirtySet 该类型脏标记集合，形如 {rid: true}
+     * @param {number} lastSyncTime DB.lastSyncTime 时间戳（毫秒）
+     * @param {boolean} inCloudLive 该记录是否存在于云端活行
+     * @param {boolean} inCloudTomb 该记录是否存在于云端墓碑
+     * @returns {boolean} true=保留到 keptArr；false=丢弃并计入 result.removed
+     */
+    function v3ShouldKeepMutableRecord(r, dirtySet, lastSyncTime, inCloudLive, inCloudTomb){
+        var rid = String(r.id);
+        // 规则1：墓碑删除（本地有未上传修改时除外，由 dirtySet[rid] 保护）
+        if(inCloudTomb && !dirtySet[rid]) return false;
+        // 规则2：云端不存在 → 仅新登记（脏标记 + createdAt > lastSyncTime）保留
+        if(!inCloudLive && !inCloudTomb){
+            return !!(dirtySet[rid] && (r.createdAt || 0) > (lastSyncTime || 0));
+        }
+        // 规则3：云端有活行 → 保留
+        return true;
     }
 
     /**
@@ -307,8 +352,24 @@
             }
             // 情形B：云端带 epoch 且与本机不同（含本机从未同步 epoch=0、以及管理员重置后所有旧设备）
             if(cloudEpoch > 0 && cloudEpoch !== localEpoch){
+                // 【二次确认】整体覆盖前弹出 confirm，防止管理员误重置导致普通设备数据被意外抹掉
+                var confirmMsg = '检测到云端数据版本更新（本机epoch='+localEpoch+'，云端epoch='+cloudEpoch+'）。云端可能被重置或更正。是否确认以云端数据覆盖本地？\n\n点击【确定】覆盖本地，点击【取消】保留本地并重新同步。';
+                if(!window.confirm(confirmMsg)){
+                    // 用户取消：清空本地脏标记，将本地 epoch 对齐云端（假装已是最新，避免死循环触发确认）
+                    V3_RECORD_TYPES.forEach(function(m){
+                        DB.dirtyByType[m.type] = {};
+                        DB.deletedByType[m.type] = {};
+                    });
+                    DB.syncEpoch = cloudEpoch;
+                    console.warn('[V3] 用户拒绝云端覆盖，已清空脏标记并对齐 epoch='+cloudEpoch+'，保留本地数据');
+                    return { aborted:true, total:0, added:0, updated:0, removed:0, rescued:0, basicChanged:false };
+                }
                 console.warn('[V3] 检测到数据版本变化（本机 epoch='+localEpoch+' → 云端 epoch='+cloudEpoch+'），整体丢弃本地并以下发数据为准重建');
-                hardResetFromCloud(byType, cloudEpoch);
+                var resetOk = hardResetFromCloud(byType, cloudEpoch);
+                if(!resetOk){
+                    // 健康检查失败（云端数据为空），已阻断覆盖，直接中止本次拉取
+                    return { aborted:true, total:0, added:0, updated:0, removed:0, rescued:0, basicChanged:false };
+                }
                 DB.lastSyncTime = Date.now();
                 ensureCorrectUsers();
                 if(currentUser && currentUser.id != null){
@@ -323,6 +384,37 @@
             }
             // 整体重置：丢弃本地全部数据，完全以云端活行重建（墓碑不恢复）
             function hardResetFromCloud(grouped, epoch){
+                // 【自动备份】覆盖前先把本地 DB 快照存入 localStorage，便于灾难恢复
+                try {
+                    localStorage.setItem('dormitory_system_backup', JSON.stringify(DB));
+                    console.log('本地数据已自动备份');
+                } catch(e) {}
+
+                // 【数据健康检查】云端 students 或 floors 为空 → 疑似异常，阻断覆盖，保留本地数据
+                var cloudStudents = (grouped['student'] || []).filter(function(r){ return !r.deleted; });
+                var cloudFloors = (grouped['floor'] || []).filter(function(r){ return !r.deleted; });
+                if(cloudStudents.length === 0 || cloudFloors.length === 0){
+                    toast('警告：云端数据异常为空，已阻断覆盖，本地数据安全保留！', 'error');
+                    console.warn('[V3] 数据健康检查失败：云端 students='+cloudStudents.length+', floors='+cloudFloors.length+'，已阻断覆盖');
+                    return false;
+                }
+
+                // 【数量级检查】防脏数据/被篡改：非空但数量远少于本地（<30%）时同样阻断。
+                // 仅在本地数据已具规模（学生>20 / 宿舍>10）时启用，避免小规模数据误判。
+                var localStudentCount = (DB.students || []).length;
+                var localDormCount = (DB.dormitories || []).length;
+                if(localStudentCount > 20 && cloudStudents.length < localStudentCount * 0.3){
+                    toast('警告：云端学生数量异常偏少（云端 '+cloudStudents.length+' / 本地 '+localStudentCount+'），疑似数据被篡改或损坏，已阻断覆盖，本地数据安全保留！如需强制覆盖，请联系技术人员。', 'error');
+                    console.warn('[V3] 健康检查失败：云端学生数远少于本地（云端 '+cloudStudents.length+' / 本地 '+localStudentCount+'），已阻断覆盖');
+                    return false;
+                }
+                var cloudDormitories = (grouped['dormitory'] || []).filter(function(r){ return !r.deleted; });
+                if(localDormCount > 10 && cloudDormitories.length < localDormCount * 0.3){
+                    toast('警告：云端宿舍数量异常偏少（云端 '+cloudDormitories.length+' / 本地 '+localDormCount+'），疑似数据被篡改或损坏，已阻断覆盖，本地数据安全保留！如需强制覆盖，请联系技术人员。', 'error');
+                    console.warn('[V3] 健康检查失败：云端宿舍数远少于本地（云端 '+cloudDormitories.length+' / 本地 '+localDormCount+'），已阻断覆盖');
+                    return false;
+                }
+
                 var resetCount = 0;
                 // meta：dormitoryList + nextIds
                 var mLive = grouped['meta'] ? grouped['meta'].find(function(r){ return !r.deleted; }) : null;
@@ -356,6 +448,7 @@
                 });
                 DB.syncEpoch = epoch;
                 console.log('[V3] 重建明细：共 '+resetCount+' 条数组记录 + '+DB.deductionItems.hygiene.length+' 卫生项 + '+DB.deductionItems.discipline.length+' 纪律项');
+                return true;
             }
             // meta 类型（单行：dormitoryList + nextIds）
             function mergeMetaType(){
@@ -484,8 +577,19 @@
                 });
                 // 3) 遍历本地：墓碑→删除；无云端痕迹→标脏保留
                 var keptArr = [];
+                var isMutableType = V3_MUTABLE_TYPES.indexOf(type) !== -1;
                 arr.forEach(function(r){
                     var rid = String(r.id);
+                    if(isMutableType){
+                        // 业务记录：保留/丢弃决策完全由溯源清洗纯函数决定（便于单元测试）
+                        if(v3ShouldKeepMutableRecord(r, dirtySet, DB.lastSyncTime, !!split.live[rid], !!split.tomb[rid])){
+                            keptArr.push(r);
+                        } else {
+                            result.removed++;
+                        }
+                        return;
+                    }
+                    // ---- 以下为基础数据（floor/dormitory/student/user）逻辑，保持不变 ----
                     if(split.tomb[rid] && !dirtySet[rid]){
                         result.removed++;
                         return;
@@ -544,18 +648,53 @@
      * 将云端旧格式（sync_store 中 id=1 的整库压缩行）迁移为 V3 按行存储。
      * 一次性迁移：解码旧整库 → 把 floor/dormitory/student/user/deduction_item/
      * 三类业务记录逐条构造为 sync_store 行批量 upsert → 成功后删除旧 id=1 行。
-     * @returns {Promise<boolean>} true=执行了迁移；false=无旧数据或迁移失败
+     *
+     * 返回值语义（供 initializeData 决定是否全量标脏，必须精确区分）：
+     *   'migrated'：确实执行了旧格式迁移；
+     *   'empty'   ：云端 sync_store 确认为空表（无任何行），属首次上传；
+     *   'v3exists'：云端已有 V3 数据，或查询/解析/网络异常（保守不标脏，
+     *               避免误判把本地旧基础数据无差别覆盖云端）。
+     * @returns {Promise<string>} 'migrated' | 'empty' | 'v3exists'
      */
     function migrateOldFormatToRows(){
-        if(!supabaseClient) return Promise.resolve(false);
-        // 先查询是否有旧格式数据（id=1，data 非 null）
-        return supabaseClient.from('sync_store').select('id,data').eq('id',1).maybeSingle().then(function(res){
-            if(res.error){ console.error('[迁移] 查询旧数据失败:', res.error.message); return false; }
-            if(!res.data || res.data.data == null){ console.log('[迁移] 云端无旧格式数据，跳过'); return false; }
-            var decoded = decodeCloudData(res.data.data);
+        if(!supabaseClient) return Promise.resolve('v3exists');
+        // 第一步：先判断 sync_store 表里是否有任何行
+        return supabaseClient.from('sync_store').select('id').limit(1).then(function(anyRes){
+            if(anyRes.error){
+                // 查询报错（多为网络/权限问题）：保守判定为已有数据，绝不因此全量标脏上传
+                console.warn('[迁移] 查询 sync_store 失败，跳过本地脏标记:', anyRes.error.message);
+                return 'v3exists';
+            }
+            if(!anyRes.data || anyRes.data.length === 0){
+                // 空表：首次上传，需要把本地全部记录标脏
+                console.log('[迁移] 云端 sync_store 为空表');
+                return 'empty';
+            }
+            // 第二步：查询旧格式整库行（id=1，data 非 null）
+            return supabaseClient.from('sync_store').select('id,data').eq('id',1).maybeSingle().then(function(res){
+            if(res.error){ console.warn('[迁移] 查询旧数据失败，跳过本地脏标记:', res.error.message); return 'v3exists'; }
+            if(!res.data || res.data.data == null){ console.log('[迁移] 云端无旧格式整库行，已是按行存储'); return 'v3exists'; }
+            var raw = res.data.data;
+            // data 为对象（JSONB 直返）= V3 行数据；旧版 V2 整库为压缩字符串
+            if(typeof raw === 'object'){
+                console.log('[迁移] id=1 行 data 为对象（V3 格式），无需迁移');
+                return 'v3exists';
+            }
+            if(typeof raw !== 'string') return 'v3exists';
+            var decoded = decodeCloudData(raw);
+            // 仅当带旧版压缩前缀，或确实能解析出旧整库字段时，才认定为 V2 旧格式
+            var looksLikeV2 = raw.indexOf(CLOUD_LZ_PREFIX) === 0
+                || raw.indexOf('LZC1U:') === 0
+                || raw.indexOf('LZC1:') === 0;
+            var hasOldPayload = decoded && typeof decoded === 'object'
+                && (Array.isArray(decoded.floors) || Array.isArray(decoded.students));
+            if(!looksLikeV2 && !hasOldPayload){
+                console.log('[迁移] id=1 行不是旧版压缩整库，无需迁移');
+                return 'v3exists';
+            }
             if(!decoded || typeof decoded !== 'object'){
                 console.log('[迁移] 旧数据无法解析，跳过');
-                return false;
+                return 'v3exists';
             }
             // 构建完整的 DB 对象（从旧数据提取）
             var full = {
@@ -600,18 +739,23 @@
                     allRows.push(v3BuildUpsertRow(bizMap[arrKey], rec.id, rec, false, nowIso));
                 });
             });
-            if(allRows.length === 0){ console.log('[迁移] 旧数据无有效记录，跳过'); return false; }
+            if(allRows.length === 0){ console.log('[迁移] 旧数据无有效记录，跳过'); return 'v3exists'; }
             console.log('[迁移] 准备迁移 ' + allRows.length + ' 条记录...');
             // 批量 upsert（与常规同步共用 v3UploadRows），完成后删除旧格式行 id=1
             return v3UploadRows(allRows).then(function(ok){
-                if(!ok) return false;
+                if(!ok) return 'v3exists';
                 return supabaseClient.from('sync_store').delete().eq('id',1).then(function(r2){
                     if(r2.error) console.warn('[迁移] 清理旧行失败（可忽略）:', r2.error.message);
                     else console.log('[迁移] 旧格式行已删除');
                     toast('数据格式升级完成');
-                    return true;
+                    return 'migrated';
                 });
             });
+            }); // 结束 id=1 旧格式行查询的 then
+        }).catch(function(e){
+            // 任何未预期异常（含网络失败）：保守返回 v3exists，绝不触发全量标脏上传
+            console.warn('[迁移] 迁移检查异常，跳过本地脏标记:', (e && e.message) ? e.message : e);
+            return 'v3exists';
         });
     }
 
@@ -762,7 +906,23 @@
                 return Promise.resolve(false);
             }
             updateSyncStatus('syncing');
-            return syncToCloud().then(function(ok){
+            // 【熔断·先拉后推】统计业务记录脏标记总数：超过 10 条说明本地存在大量历史残留数据，
+            // 先拉取云端并合并（mergeArrayType 溯源清洗会丢弃废弃数据），再执行上传，防止脏数据污染云端。
+            var mutableDirtyCount = 0;
+            V3_MUTABLE_TYPES.forEach(function(t){
+                var ds = (DB.dirtyByType && DB.dirtyByType[t]) || {};
+                mutableDirtyCount += Object.keys(ds).length;
+            });
+            var uploadPromise;
+            if(mutableDirtyCount > 10){
+                uploadPromise = loadFromCloud().then(function(){
+                    toast('检测到本地存在大量历史待同步数据，已自动清理。即将重新同步。');
+                    return syncToCloud();
+                });
+            } else {
+                uploadPromise = syncToCloud();
+            }
+            return uploadPromise.then(function(ok){
                 if(ok){
                     updateSyncStatus('synced');
                     _retryState.attempt=0;
@@ -1080,7 +1240,14 @@
                         _applyOfflineUI(false);
                         toast('网络已恢复，正在同步…');
                         ensureSyncMeta();
-                        syncWithRetry();
+                        // 【强制先拉后推】网络恢复时先拉取云端合并（溯源清洗丢弃废弃数据），
+                        // 再上传本地新增数据；拉取失败（如网络再次中断）则跳过上传，等待下次恢复。
+                        loadFromCloud().then(function(){
+                            syncWithRetry();
+                        }).catch(function(e){
+                            console.warn('[online] 拉取云端失败，跳过本次上传：', e);
+                            updateSyncStatus('unsynced');
+                        });
                     }
                 });
                 // 断网瞬间即把状态点切为红色（无需等待下一次同步尝试），并启动“离线”标签延时
@@ -1092,12 +1259,17 @@
                     if(ver === 3){
                         // 表结构已升级，尝试迁移旧格式数据
                         console.log('[V3] 表结构已是按行存储，尝试迁移旧格式数据...');
-                        return migrateOldFormatToRows().then(function(migrated){
-                            if(migrated){
+                        return migrateOldFormatToRows().then(function(migrateResult){
+                            if(migrateResult === 'migrated'){
                                 console.log('[V3] 旧格式迁移完成，跳过本地脏标记');
-                            } else {
-                                // 没有旧数据可迁（云端原本就是空的）：把本地所有记录标记为脏
+                            } else if(migrateResult === 'empty'){
+                                // 仅当云端确认为空表（首次上传）时，才把本地所有记录标记为脏
+                                console.log('[V3] 云端 sync_store 为空，将本地全部记录标脏准备首次上传');
                                 v3MarkAllLocalDirty();
+                            } else {
+                                // 云端已有 V3 数据（或查询异常保守跳过）：不标脏，
+                                // 避免主控设备每次冷启动把本地旧基础数据无差别覆盖云端
+                                console.log('[V3] 云端已有 V3 数据，跳过本地脏标记');
                             }
                             return null;
                         });
@@ -1297,6 +1469,7 @@
      * 手动同步即可补传完成重置。
      */
     function resetCloudData(){
+        if(!IS_MASTER_DEVICE){ toast('当前设备为受限设备，无权限修改基础数据！请在主控设备操作。','error'); return; }
         if(!isAdmin()){ toast('无权限，仅管理员可重置','error'); return; }
         if(!syncEnabled || !supabaseClient){ toast('云端同步未启用','error'); return; }
         if(typeof navigator!=='undefined' && navigator.onLine===false){ toast('当前网络不可用，请联网后再重置','error'); return; }
@@ -1337,7 +1510,7 @@
                 return;
             }
             updateSyncStatus('synced');
-            toast('云端已重置完成：以本机数据为准重新建立。其它设备点一次同步即统一下载（旧数据不会再回来）');
+            toast('云端已重置完成：以本机数据为准重新建立。其它设备点一次同步即统一下载（旧数据不会再回来）。主控身份已保留，如需更换设备，请使用绑定密码重新绑定。');
             renderTree(); renderView();
         }).catch(function(err){
             resetCloudData._busy = false;
