@@ -1553,7 +1553,7 @@
         var disRows=itemRows(disItems,'deleteDisciplineItem','-');
         var hyBonusRows=itemRows(hyBonusItems,'deleteHygieneBonusItem','+');
         var disBonusRows=itemRows(disBonusItems,'deleteDisciplineBonusItem','+');
-        container.innerHTML='<div class="content-header"><h2>📋 加扣分项目管理</h2></div>'
+        container.innerHTML='<div class="content-header"><h2>📋 加扣分项目管理</h2><button class="btn btn-outline btn-sm" onclick="copyItemsListForDiagnosis()" style="margin-left:auto">🔍 复制项目清单</button></div>'
             +'<div class="two-col-grid">'
             +'<div class="card"><div class="card-header">🧹 卫生扣分项目（'+hyItems.length+'项）</div><div class="card-body"><div class="item-list">'+(hyRows||'<div style="color:#aaa;text-align:center;padding:20px">暂无项目</div>')+'</div>'
             +addForm({nameId:'newHyItemName',scoreId:'newHyItemScore',defaultScore:2,addFn:'addHygieneItem',batchId:'hyBatchImport',batchFn:'batchImportHygieneItems'})

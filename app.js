@@ -4413,6 +4413,73 @@
         if(currentView === 'export') renderExportView(document.getElementById('contentArea'));
     }
 
+    /**
+     * 【临时诊断工具】一键复制本地四类扣分项目清单到剪贴板。
+     * 用于对比主控设备与其他设备的项目差异，定位同步问题。
+     * 输出内容包含：
+     *   - 四类项目各自的数量与完整列表（id / 名称 / 分值）；
+     *   - 本地脏标记（dirtyByType.deduction_item）中的项目 id；
+     *   - 本地删除标记（deletedByType.deduction_item）中的项目 id；
+     *   - 当前设备标识信息（DEVICE_ID、是否主控设备、当前用户角色）。
+     * 定位完成后本函数可删除。
+     */
+    function copyItemsListForDiagnosis(){
+        if(!DB || !DB.deductionItems){ toast('数据未初始化','error'); return; }
+        var lines = [];
+        lines.push('===== 扣分项目诊断清单 =====');
+        lines.push('生成时间：' + new Date().toLocaleString());
+        lines.push('设备 ID：' + (typeof DEVICE_ID !== 'undefined' ? DEVICE_ID : '未知'));
+        lines.push('是否主控设备：' + (typeof IS_MASTER_DEVICE !== 'undefined' ? (IS_MASTER_DEVICE ? '是' : '否') : '未知'));
+        lines.push('当前用户：' + (currentUser ? (currentUser.username + '（' + (currentUser.realName||'') + '，' + currentUser.role + '）') : '未登录'));
+        lines.push('');
+        var subs = ['hygiene','discipline','hygieneBonus','disciplineBonus'];
+        var subNames = { hygiene:'卫生扣分', discipline:'纪律扣分', hygieneBonus:'卫生加分', disciplineBonus:'纪律加分' };
+        subs.forEach(function(sub){
+            var arr = (DB.deductionItems && DB.deductionItems[sub]) || [];
+            lines.push('--- ' + subNames[sub] + '（' + sub + '）共 ' + arr.length + ' 项 ---');
+            arr.forEach(function(item){
+                lines.push('  id=' + item.id + ' | 名称：' + item.name + ' | 分值：' + item.defaultScore);
+            });
+            lines.push('');
+        });
+        // 脏标记（待上传）
+        var dirtyMap = (DB.dirtyByType && DB.dirtyByType['deduction_item']) || {};
+        var dirtyIds = Object.keys(dirtyMap);
+        lines.push('--- 本地脏标记（deduction_item）共 ' + dirtyIds.length + ' 项 ---');
+        if(dirtyIds.length === 0) lines.push('  （无）');
+        else dirtyIds.forEach(function(id){ lines.push('  ' + id); });
+        lines.push('');
+        // 删除标记（待上传墓碑）
+        var tombMap = (DB.deletedByType && DB.deletedByType['deduction_item']) || {};
+        var tombIds = Object.keys(tombMap);
+        lines.push('--- 本地删除标记（deduction_item）共 ' + tombIds.length + ' 项 ---');
+        if(tombIds.length === 0) lines.push('  （无）');
+        else tombIds.forEach(function(id){ lines.push('  ' + id); });
+        lines.push('');
+        lines.push('===== 清单结束 =====');
+        var text = lines.join('\n');
+        // 复制到剪贴板，带 execCommand 回退
+        function fallbackCopy(t){
+            try{
+                var ta = document.createElement('textarea');
+                ta.value = t; ta.style.position = 'fixed'; ta.style.left = '-9999px';
+                document.body.appendChild(ta); ta.select();
+                document.execCommand('copy');
+                document.body.removeChild(ta);
+                toast('清单已复制，请粘贴到微信/记事本发给我');
+            }catch(e){ toast('复制失败，请手动查看控制台','error'); console.log(t); }
+        }
+        if(navigator.clipboard && navigator.clipboard.writeText){
+            navigator.clipboard.writeText(text).then(function(){
+                toast('清单已复制，请粘贴到微信/记事本发给我');
+            }).catch(function(){ fallbackCopy(text); });
+        }else{
+            fallbackCopy(text);
+        }
+        // 同时打印到控制台（双重保险）
+        console.log(text);
+    }
+
     // ==================== 修改密码：业务逻辑 ====================
     /**
      * 打开「修改密码」弹层（仅 STAFF / CLASS_ADMIN）。

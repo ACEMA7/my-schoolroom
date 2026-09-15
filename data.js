@@ -1772,3 +1772,4 @@ window.roundScore1 = roundScore1;
 window.formatScoreText = formatScoreText;
 window.getDefaultNotificationTemplate = getDefaultNotificationTemplate;
 window.dedupeStudentsByClassAndName = dedupeStudentsByClassAndName;
+window.copyItemsListForDiagnosis = copyItemsListForDiagnosis;
