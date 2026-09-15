@@ -984,6 +984,10 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
     <div class="modal-overlay" id="batchUserModal" onclick="if(event.target===this) closeBatchUserModal()">
         <div class="edit-modal" id="batchUserModalBox" role="dialog" aria-label="批量新增账号"></div>
     </div>
+    <!-- 批量导入请假/退宿/停宿记录弹层（内容由 ui.js buildLeaveImportModalHtml 动态拼装） -->
+    <div class="modal-overlay" id="leaveImportModal" onclick="if(event.target===this) closeLeaveImportModal()">
+        <div class="edit-modal" id="leaveImportModalBox" role="dialog" aria-label="批量导入请假/退宿/停宿记录"></div>
+    </div>
     <div class="modal-overlay" id="notifTemplateModal" onclick="if(event.target===this) closeNotifTemplateModal()"><div class="edit-modal" id="notifTemplateModalBox" role="dialog" aria-label="编辑通知模板"></div></div>
     <div class="modal-overlay" id="floorChangeRejectModal" onclick="if(event.target===this) closeFloorChangeRejectModal()">
         <div class="edit-modal" id="floorChangeRejectModalBox" role="dialog" aria-label="驳回申请"></div>

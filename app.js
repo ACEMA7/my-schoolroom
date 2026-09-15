@@ -1133,8 +1133,9 @@
         var dormitoryId=parseInt(document.getElementById('newStuDorm').value);
         var bedNumber=document.getElementById('newStuBed').value.trim();
         if(!name||!className||!dormitoryId){toast('请填写完整信息','error');return;}
-        if(studentAlreadyExists(name, className, dormitoryId, bedNumber)){
-            toast('该学生已存在（同名+同班+同宿舍+同床号），未重复添加','error');
+        // 【严格同班同名去重】同班同名即视为已存在，不比对宿舍/床号（防止换宿舍/信息偏差导致名单膨胀）
+        if(studentAlreadyExists(name, className)){
+            toast('该学生已存在（同班同名），未重复添加','error');
             return;
         }
         var newStuId = DB.nextIds.student++;
@@ -1145,14 +1146,16 @@
         toast('学生已添加');
         renderStudentsView(document.getElementById('contentArea'));
     }
-    // 学生去重判断：同名+同班+同宿舍(或同为走读)+同床号视为已存在，重复导入时跳过，防止名单越导越多
-    function studentAlreadyExists(name, className, dormitoryId, bedNumber){
-        return (DB.students||[]).some(function(s){
-            if(s.name!==name || s.className!==className) return false;
-            var bothNon = (s.dormitoryId==null && dormitoryId==null);
-            var sameDorm = bothNon || (s.dormitoryId!=null && dormitoryId!=null && s.dormitoryId===dormitoryId);
-            if(!sameDorm) return false;
-            return (s.bedNumber||'') === (bedNumber||'');
+    // 【严格同班同名去重】学生去重判断：同班同名视为同一人，一律视为已存在。
+    // 核心防御目的：防止因换宿舍、床位变动或导入数据微小差异导致名单无限膨胀。
+    // 注意：此函数仅比对姓名和班级，绝对不比对宿舍和床号。
+    function studentAlreadyExists(name, className){
+        if(!name || !className) return false;
+        var n = String(name).trim();
+        var c = String(className).trim();
+        return (DB.students || []).some(function(s){
+            return String(s.name || '').trim() === n &&
+                   String(s.className || '').trim() === c;
         });
     }
     // 确保宿舍号存在（导入学生名单时自动补建）：返回 {dorm, autoAdded}，无效返回 null
@@ -1205,17 +1208,17 @@
             var roomNumber=parts[2].trim();
             var bedNumber=parts.length>3?parts[3].trim():'';
             // 非住宿生：宿舍号为 0 或空时，dormitoryId=null，标记为走读生
+            // 【严格同班同名去重】仅按班级+姓名判断，宿舍/床号不参与比对
             if(roomNumber===''||roomNumber==='0'||roomNumber.toLowerCase()==='null'){
-                if(studentAlreadyExists(name, className, null, '')){ skipped++; continue; }
+                if(studentAlreadyExists(name, className)){ skipped++; continue; }
                 var nonStuId = DB.nextIds.student++;
                 DB.students.push({id:nonStuId,dormitoryId:null,name:name,className:className,bedNumber:''});
                 v3MarkDirty('student', nonStuId);
                 imported++; nonResident++;
                 continue;
             }
-            // 去重：宿舍已存在且同名同班同床 → 跳过（避免重复导入翻倍；不为重复学生新建宿舍）
-            var existDorm = getDormitoryByRoomNumber(roomNumber);
-            if(existDorm && studentAlreadyExists(name, className, existDorm.id, bedNumber)){ skipped++; continue; }
+            // 【严格同班同名去重】同班同名即跳过（避免重复导入翻倍；不为重复学生新建宿舍）
+            if(studentAlreadyExists(name, className)){ skipped++; continue; }
             var res=ensureDormitoryRoom(roomNumber);
             if(!res){toast('宿舍号无效或不存在：'+roomNumber,'error');continue;}
             if(res.autoAdded) autoAdded++;
@@ -1265,17 +1268,17 @@
                     var roomNumber=row.length>2?String(row[2]).trim():'';
                     var bedNumber=row.length>3?String(row[3]).trim():'';
                     // 非住宿生：宿舍号为 0 或空时，dormitoryId=null
+                    // 【严格同班同名去重】仅按班级+姓名判断，宿舍/床号不参与比对
                     if(roomNumber===''||roomNumber==='0'||roomNumber.toLowerCase()==='null'){
-                        if(studentAlreadyExists(name, className, null, '')){ skipped++; return; }
+                        if(studentAlreadyExists(name, className)){ skipped++; return; }
                         var exNonStu = DB.nextIds.student++;
                         DB.students.push({id:exNonStu,dormitoryId:null,name:name,className:className,bedNumber:''});
                         v3MarkDirty('student', exNonStu);
                         imported++; nonResident++;
                         return;
                     }
-                    // 去重：宿舍已存在且同名同班同床 → 跳过（避免重复导入翻倍）
-                    var exDorm = getDormitoryByRoomNumber(roomNumber);
-                    if(exDorm && studentAlreadyExists(name, className, exDorm.id, bedNumber)){ skipped++; return; }
+                    // 【严格同班同名去重】同班同名即跳过（避免重复导入翻倍）
+                    if(studentAlreadyExists(name, className)){ skipped++; return; }
                     var res=ensureDormitoryRoom(roomNumber);
                     if(!res){toast('宿舍号无效或不存在：'+roomNumber,'error');return;}
                     if(res.autoAdded) autoAdded++;
@@ -3612,6 +3615,287 @@
         ];
         XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(aoa), '学生导入模板');
         XLSX.writeFile(wb, '学生导入模板.xlsx');
+    }
+
+    // ==================== 批量导入请假/退宿/停宿记录（粘贴文本 + Excel） ====================
+    // 批量导入状态：当前 Tab / 记录类型(absence=请假|leave=退宿|stop=停宿) /
+    // 已选 Excel 文件 / 文本草稿（切 Tab 保留）/ 解析结果（{valid,skipped,duplicates}）
+    var leaveImportState={ tab:'text', recordType:'absence', file:null, text:'', parsed:null };
+    /**
+     * 打开「批量导入请假/退宿/停宿」弹层：重置状态并渲染阶段1（数据源）。
+     */
+    function openLeaveImportModal(){
+        leaveImportState.tab='text';
+        leaveImportState.recordType='absence';
+        leaveImportState.file=null;
+        leaveImportState.text='';
+        leaveImportState.parsed=null;
+        document.getElementById('leaveImportModalBox').innerHTML=buildLeaveImportModalHtml();
+        document.getElementById('leaveImportModal').classList.add('show');
+    }
+    /** 关闭「批量导入请假/退宿/停宿」弹层 */
+    function closeLeaveImportModal(){
+        var m=document.getElementById('leaveImportModal');
+        if(m) m.classList.remove('show');
+    }
+    /**
+     * 切换导入方式 Tab（保留文本草稿，避免误切换丢内容）。
+     * @param {string} tab - 'text' | 'excel'
+     */
+    function switchLeaveImportTab(tab){
+        var ta=document.getElementById('leaveImportText');
+        if(ta) leaveImportState.text=ta.value;
+        leaveImportState.tab=(tab==='excel')?'excel':'text';
+        document.getElementById('leaveImportModalBox').innerHTML=buildLeaveImportModalHtml();
+        var ta2=document.getElementById('leaveImportText');
+        if(ta2 && leaveImportState.text) ta2.value=leaveImportState.text;
+    }
+    /**
+     * 记录类型切换回调：清空已解析数据（类型变了旧解析结果失效）并重渲染弹层，
+     * 阶段2 的格式提示随类型动态变化。
+     */
+    function onLeaveImportTypeChange(){
+        var sel=document.getElementById('leaveImportType');
+        if(sel) leaveImportState.recordType=sel.value;
+        leaveImportState.parsed=null; // 清空已解析数据
+        document.getElementById('leaveImportModalBox').innerHTML=buildLeaveImportModalHtml();
+    }
+    /** Excel 文件选择回调：记录文件并显示文件名 */
+    function onLeaveImportExcelChange(file){
+        if(!file) return;
+        leaveImportState.file=file;
+        var el=document.getElementById('leaveImportFileName');
+        if(el) el.textContent='已选择：'+file.name;
+    }
+    /** 预览阶段"返回修改"：清空解析结果回到阶段1（保留文本草稿与文件） */
+    function backLeaveImportEdit(){
+        leaveImportState.parsed=null;
+        document.getElementById('leaveImportModalBox').innerHTML=buildLeaveImportModalHtml();
+    }
+    /**
+     * 解析日期值：支持 'YYYY-MM-DD' / 'YYYY/M/D' / 'YYYY.M.D' 字符串、
+     * Excel 日期序列数字（XLSX raw 模式）与 Date 对象。
+     * @param {*} v - 单元格原始值
+     * @returns {string|null} 'YYYY-MM-DD' 或 null（无法识别）
+     */
+    function parseLeaveImportDate(v){
+        if(v===undefined||v===null||v==='') return null;
+        if(v instanceof Date && !isNaN(v.getTime())){
+            return v.getFullYear()+'-'+String(v.getMonth()+1).padStart(2,'0')+'-'+String(v.getDate()).padStart(2,'0');
+        }
+        if(typeof v==='number' && isFinite(v)){
+            // Excel 序列日期（1900 日期系统）：25569 = 1970-01-01 的序列数，按 UTC 提取日历日
+            var d=new Date(Math.round((v-25569)*86400*1000));
+            if(isNaN(d.getTime())) return null;
+            return d.getUTCFullYear()+'-'+String(d.getUTCMonth()+1).padStart(2,'0')+'-'+String(d.getUTCDate()).padStart(2,'0');
+        }
+        var s=String(v).trim();
+        var m=s.match(/^(\d{4})[-\/.](\d{1,2})[-\/.](\d{1,2})/);
+        if(m) return m[1]+'-'+String(parseInt(m[2],10)).padStart(2,'0')+'-'+String(parseInt(m[3],10)).padStart(2,'0');
+        return null;
+    }
+    /** 请假类型中文 → DB 英文枚举映射（无法识别时归为 other） */
+    function mapAbsenceTypeForImport(s){
+        var t=String(s||'').trim();
+        if(t==='事假'||t==='personal') return 'personal';
+        if(t==='病假'||t==='sick') return 'sick';
+        return 'other';
+    }
+    /** 文本解析：按行拆分（支持中英文逗号/制表符分隔），返回 rows 二维数组（空行已剔除） */
+    function parseLeaveImportFromText(text){
+        var rows=[];
+        String(text||'').split(/\r?\n/).forEach(function(line){
+            var s=line.trim();
+            if(!s) return; // 空行跳过
+            rows.push(s.split(/[,，\t]/).map(function(c){ return String(c||'').trim(); }));
+        });
+        return rows;
+    }
+    /**
+     * Excel 解析：FileReader + XLSX（复用现有 window.XLSX，首表第一列）。
+     * @param {File} file - 用户选择的 Excel 文件
+     * @returns {Promise<Array[]>} rows 二维数组
+     */
+    function parseLeaveImportFromExcel(file){
+        return new Promise(function(resolve, reject){
+            var reader=new FileReader();
+            reader.onerror=function(){ reject(reader.error||new Error('文件读取失败')); };
+            reader.onload=function(e){
+                try{
+                    var data=new Uint8Array(e.target.result);
+                    var workbook=XLSX.read(data,{type:'array'});
+                    var firstSheet=workbook.Sheets[workbook.SheetNames[0]];
+                    var rows=XLSX.utils.sheet_to_json(firstSheet,{header:1,defval:''});
+                    resolve(rows||[]);
+                }catch(err){ reject(err); }
+            };
+            reader.readAsArrayBuffer(file);
+        });
+    }
+    /**
+     * 解析预览入口（阶段1 → 阶段2）：按当前 Tab 分发文本/Excel 解析，
+     * 结果存入 leaveImportState.parsed 后重渲染弹层展示预览确认。
+     */
+    function parseLeaveImportPreview(){
+        if(leaveImportState.tab==='text'){
+            var ta=document.getElementById('leaveImportText');
+            var raw=ta?String(ta.value||''):'';
+            if(!raw.trim()){ toast('请先粘贴文本数据','error'); return; }
+            leaveImportState.text=raw;
+            parseLeaveImportRows(parseLeaveImportFromText(raw));
+            document.getElementById('leaveImportModalBox').innerHTML=buildLeaveImportModalHtml();
+        }else{
+            if(!leaveImportState.file){ toast('请先选择 Excel 文件','error'); return; }
+            safeAsync(function(){
+                return parseLeaveImportFromExcel(leaveImportState.file).then(function(rows){
+                    parseLeaveImportRows(rows);
+                    document.getElementById('leaveImportModalBox').innerHTML=buildLeaveImportModalHtml();
+                });
+            }, '解析 Excel（批量导入请假/退宿/停宿）', { retry: false });
+        }
+    }
+    /**
+     * 核心解析：批量导入请假/退宿/停宿。
+     *   - 跳过空行与首行表头（首行日期列无法识别时按表头处理）；
+     *   - 按"班级+姓名+宿舍号+床号"精确匹配学生，失败降级"班级+姓名"匹配，仍失败则跳过；
+     *   - 去重：与已有记录（及本次解析内）"姓名|班级|类型|开始|结束"相同 → 计入 duplicates；
+     *   - 请假(absence)：列 = 日期(开始), 日期(结束), 姓名, 班级, 宿舍号, 床号, 请假类型, 说明
+     *     → 推入 DB.absenceRecords（type 转英文枚举 personal/sick/other）；
+     *   - 退宿(leave)/停宿(stop)：列 = 日期(开始), 日期(结束), 姓名, 班级, 宿舍号, 床号, 原因
+     *     → 推入 DB.leaveRecords（leave 单日 date=startDate；stop 区间 date='开始 至 结束'）。
+     * 解析结果（valid 为已构造完整的记录对象数组）写入 leaveImportState.parsed。
+     * @param {Array[]} rows - 二维数据行
+     */
+    function parseLeaveImportRows(rows){
+        var type=leaveImportState.recordType;
+        var result={ valid:[], skipped:[], duplicates:0 };
+        // 已有记录去重索引：姓名|班级|类型|开始|结束（O(1) 查重，避免大表逐行线性比对）
+        var existed=(type==='absence')?(DB.absenceRecords||[]):(DB.leaveRecords||[]);
+        var dupKeys={};
+        existed.forEach(function(r){
+            dupKeys[[r.name,r.className,r.type,r.startDate,r.endDate].join('|')]=true;
+        });
+        rows.forEach(function(row, idx){
+            // 空行跳过（全列空）
+            if(!row || row.length===0 || row.every(function(c){ return c===undefined||c===null||String(c).trim()===''; })) return;
+            var start=parseLeaveImportDate(row[0]);
+            if(!start){
+                // 首行日期列无法识别 → 视为表头跳过；其余行按无效数据跳过
+                result.skipped.push(idx===0?'第'+(idx+1)+'行：首行按表头跳过':'第'+(idx+1)+'行：开始日期无法识别（'+String(row[0]).substring(0,20)+'）');
+                return;
+            }
+            var endRaw=(row.length>1)?parseLeaveImportDate(row[1]):null;
+            var end=endRaw||start; // 结束日期留空默认同日
+            if(end<start){ result.skipped.push('第'+(idx+1)+'行：结束日期早于开始日期'); return; }
+            var name=String(row[2]||'').trim();
+            var className=String(row[3]||'').trim();
+            var dormitory=(row.length>4)?String(row[4]||'').trim():'';
+            var bed=(row.length>5)?String(row[5]||'').trim():'';
+            if(!name||!className){ result.skipped.push('第'+(idx+1)+'行：缺少姓名或班级'); return; }
+            // 学生匹配：先"班级+姓名+宿舍+床号"快照精确匹配，失败降级"班级+姓名"匹配
+            var stu=matchStudentBySnapshot(className,name,dormitory,bed);
+            if(!stu){
+                stu=(DB.students||[]).find(function(s){ return s.className===className&&s.name===name; })||null;
+            }
+            if(!stu){ result.skipped.push('第'+(idx+1)+'行：未找到学生（'+className+' '+name+'）'); return; }
+            // 去重：与已有记录或本次解析内同"姓名|班级|类型|开始|结束"重复 → 跳过
+            var recType=(type==='absence')?mapAbsenceTypeForImport(row[6]):type;
+            var dupKey=[name,className,recType,start,end].join('|');
+            if(dupKeys[dupKey]){ result.duplicates++; return; }
+            dupKeys[dupKey]=true;
+            var rec;
+            if(type==='absence'){
+                // 请假记录：type 转英文枚举，reason=说明列（选填）
+                rec={
+                    id:generateRecordId(), studentId:stu?stu.id:null,
+                    className:className, name:name, dormitory:dormitory, bed:bed,
+                    type:recType, reason:(row.length>7)?String(row[7]||'').trim():'',
+                    startDate:start, endDate:end,
+                    status:'approved', createdAt:Date.now(),
+                    localNew:true   // 本地新增标记：云端拉取合并时据此保留尚未上传的新记录
+                };
+            }else{
+                // 退宿（leave，单日 date=startDate）/ 停宿（stop，区间 date='开始 至 结束'）
+                var dateText=(type==='leave')?start:(start+' 至 '+end);
+                rec={
+                    id:generateRecordId(), type:type, className:className, name:name,
+                    dormitory:dormitory, bed:bed, date:dateText,
+                    reason:(row.length>6)?String(row[6]||'').trim():'',
+                    status:'approved', studentId:stu?stu.id:null,
+                    startDate:start, endDate:end, createdAt:Date.now(),
+                    localNew:true
+                };
+            }
+            result.valid.push(rec);
+        });
+        leaveImportState.parsed=result;
+    }
+    /**
+     * 确认导入（阶段2 → 落库）：遍历 parsed.valid 推入对应记录数组，
+     * v3MarkDirty 纳入 V3 同步 → saveDB() 统一落库同步 → toast + 关闭弹层 + 刷新视图。
+     */
+    function confirmLeaveImport(){
+        if(confirmLeaveImport._busy) return;
+        confirmLeaveImport._busy=true;
+        setTimeout(function(){ confirmLeaveImport._busy=false; }, 800);
+        safeAsync(confirmLeaveImportImpl, '批量导入请假/退宿/停宿', { retry: true });
+    }
+    /** 确认导入实际逻辑：批量落库 + V3 标脏 + saveDB + 收尾 */
+    function confirmLeaveImportImpl(){
+        var st=leaveImportState;
+        if(!st.parsed||!st.parsed.valid||!st.parsed.valid.length){ toast('没有可导入的记录','error'); return Promise.resolve(); }
+        var n=0;
+        st.parsed.valid.forEach(function(rec){
+            if(st.recordType==='absence'){
+                if(!DB.absenceRecords) DB.absenceRecords=[];
+                DB.absenceRecords.push(rec);
+                v3MarkDirty('absence_record', rec.id); // V3 按行存储：新请假记录标记脏
+            }else{
+                if(!DB.leaveRecords) DB.leaveRecords=[];
+                DB.leaveRecords.push(rec);
+                v3MarkDirty('leave_record', rec.id); // V3 按行存储：新退宿/停宿记录标记脏
+            }
+            n++;
+        });
+        saveDB(); // 统一落库并触发云端同步
+        var summary='导入完成：成功导入 '+n+' 条'+(st.parsed.duplicates>0?'，重复跳过 '+st.parsed.duplicates+' 条':'')+(st.parsed.skipped.length>0?'，无效跳过 '+st.parsed.skipped.length+' 条':'');
+        toast(summary);
+        closeLeaveImportModal();
+        renderView(); // 刷新当前视图呈现导入结果
+        return Promise.resolve();
+    }
+    /**
+     * 下载批量导入 Excel 模板：按当前记录类型生成对应表头与示例行（XLSX 生成）。
+     */
+    function downloadLeaveImportTemplate(){
+        if(!window.XLSX){ toast('Excel 组件未加载','error'); return; }
+        var wb=XLSX.utils.book_new();
+        var aoa, sheetName, fileName;
+        if(leaveImportState.recordType==='absence'){
+            aoa=[
+                ['说明：从第二行开始填写数据；结束日期留空默认与开始日期同日；请假类型填 事假/病假/其他；说明选填'],
+                ['日期（开始）','日期（结束）','姓名','班级','宿舍号','床号','请假类型','说明'],
+                ['2026-09-15','2026-09-16','张三','三1','101','1','事假','家中有事'],
+                ['2026-09-20','','李四','三1','101','2','病假','']
+            ];
+            sheetName='请假导入模板'; fileName='请假记录导入模板.xlsx';
+        }else if(leaveImportState.recordType==='leave'){
+            aoa=[
+                ['说明：从第二行开始填写数据；退宿为单日记录，结束日期留空即可'],
+                ['日期（开始）','日期（结束）','姓名','班级','宿舍号','床号','原因'],
+                ['2026-09-15','','张三','三1','101','1','个人原因']
+            ];
+            sheetName='退宿导入模板'; fileName='退宿记录导入模板.xlsx';
+        }else{
+            aoa=[
+                ['说明：从第二行开始填写数据；停宿为区间记录，填写开始与结束日期'],
+                ['日期（开始）','日期（结束）','姓名','班级','宿舍号','床号','原因'],
+                ['2026-03-01','2026-03-05','王五','三1','102','3','病假休养']
+            ];
+            sheetName='停宿导入模板'; fileName='停宿记录导入模板.xlsx';
+        }
+        XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(aoa), sheetName);
+        XLSX.writeFile(wb, fileName);
     }
     /**
      * 保存楼层分工配置（楼层分配管理卡片）：更新所选生活老师的

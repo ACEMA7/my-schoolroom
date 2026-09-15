@@ -2308,6 +2308,12 @@
             + '<button class="btn btn-outline" onclick="exportFilteredDataNew()">📥 导出筛选数据</button>'
             + '</div></div></div>';
 
+        // 批量导入请假/退宿/停宿：粘贴文本或 Excel 两种方式，解析预览确认后落库（管理员与班主任均可用）
+        html += '<div class="card"><div class="card-header">📥 批量导入请假/退宿/停宿记录</div><div class="card-body">'
+            + '<p style="margin:0 0 10px;color:var(--text-light);font-size:0.9rem">支持粘贴文本或 Excel 批量导入请假（absence）、退宿（leave）、停宿（stop）记录；自动按"班级+姓名"匹配学生，重复记录自动跳过，导入前可预览确认。</p>'
+            + '<button class="btn btn-primary" onclick="openLeaveImportModal()">📥 批量导入请假/退宿/停宿记录</button>'
+            + '</div></div>';
+
         if (!isClassAdmin) {
             // 扣分记录专属操作卡片：切换到退宿/停宿类型时自动隐藏（onExportDataTypeChange）
             html += '<div id="deductionOnlyCards">'
@@ -3366,6 +3372,94 @@
             +tabs
             +'<div class="em-body">'+body+'</div>'
             +'<div class="em-footer"><button class="btn btn-primary" onclick="submitBatchUsers()">✅ 确认导入</button><button class="btn btn-outline" onclick="closeBatchUserModal()">取消</button></div>';
+    }
+
+    /**
+     * 拼装「批量导入请假/退宿/停宿」弹层 HTML（两阶段：阶段1 数据源 → 阶段2 预览确认）。
+     * 顶部 Tab 切换（粘贴文本 / Excel导入）；记录类型下拉切换动态格式提示；
+     * 解析完成（leaveImportState.parsed 存在）时显示预览确认阶段。
+     * @returns {string}
+     */
+    function buildLeaveImportModalHtml(){
+        var st=leaveImportState;
+        // Tab 切换条（复用批量账号的 batch-tab 样式）
+        var tabs='<div class="batch-tab-bar">'
+            +'<div class="batch-tab'+(st.tab==='text'?' active':'')+'" onclick="switchLeaveImportTab(\'text\')">📋 粘贴文本</div>'
+            +'<div class="batch-tab'+(st.tab==='excel'?' active':'')+'" onclick="switchLeaveImportTab(\'excel\')">📂 Excel导入</div>'
+            +'</div>';
+        // 记录类型下拉：请假(absence) / 退宿(leave) / 停宿(stop)
+        var typeSel='<div class="form-group" style="margin-bottom:10px"><label>记录类型</label>'
+            +'<select id="leaveImportType" onchange="onLeaveImportTypeChange()">'
+            +'<option value="absence"'+(st.recordType==='absence'?' selected':'')+'>请假记录（absence）</option>'
+            +'<option value="leave"'+(st.recordType==='leave'?' selected':'')+'>退宿记录（leave）</option>'
+            +'<option value="stop"'+(st.recordType==='stop'?' selected':'')+'>停宿记录（stop）</option>'
+            +'</select></div>';
+        // 按记录类型动态显示的导入格式提示（阶段1）
+        var hint;
+        if(st.recordType==='absence'){
+            hint='<div class="batch-hint">每行一条请假记录，列顺序（逗号分隔）：<b>日期（开始）, 日期（结束）, 姓名, 班级, 宿舍号, 床号, 请假类型(事假/病假/其他), 说明</b><br>'
+                +'示例：<br>2026-09-15,2026-09-16,张三,三1,101,1,事假,家中有事<br>'
+                +'结束日期留空时默认与开始日期同日；请假类型支持：事假/病假/其他；说明选填。</div>';
+        }else{
+            hint='<div class="batch-hint">每行一条'+(st.recordType==='leave'?'退宿':'停宿')+'记录，列顺序（逗号分隔）：<b>日期（开始）, 日期（结束）, 姓名, 班级, 宿舍号, 床号, 原因</b><br>'
+                +(st.recordType==='leave'
+                    ?'示例：<br>2026-09-15,,李四,三1,101,2,个人原因<br>退宿为单日记录：结束日期留空即可。'
+                    :'示例：<br>2026-03-01,2026-03-05,王五,三1,102,3,病假休养<br>停宿为区间记录：填写开始与结束日期。')
+                +'</div>';
+        }
+        var body;
+        if(st.parsed){
+            // ============ 阶段2：预览确认 ============
+            var p=st.parsed;
+            var typeName={absence:'请假',leave:'退宿',stop:'停宿'}[st.recordType]||'';
+            var statHtml='<div style="margin-bottom:10px;font-size:0.9286rem">'
+                +'<span style="color:var(--success,#34c759);font-weight:600">✅ 可导入 '+p.valid.length+' 条</span>'
+                +'&nbsp;&nbsp;<span style="color:#eab308;font-weight:600">🔁 重复跳过 '+p.duplicates+' 条</span>'
+                +'&nbsp;&nbsp;<span style="color:var(--danger);font-weight:600">⛔ 无效跳过 '+p.skipped.length+' 条</span>'
+                +'</div>';
+            var skipHtml='';
+            if(p.skipped.length>0){
+                var showMax=20;
+                var lines=p.skipped.slice(0,showMax).map(function(s){ return '<li style="margin-bottom:2px">'+escapeHtmlAttr(s)+'</li>'; }).join('');
+                if(p.skipped.length>showMax) lines+='<li style="color:var(--gray-500)">……等共 '+p.skipped.length+' 条</li>';
+                skipHtml='<div style="background:var(--gray-50);border:1px solid var(--gray-200);border-radius:8px;padding:10px;max-height:180px;overflow-y:auto">'
+                    +'<b style="font-size:0.8571rem">跳过明细：</b><ul style="margin:6px 0 0;padding-left:18px;font-size:0.8571rem;color:var(--gray-600)">'+lines+'</ul></div>';
+            }
+            var okHtml='';
+            if(p.valid.length>0){
+                var okLines=p.valid.slice(0,10).map(function(r){
+                    return '<li>'+escapeHtmlAttr(r.className+' '+r.name+'（'+(r.startDate||'')+(r.endDate&&r.endDate!==r.startDate?' 至 '+r.endDate:'')+'））</li>';
+                }).join('');
+                if(p.valid.length>10) okLines+='<li style="color:var(--gray-500)">……等共 '+p.valid.length+' 条</li>';
+                okHtml='<div style="margin-top:10px"><b style="font-size:0.8571rem">前 10 条预览：</b><ul style="margin:6px 0 0;padding-left:18px;font-size:0.8571rem;color:var(--gray-600)">'+okLines+'</ul></div>';
+            }
+            body='<div class="batch-hint">即将批量导入<b>'+typeName+'记录</b>，请核对以下预览结果：</div>'+statHtml+skipHtml+okHtml;
+            return '<div class="em-header"><span>📥 批量导入请假/退宿/停宿</span><button class="em-close" aria-label="关闭" onclick="closeLeaveImportModal()">✕</button></div>'
+                +'<div class="em-body">'+typeSel+body+'</div>'
+                +'<div class="em-footer">'
+                +'<button class="btn btn-primary" onclick="confirmLeaveImport()">✅ 确认导入</button>'
+                +'<button class="btn btn-outline" onclick="backLeaveImportEdit()">↩ 返回修改</button>'
+                +'</div>';
+        }
+        // ============ 阶段1：数据源 ============
+        if(st.tab==='text'){
+            body=hint
+                +'<textarea id="leaveImportText" rows="9" style="width:100%;padding:10px;border:1.5px solid var(--gray-200);border-radius:8px;font-size:0.9286rem" placeholder="'+(st.recordType==='absence'
+                    ?'2026-09-15,2026-09-16,张三,三1,101,1,事假,家中有事'
+                    :'2026-09-15,,李四,三1,101,2,个人原因')+'"></textarea>';
+        }else{
+            body=hint
+                +'<div style="margin-bottom:10px"><span class="file-upload-wrapper"><span class="file-upload-btn">📂 选择Excel文件</span><input type="file" id="leaveImportExcel" accept=".xlsx,.xls" onchange="onLeaveImportExcelChange(this.files[0])"></span>'
+                +'<span id="leaveImportFileName" style="margin-left:8px;color:var(--gray-600);font-size:0.8571rem">'+(st.file?escapeHtmlAttr(st.file.name):'未选择文件')+'</span></div>';
+        }
+        return '<div class="em-header"><span>📥 批量导入请假/退宿/停宿</span><button class="em-close" aria-label="关闭" onclick="closeLeaveImportModal()">✕</button></div>'
+            +tabs
+            +'<div class="em-body">'+typeSel+body+'</div>'
+            +'<div class="em-footer">'
+            +'<button class="btn btn-primary" onclick="parseLeaveImportPreview()">🔍 解析预览</button>'
+            +'<button class="btn btn-outline btn-sm" onclick="downloadLeaveImportTemplate()">📥 下载导入模板</button>'
+            +'<button class="btn btn-outline" onclick="closeLeaveImportModal()">取消</button>'
+            +'</div>';
     }
 
     /**
