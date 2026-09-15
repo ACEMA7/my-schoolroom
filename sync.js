@@ -121,6 +121,13 @@
         var didAnything = false;
         // 遍历所有记录类型，收集脏记录和删除标记
         V3_RECORD_TYPES.forEach(function(meta){
+            // 【主控设备锁定·防污染】基础数据仅允许管理员的主控设备上传
+            // 非管理员 或 非主控设备（管理员手机/家里电脑）一律拦截，清空脏标记后跳过
+            if(V3_BASIC_TYPES.indexOf(meta.type) !== -1 && ((!currentUser || currentUser.role !== 'ADMIN') || DEVICE_ID !== MASTER_DEVICE_ID)){
+                if(DB.dirtyByType) DB.dirtyByType[meta.type] = {};
+                if(DB.deletedByType) DB.deletedByType[meta.type] = {};
+                return; // 禁止非主控设备上传基础数据
+            }
             var dirtySet = (DB.dirtyByType && DB.dirtyByType[meta.type]) || {};
             var deletedSet = (DB.deletedByType && DB.deletedByType[meta.type]) || {};
             // 1) 脏记录：从 DB 读取当前数据，构造 upsert 行
@@ -484,6 +491,12 @@
                         return;
                     }
                     if(!split.live[rid] && !split.tomb[rid] && !dirtySet[rid] && !deletedSet[rid]){
+                        // 【主控设备锁定·防污染】基础数据：非主控设备上云端无记录 = 本地多余/脏数据，直接丢弃
+                        if(V3_BASIC_TYPES.indexOf(type) !== -1 && DEVICE_ID !== MASTER_DEVICE_ID){
+                            result.removed++;
+                            return; // 不 push 到 keptArr，强制云端覆盖本地
+                        }
+                        // 非基础数据 或 主控设备：保留原有补种逻辑，下次同步上传
                         v3MarkDirty(type, r.id);
                         result.rescued++;
                     }

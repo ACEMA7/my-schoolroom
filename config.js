@@ -42,6 +42,9 @@
     // 设备标识：用于生成全局唯一的记录ID（多设备并发登记互不冲突）
     var DEVICE_ID=(function(){ try{ var k='dorm_device_id'; var v=localStorage.getItem(k); if(!v){ v=Math.random().toString(36).slice(2,8)+Date.now().toString(36).slice(-4); localStorage.setItem(k,v);} return v; }catch(e){ return 'nos'; } })();
 
+    // 主控设备 ID：唯一允许上传基础数据的设备，防止管理员非主控设备（手机/家里电脑）脏数据污染云端
+    var MASTER_DEVICE_ID = 'd4ezy733t0';
+
     var LOCAL_LZ_PREFIX = 'LZC1:';   // 本地压缩存储标记（compressToUTF16，localStorage 按 UTF-16 计长，密度最高）
     var CLOUD_LZ_PREFIX = 'LZC1B:';  // 云端压缩存储标记（compressToBase64，纯 ASCII，HTTP/UTF-8 传输无膨胀）
     var STORAGE_WARN_BYTES = 4 * 1024 * 1024; // 本地数据 4MB 预警阈值
