@@ -205,6 +205,13 @@
     // 防止旧版本 JS 继续运行产生脏数据：登录与同步前从网络强行拉取最新 sw.js 的
     // APP_VERSION，与当前运行的 SW 版本比对，不一致即全屏遮罩 + 强制刷新，直至版本对齐。
     var _verCheckLastPass = 0; // 最近一次"版本一致"通过的时间戳（30 秒内免重复网络检查，syncWithRetry 高频触发）
+    // 【防线 A】页面存活时间锚点：页面加载那一刻记录，用于识别"长期挂起的旧页面"
+    var _pageLoadedAt = Date.now();
+    // 页面最长存活时间：超过即视为"可能携带过期 JS"，同步前强制刷新（2 小时）
+    var PAGE_MAX_AGE_MS = 2 * 60 * 60 * 1000;
+    // 【防线 B】页面加载后首次通过版本检查时记录的服务器版本号；
+    // 后续每次检查若发现服务器版本已变，说明后台推送过新版本，页面 JS 已过期，必须刷新
+    var _pageLoadedNetVersion = null;
 
     /**
      * 显示全屏升级遮罩（阻断一切操作，等待强制刷新）。
@@ -219,6 +226,27 @@
             + '<div style="width:36px;height:36px;border:4px solid var(--gray-200,#e5e7eb);border-top-color:#4f6ef7;border-radius:50%;animation:_fusSpin 0.8s linear infinite"></div>'
             + '<div style="font-size:1.05rem;color:#374151;font-weight:600">系统检测到新版本，正在自动升级，请稍候...</div>';
         document.body.appendChild(overlay);
+    }
+
+    /**
+     * 【旧页面守护】强制刷新携带过期 JS 的页面。
+     * 触发场景：
+     *   1) 页面存活时间超过 PAGE_MAX_AGE_MS（长期挂起）；
+     *   2) 服务器版本号已变更，但页面仍运行旧 JS。
+     * 与 checkLatestVersion 内置的强制刷新相比，本函数：
+     *   - 不共用 _verReloadCount 计数器（避免正常"页面挂起刷新"污染版本对齐失败计数）；
+     *   - 只写 _verReloadAt，防止 30 秒内重复触发；
+     *   - 刷新前先落库，确保本地数据不丢。
+     * @param {string} reason - 触发原因（用于提示文案）
+     */
+    function _forceReloadStalePage(reason){
+        try { if (typeof saveDBToLocal === 'function') saveDBToLocal(); } catch(e) {}
+        showForceUpgradeOverlay();
+        try { toast(reason + '，为防止数据污染，正在自动刷新页面…', 'error'); } catch(e) {}
+        try {
+            sessionStorage.setItem('_verReloadAt', String(Date.now()));
+        } catch(e) {}
+        setTimeout(function(){ window.location.reload(true); }, 1200);
     }
 
     /**
@@ -237,8 +265,17 @@
         if(typeof navigator !== 'undefined' && navigator.onLine === false){
             return Promise.resolve(true); // 离线放行
         }
+        // 【防线 A·页面存活时间检测】放在最前，不受下方 30 秒缓存影响；
+        // 长期挂起的页面必然携带可能过期的 JS，同步前一律强制刷新
+        if(Date.now() - _pageLoadedAt > PAGE_MAX_AGE_MS){
+            var minutes = Math.round((Date.now() - _pageLoadedAt) / 60000);
+            console.warn('[版本守卫] 页面已存活约 ' + minutes + ' 分钟，超过安全阈值，强制刷新');
+            _forceReloadStalePage('页面已长时间挂起');
+            return Promise.resolve(false);
+        }
+        // 30 秒内刚检查通过，免重复网络请求（仅缩短网络等待，不替代下面两道检查）
         if(Date.now() - _verCheckLastPass < 30000){
-            return Promise.resolve(true); // 30 秒内刚检查通过，免重复网络请求
+            return Promise.resolve(true);
         }
         // 【防死循环兜底】双重保险，应对"版本号永远拉不到最新"的极端情况：
         //   1) 同一会话内因版本检查触发的强制刷新最多 2 次，超过则提示网络异常并放行（不卡死设备）；
@@ -273,6 +310,14 @@
                     var m = text.match(/self\.APP_VERSION\s*=\s*'([^']+)'/);
                     var netVersion = m ? m[1] : '';
                     if(!netVersion){ finish(true); return; } // 解析失败放行，避免误杀
+                    // 【防线 B·服务器版本锚点检测】页面加载后首次通过时记录的版本号，
+                    // 若与当前服务器版本不同 → 后台推送过新版本，页面 JS 已过期 → 强制刷新
+                    if(_pageLoadedNetVersion && _pageLoadedNetVersion !== netVersion){
+                        console.warn('[版本守卫] 服务器版本已更新（页面锚点 ' + _pageLoadedNetVersion + ' → 当前 ' + netVersion + '），强制刷新');
+                        _forceReloadStalePage('检测到应用已在后台更新');
+                        finish(false);
+                        return;
+                    }
                     // 3) 获取当前运行的 SW 版本
                     if(!(navigator.serviceWorker && navigator.serviceWorker.controller)){
                         finish(false); return; // 无 controller：视为版本落后，强制刷新
@@ -283,6 +328,8 @@
                         var localVersion = ev.data.version || '';
                         if(localVersion && localVersion === netVersion){
                             _verCheckLastPass = Date.now();
+                            // 首次通过时记录服务器版本锚点，供后续对比
+                            if(!_pageLoadedNetVersion) _pageLoadedNetVersion = netVersion;
                             finish(true); // 版本一致：放行
                         }else{
                             // 版本不一致：遮罩提示 + 强制刷新（计入刷新次数，防死循环），阻断调用方流程
@@ -2282,8 +2329,9 @@
         // 4. 停宿申请中（pending）
         if(leaves.some(function(r){return r.studentId===studentId&&r.type==='stop'&&r.status==='pending';}))
             return {label:'停宿申请中', cls:'status-orange'};
-        // 5. 请假中（覆盖今晚）
+        // 5. 请假中（覆盖今晚，排除已取消记录）
         if(absences.some(function(r){
+            if(r.status === 'cancelled') return false;
             return r.studentId===studentId
                 && leaveCoversNight(r.startDate || r.date, r.endDate || r.date, today);
         }))
@@ -2294,6 +2342,7 @@
     // 退宿/停宿记录在列表中的状态标签（含"已结束"判定）
     function getLeaveRecordStatusBadge(r){
         var today=getTodayStr();
+        if(r.status==='cancelled') return '<span class="status-tag status-gray">已取消</span>';
         if(r.status==='pending') return '<span class="status-tag status-orange">待审核</span>';
         if(r.status==='rejected') return '<span class="status-tag status-red">已驳回</span>';
         // approved
@@ -2308,6 +2357,7 @@
         var today=getTodayStr();
         var start=r.startDate||r.date;
         var end=r.endDate||start;
+        if(r.status==='cancelled') return '<span class="status-tag status-gray">已取消</span>';
         if(leaveCoversNight(start, end, today)) return '<span class="status-tag status-blue">请假中</span>';
         if(today < start) return '<span class="status-tag status-blue">请假中</span>';
         return '<span class="status-tag status-gray">已结束</span>';
@@ -2424,6 +2474,42 @@
     function backToInspectionToday(){
         inspectionState.viewDate='';
         renderInspectionView(document.getElementById('contentArea'));
+    }
+
+    /**
+     * 巡查核实：取消某条请假/停宿/退宿记录。
+     * 场景：生活老师发现登记错误，取消该记录使其不再参与巡查统计。
+     * 规则：仅今日可操作（历史日期只读）；记录 status 置 'cancelled' 并标脏同步；
+     *       取消后记录仍保留在学生管理列表，显示"已取消"标签便于追溯。
+     * @param {string} recordType - 'leave'（退宿）| 'stop'（停宿）| 'absence'（请假）
+     * @param {string|number} recordId - 对应的 leaveRecords / absenceRecords 记录 ID
+     */
+    function cancelInspection(recordType, recordId){
+        if(!currentUser) return;
+        var today = getTodayLocalStr();
+        if((inspectionState.viewDate||today) !== today){ toast('历史日期不可操作','error'); return; }
+        var label = (typeof INSPECTION_TYPE_LABELS !== 'undefined' && INSPECTION_TYPE_LABELS[recordType]) || '请假';
+        var r = null;
+        if(recordType === 'absence'){
+            r = (DB.absenceRecords||[]).find(function(x){ return String(x.id)===String(recordId); });
+        } else {
+            r = (DB.leaveRecords||[]).find(function(x){ return String(x.id)===String(recordId); });
+        }
+        if(!r){ toast('记录不存在或已被删除','error'); return; }
+        if(r.status === 'cancelled'){ toast('该记录已取消','error'); return; }
+        if(!confirm('确认取消 '+(r.name||'该学生')+' 的这条'+label+'记录吗？\n\n取消后该记录不再计入巡查统计，但仍可在「学生管理」页面查看（显示为已取消）。')) return;
+        r.status = 'cancelled';
+        r.lastModified = Date.now();
+        if(recordType === 'absence'){
+            v3MarkDirty('absence_record', r.id);
+        } else {
+            v3MarkDirty('leave_record', r.id);
+        }
+        saveDB();
+        toast('已取消该'+label+'记录');
+        try { refreshTodaySummariesIfNeeded(); } catch(e) { console.warn('[晚检总结自动刷新失败]', e); }
+        renderInspectionView(document.getElementById('contentArea'));
+        renderTree();
     }
 
     /**
@@ -4478,6 +4564,9 @@
 
     // ==================== 初始化 ====================
     document.addEventListener('DOMContentLoaded', function(){
+        // 【旧页面守护】页面真实加载时重置锚点，避免 bfcache 恢复等场景沿用旧值
+        _pageLoadedAt = Date.now();
+        _pageLoadedNetVersion = null;
         // 登录框支持回车提交
         document.getElementById('loginUsername').addEventListener('keydown', function(e){ if(e.key==='Enter') handleLogin(); });
         document.getElementById('loginPassword').addEventListener('keydown', function(e){ if(e.key==='Enter') handleLogin(); });

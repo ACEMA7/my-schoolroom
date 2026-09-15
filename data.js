@@ -648,6 +648,55 @@
     }
 
     /**
+     * 按「班级 + 姓名」去重学生：同一班级同名视为同一人，保留 id 最小
+     * （最早创建）的一条，多余的打 V3 墓碑并从 DB.students 移除。
+     *
+     * 背景：历史版本曾经存在"同班同名重复学生"导致名单膨胀的灾难场景。
+     * 当前新增/导入入口已封死（studentAlreadyExists 校验），但云端历史数据
+     * 中可能残留重复行，需要通过本函数在拉取合并后自动收敛。
+     *
+     * 收敛策略：
+     *   - 主控设备执行后打墓碑并上传云端 → 云端一次收敛，其他设备下次拉取即同步；
+     *   - 非主控设备执行后本地已去重，但基础数据不上传（被 syncToCloudV3 拦截），
+     *     下次 loadFromCloudV3 会重新拉下云端活行再次出现重复行，
+     *     故本函数需在每次 ensureCorrectUsers 中反复执行，保证本地显示始终干净。
+     *
+     * 去重策略跨设备确定性一致（永远保留最小 id），各设备最终收敛到同一条。
+     * 幂等：无重复时零副作用。
+     * @returns {number} 清理的重复学生数
+     */
+    function dedupeStudentsByClassAndName() {
+        if (!DB || !Array.isArray(DB.students) || DB.students.length === 0) return 0;
+        // 按 id 升序遍历，保证"保留最小 id"规则确定性生效
+        var sorted = DB.students.slice().sort(function(a, b) {
+            return ((a && a.id) || 0) - ((b && b.id) || 0);
+        });
+        var seen = {};       // key = className + '\u0001' + name
+        var kept = [];
+        var removed = 0;
+        sorted.forEach(function(s) {
+            if (!s) { kept.push(s); return; }
+            var cls = String(s.className || '').trim();
+            var nm = String(s.name || '').trim();
+            // 姓名或班级为空的记录不参与去重（避免误删异常数据）
+            if (!cls || !nm) { kept.push(s); return; }
+            var key = cls + '\u0001' + nm;
+            if (seen[key]) {
+                removed++;
+                v3MarkDeleted('student', s.id); // 打墓碑通知其他设备删除同 id 重复行
+                return;
+            }
+            seen[key] = s;
+            kept.push(s);
+        });
+        if (removed === 0) return 0;
+        DB.students = kept;
+        saveDBToLocal();
+        console.log('[学生去重] 清理同班同名重复学生 ' + removed + ' 名');
+        return removed;
+    }
+
+    /**
      * 确保内置账号齐全（幂等，应用启动与云端重置后都会调用）。
      * 保证存在：admin/管理员（ADMIN，密码 admin123）、staff/总生活老师
      * （STAFF，密码 staff123，负责全部楼层）、staff1（STAFF，密码 123456，
@@ -662,6 +711,10 @@
         // 先按 username 去重：跨设备同步可能产生同名不同 id 账号，
         // 不先去重会让下方"是否已存在"判断命中任一副本，重复行长期残留
         dedupeUsersByUsername();
+        // 【P2】学生名单去重自愈：云端历史数据可能残留"同班同名"重复学生，
+        // 在每次账号校准前先清理，防止名单被云端活行重复拉取而无限膨胀。
+        // 主控设备执行后打墓碑上传云端（一次收敛）；非主控设备本地临时去重。
+        dedupeStudentsByClassAndName();
         var adminExists = false, staffExists = false;
         for (var i = 0; i < DB.users.length; i++) {
             if (DB.users[i].username === 'admin') { DB.users[i].role = 'ADMIN'; DB.users[i].realName = '管理人员'; adminExists = true; }
@@ -1385,6 +1438,7 @@
         });
         // 2) 请假（absence 记录登记即生效，巡查时同样需核实到人）
         (DB.absenceRecords || []).forEach(function(r){
+            if(r.status === 'cancelled') return;   // 已取消的记录不参与巡查核实
             if(!recordCoversDate(r, date)) return;
             var stuDormId = _studentDormitoryId(r.studentId);
             if(!inScope(stuDormId, r.dormitory)) return;
@@ -1471,8 +1525,9 @@
             var dorm = getDormitoryById(s.dormitoryId);
             return dorm && fset[dorm.floorId];
         }).length;
-        // 当天请假
+        // 当天请假（排除已取消记录）
         var absenceRecs = (DB.absenceRecords || []).filter(function(r){
+            if(r.status === 'cancelled') return false;
             return recordCoversDate(r, date) && inScope(_studentDormitoryId(r.studentId), r.dormitory);
         });
         // 退宿/停宿中（已审核通过或待审核 pending，且覆盖当日）
@@ -1716,3 +1771,4 @@ window.getTodayLocalStr = getTodayLocalStr;
 window.roundScore1 = roundScore1;
 window.formatScoreText = formatScoreText;
 window.getDefaultNotificationTemplate = getDefaultNotificationTemplate;
+window.dedupeStudentsByClassAndName = dedupeStudentsByClassAndName;

@@ -906,22 +906,38 @@
                 return Promise.resolve(false);
             }
             updateSyncStatus('syncing');
-            // 【熔断·先拉后推】统计业务记录脏标记总数：超过 10 条说明本地存在大量历史残留数据，
-            // 先拉取云端并合并（mergeArrayType 溯源清洗会丢弃废弃数据），再执行上传，防止脏数据污染云端。
+            // 【P1·每次必先拉后推】不再区分脏记录数量：任何一次同步都先拉取云端合并清洗，
+            // 再上传本地增量。目的：即使本地只改了 1 条记录，也会先拉取云端墓碑，
+            // 从根本上杜绝"本地不知情地 upsert 覆盖云端墓碑，导致已被删除的记录复活"。
+            // 代价：每次同步多一次网络往返（几百毫秒），收益：数据一致性显著增强。
             var mutableDirtyCount = 0;
             V3_MUTABLE_TYPES.forEach(function(t){
                 var ds = (DB.dirtyByType && DB.dirtyByType[t]) || {};
                 mutableDirtyCount += Object.keys(ds).length;
             });
-            var uploadPromise;
-            if(mutableDirtyCount > 10){
-                uploadPromise = loadFromCloud().then(function(){
+            // 【关键】备份拉取前的 lastSyncTime：loadFromCloud 内部会把它刷新为当前时间，
+            // 若不恢复，syncToCloudV3 的"陈旧过滤"（recTime < lastSyncTime）会把用户
+            // 刚刚新登记/编辑的记录误判为历史废弃数据而丢弃（数据丢失事故）。
+            var lastSyncBeforePull = DB.lastSyncTime;
+            var uploadPromise = loadFromCloud().then(function(pulled){
+                // 恢复拉取前的 lastSyncTime，让 syncToCloudV3 使用正确的陈旧过滤基准
+                DB.lastSyncTime = lastSyncBeforePull;
+                // 拉取失败（返回 null）：跳过本次上传，交由外层重试机制处理，
+                // 避免"本地盲推"覆盖云端最新墓碑或活跃数据
+                if(pulled === null){
+                    throw new Error('云端拉取失败，跳过本次上传以防覆盖');
+                }
+                // 重置窗口（管理员正在清空云端、尚未回传）：本次不动本地、不上传，
+                // 静默等待下一次同步（syncToCloudV3 内部也有 aborted 判定，双重保险）
+                if(pulled && pulled.aborted){
+                    throw new Error('云端正在重置中，跳过本次上传');
+                }
+                // 仅在原本会触发熔断的场景下提示用户（避免每次同步都弹 toast）
+                if(mutableDirtyCount > 10){
                     toast('检测到本地存在大量历史待同步数据，已自动清理。即将重新同步。');
-                    return syncToCloud();
-                });
-            } else {
-                uploadPromise = syncToCloud();
-            }
+                }
+                return syncToCloud();
+            });
             return uploadPromise.then(function(ok){
                 if(ok){
                     updateSyncStatus('synced');

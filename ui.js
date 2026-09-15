@@ -929,7 +929,10 @@
                     var inspActionHtml = conf
                         ? '<span class="status-tag status-green">✅ 已确认（'+escapeHtmlAttr(conf.confirmedByName||'')+(formatConfirmedTime(conf.confirmedAt)?' · '+formatConfirmedTime(conf.confirmedAt):'')+'）</span>'
                         : (isToday
-                            ? '<button class="btn btn-danger btn-xs" onclick="confirmInspection(\''+it.recordType+'\',\''+String(it.recordId).replace(/'/g,'')+'\')">✅ 确认属实</button>'
+                            ? '<div style="display:inline-flex;gap:6px;white-space:nowrap;align-items:center">'
+                              + '<button class="btn btn-outline btn-xs" onclick="cancelInspection(\''+it.recordType+'\',\''+String(it.recordId).replace(/'/g,'')+'\')">取消</button>'
+                              + '<button class="btn btn-danger btn-xs" onclick="confirmInspection(\''+it.recordType+'\',\''+String(it.recordId).replace(/'/g,'')+'\')">✅ 确认属实</button>'
+                              + '</div>'
                             : '<span class="status-tag" style="background:var(--gray-100);color:var(--gray-500)">⏳ 待确认</span>');
                     if(isMobileLayout){
                         // 移动端三行式：姓名+标签 / 班级·床号·日期 / 按钮或状态标签靠右
@@ -2604,6 +2607,7 @@
     // 请假记录筛选：班级/姓名 + 日期范围与请假区间 [startDate,endDate] 取交集
     function getFilteredAbsenceRecords(f){
         var records=(DB.absenceRecords||[]).filter(function(r){
+            if(r.status==='cancelled') return false;   // 已取消的记录不参与导出/查询
             var dStart=r.startDate||'', dEnd=r.endDate||dStart;
             if(dStart&&dEnd&&(dEnd<f.startDate||dStart>f.endDate)) return false;
             if(f.className&&r.className!==f.className) return false;
