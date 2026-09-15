@@ -3444,7 +3444,11 @@
             var okHtml='';
             if(p.valid.length>0){
                 var okLines=p.valid.slice(0,10).map(function(r){
-                    return '<li>'+escapeHtmlAttr(r.className+' '+r.name+'（'+(r.startDate||'')+(r.endDate&&r.endDate!==r.startDate?' 至 '+r.endDate:'')+'））</li>';
+                    // 日期区间：单日只显示开始日期，跨日才追加“ 至 结束日期”
+                    var range=r.startDate||'';
+                    if(r.endDate && r.endDate!==r.startDate) range+=' 至 '+r.endDate;
+                    // 注意：</li> 必须放在 escapeHtmlAttr 外面，否则 < > 会被转义成 &lt;&gt; 导致标签失效
+                    return '<li>'+escapeHtmlAttr(r.className+' '+r.name+'（'+range+'）')+'</li>';
                 }).join('');
                 if(p.valid.length>10) okLines+='<li style="color:var(--gray-500)">……等共 '+p.valid.length+' 条</li>';
                 okHtml='<div style="margin-top:10px"><b style="font-size:0.8571rem">前 10 条预览：</b><ul style="margin:6px 0 0;padding-left:18px;font-size:0.8571rem;color:var(--gray-600)">'+okLines+'</ul></div>';
