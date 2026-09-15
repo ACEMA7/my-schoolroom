@@ -1667,6 +1667,48 @@
         saveDB(); toast('成功导入'+imported+'个纪律加分项目'); renderItemsView(document.getElementById('contentArea'));
     }
 
+    /**
+     * 加扣分项目管理：按类别全选/取消全选。
+     * @param {string} category - 'hygiene' | 'discipline' | 'hygieneBonus' | 'disciplineBonus'
+     * @param {boolean} checked - true=全选；false=全部取消
+     */
+    function toggleAllItemsByCategory(category, checked){
+        var boxes = document.querySelectorAll('.item-checkbox[data-item-category="'+category+'"]');
+        for(var i = 0; i < boxes.length; i++) boxes[i].checked = checked;
+    }
+
+    /**
+     * 加扣分项目管理：按类别批量删除勾选的项目。
+     * 流程：二次确认 → 遍历勾选的 data-item-id → 从对应子数组移除并打 V3 墓碑 →
+     *       saveDB() 落库同步 → toast 结果 → 重绘项目管理页。
+     * @param {string} category - 'hygiene' | 'discipline' | 'hygieneBonus' | 'disciplineBonus'
+     */
+    function deleteSelectedItemsByCategory(category){
+        if(!IS_MASTER_DEVICE){toast('当前设备为受限设备，无权限修改基础数据！请在主控设备操作。','error');return;}
+        if(!isAdmin()){toast('无权限','error');return;}
+        var boxes = document.querySelectorAll('.item-checkbox[data-item-category="'+category+'"]:checked');
+        if(boxes.length === 0){ toast('请先勾选要删除的项目','error'); return; }
+        var subNames = { hygiene:'卫生扣分', discipline:'纪律扣分', hygieneBonus:'卫生加分', disciplineBonus:'纪律加分' };
+        var subName = subNames[category] || category;
+        if(!confirm('确认删除选中的 ' + boxes.length + ' 个' + subName + '项目？此操作不可撤销！')) return;
+        if(!DB.deductionItems || !Array.isArray(DB.deductionItems[category])){ toast('类别不存在','error'); return; }
+        var idsToDelete = [];
+        for(var i = 0; i < boxes.length; i++){
+            var idStr = boxes[i].getAttribute('data-item-id');
+            if(idStr != null) idsToDelete.push(String(idStr));
+        }
+        var beforeLen = DB.deductionItems[category].length;
+        DB.deductionItems[category] = DB.deductionItems[category].filter(function(item){
+            var keep = idsToDelete.indexOf(String(item.id)) === -1;
+            if(!keep) v3MarkDeleted('deduction_item', item.id); // 打 V3 墓碑
+            return keep;
+        });
+        var removed = beforeLen - DB.deductionItems[category].length;
+        saveDB();
+        toast('已删除 ' + removed + ' 个' + subName + '项目');
+        renderItemsView(document.getElementById('contentArea'));
+    }
+
     // ==================== 数据管理视图 (已移除) ====================
     // 已删除 renderDataManageView 及相关菜单
 
@@ -3111,6 +3153,38 @@
         applyNotifFilter();
         updateNotifBadge();
         toast('已删除');
+    }
+
+    /**
+     * 通知记录表：全选/取消全选当前分片渲染出来的通知行。
+     * 注意：表格使用分片渲染，勾选前请等分片全部加载完毕。
+     * @param {boolean} checked - true=全选；false=全部取消
+     */
+    function toggleAllNotifRecords(checked){
+        var boxes = document.querySelectorAll('.notif-record-checkbox');
+        for(var i = 0; i < boxes.length; i++) boxes[i].checked = checked;
+    }
+
+    /**
+     * 通知记录表：批量删除勾选的通知（二次确认后逐条打 V3 墓碑）。
+     * 删除完成后重绘表格（applyNotifFilter 复用当前筛选条件）+ 刷新铃铛角标。
+     */
+    function deleteSelectedNotifRecords(){
+        if(!isAdmin()){ toast('无权限','error'); return; }
+        var boxes = document.querySelectorAll('.notif-record-checkbox:checked');
+        if(boxes.length === 0){ toast('请先勾选要删除的通知','error'); return; }
+        if(!confirm('确认删除选中的 ' + boxes.length + ' 条通知？此操作不可撤销！')) return;
+        var deleted = 0;
+        for(var i = 0; i < boxes.length; i++){
+            var id = boxes[i].getAttribute('data-notif-id');
+            if(id && deleteNotification(id)) deleted++;
+        }
+        // 重置全选
+        var sa = document.getElementById('notifSelectAll');
+        if(sa) sa.checked = false;
+        applyNotifFilter();
+        updateNotifBadge();
+        toast('已删除 ' + deleted + ' 条通知');
     }
     /**
      * 将当前登录用户的全部未读通知标记为已读，随后刷新抽屉与角标。

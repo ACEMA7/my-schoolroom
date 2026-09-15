@@ -492,22 +492,41 @@
                     if(v3Snapshot(type) !== before) result.basicChanged = true;
                     return;
                 }
-                // 【修复】扣分项目共四类：hygiene / discipline / hygieneBonus / disciplineBonus。
-                // 原代码只遍历前两类，导致加分项目从不以云端为准，云端已删除的加分项在
-                // 其他设备上永久残留。本修复补齐后两类，并统一按 _subType 归位。
+                // 推断一条云端记录的归属 sub 类型：
+                //   1) 优先取显式 _subType（v3GetRecordsByType 上传时附带，最可靠）；
+                //   2) 缺失时按 id 范围兜底（301-400 → hygieneBonus，401-500 → disciplineBonus）；
+                //   3) 再缺失时按分值兜底（<= 0.5 → hygiene，否则 discipline，旧规则）。
+                function inferSubType(data){
+                    if(!data) return null;
+                    if(data._subType) return data._subType;
+                    var id = parseInt(data.id, 10);
+                    if(!isNaN(id)){
+                        if(id >= 301 && id <= 400) return 'hygieneBonus';
+                        if(id >= 401 && id <= 500) return 'disciplineBonus';
+                    }
+                    return data.defaultScore <= 0.5 ? 'hygiene' : 'discipline';
+                }
+                // 【核心修复】四类子数组都参与合并；遍历本地项时必须校验"云端行的 sub 类型与当前 sub 一致"，
+                // 避免把错位寄生到本地 hygiene 的加分项（如 id=301 卫生优秀、id=401 表现良好）当成正常项保留。
                 ['hygiene','discipline','hygieneBonus','disciplineBonus'].forEach(function(sub){
-                    // 确保子数组存在（旧库可能缺 hygieneBonus / disciplineBonus）
                     if(!DB.deductionItems) DB.deductionItems = { hygiene:[], discipline:[], hygieneBonus:[], disciplineBonus:[] };
                     if(!Array.isArray(DB.deductionItems[sub])) DB.deductionItems[sub] = [];
                     var localArr = DB.deductionItems[sub];
-                    // 1) 遍历本地项目：云端活行→按云端更新（本地脏除外）；墓碑→删除；无痕迹→按设备身份处理
                     var kept = [];
                     localArr.forEach(function(item){
                         var rid = String(item.id);
-                        if(split.live[rid]){
-                            // 云端有活行：非脏则按云端更新本地
+                        var cloudRow = split.live[rid];
+                        if(cloudRow){
+                            // 【新增·关键修复】先校验云端 sub 类型是否与当前 sub 一致
+                            var cloudST = inferSubType(cloudRow.data);
+                            if(cloudST && cloudST !== sub){
+                                // 云端这条属于其他类别 → 本地这条是错位寄生数据 → 丢弃
+                                result.removed++;
+                                return;
+                            }
+                            // 类别匹配：按云端内容更新本地（本地有未上传修改除外）
                             if(!dirtySet[rid]){
-                                var cloudData = split.live[rid].data || {};
+                                var cloudData = cloudRow.data || {};
                                 var cloudClean = {};
                                 Object.keys(cloudData).forEach(function(k){ if(k !== '_subType') cloudClean[k] = cloudData[k]; });
                                 if(JSON.stringify(item) !== JSON.stringify(cloudClean)){
@@ -518,28 +537,27 @@
                             }
                             kept.push(item);
                         } else if(split.tomb[rid] && !dirtySet[rid]){
-                            // 云端有墓碑：删除本地（除非本地有未上传的修改）
+                            // 云端墓碑：本地无未上传修改时删除
                             result.removed++;
                         } else {
                             // 云端无任何痕迹（既无活行也无墓碑）
-                            // 【主控设备锁定·防污染】与 mergeArrayType 保持一致的策略：
-                            //   非主控设备：云端无记录 = 本地多余/脏数据，直接丢弃，不补种
+                            // 【主控设备锁定·防污染】与 mergeArrayType 策略一致：
+                            //   非主控设备：云端无 = 本地多余脏数据 → 丢弃
                             //   主控设备：标脏保留补种（防止本地正确数据被误判丢失）
                             if(V3_BASIC_TYPES.indexOf(type) !== -1 && DEVICE_ID !== MASTER_DEVICE_ID){
                                 result.removed++;
-                                return; // 不 push 到 kept，强制云端覆盖本地
+                                return;
                             }
                             if(!dirtySet[rid] && !deletedSet[rid]){ v3MarkDirty(type, item.id); result.rescued++; }
                             kept.push(item);
                         }
                     });
-                    // 2) 云端活行中本地没有的 → 新增（严格按 _subType 归位到对应子数组）
+                    // 云端活行中本地没有的 → 新增（严格按 inferSubType 归位到对应 sub 数组）
                     Object.keys(split.live).forEach(function(rid){
                         var exists = kept.some(function(x){ return String(x.id) === rid; });
                         if(exists || deletedSet[rid]) return;
                         var r = split.live[rid];
-                        // 优先取显式 _subType；缺失时按旧规则回退（defaultScore <= 0.5 → hygiene，否则 discipline）
-                        var st = (r.data && r.data._subType) || ((r.data && r.data.defaultScore <= 0.5) ? 'hygiene' : 'discipline');
+                        var st = inferSubType(r.data);
                         if(st !== sub) return;
                         var clean = {};
                         Object.keys(r.data || {}).forEach(function(k){ if(k !== '_subType') clean[k] = r.data[k]; });

@@ -360,13 +360,19 @@
                 rooms=rooms.filter(function(r){ return dormSet[r.id]; });
                 if(rooms.length===0) return;
             }
-            var total=getTotalScore(filterRecordsByClass(getRecordsByFloor(f.id)));
+            var floorNet=getNetScore(filterRecordsByClass(getRecordsByFloor(f.id)));
+            var floorNetCls = floorNet > 0 ? 'badge-danger' : (floorNet < 0 ? 'badge-bonus' : 'badge-primary');
             var isOpen = (f.id === selectedFloorId);
-            html+='<div class="tree-floor"><div class="tree-floor-header" onclick="toggleFloor('+f.id+',\''+p+'\')"><span id="'+p+'arrow-'+f.id+'">'+(isOpen?'▼':'▶')+'</span>📁 '+f.name+' <span class="badge-tag badge-danger">'+formatScoreText(total,'deduct')+'分</span></div><div class="tree-rooms'+(isOpen?' open':'')+'" id="'+p+'rooms-'+f.id+'">';
+            html+='<div class="tree-floor"><div class="tree-floor-header" onclick="toggleFloor('+f.id+',\''+p+'\')"><span id="'+p+'arrow-'+f.id+'">'+(isOpen?'▼':'▶')+'</span>📁 '+f.name+' <span class="badge-tag '+floorNetCls+'">'+formatScoreText(floorNet,'net')+'分</span></div><div class="tree-rooms'+(isOpen?' open':'')+'" id="'+p+'rooms-'+f.id+'">';
             rooms.forEach(function(r){
-                var score=getTotalScore(filterRecordsByClass(getRecordsByDormitory(r.id)));
+                var net=getNetScore(filterRecordsByClass(getRecordsByDormitory(r.id)));
+                var netCls;
+                if(net > 10) netCls='badge-danger';
+                else if(net > 3) netCls='badge-warning';
+                else if(net < 0) netCls='badge-bonus';
+                else netCls='badge-primary';
                 var isActive = (r.id === selectedDormitoryId);
-                html+='<div class="tree-room'+(isActive?' active':'')+'" id="'+p+'tree-room-'+r.id+'" onclick="selectDormitory('+r.id+')">🚪 '+r.roomNumber+' <span class="badge-tag '+(score>10?'badge-danger':score>3?'badge-warning':'badge-primary')+'">'+formatScoreText(score,'deduct')+'分</span></div>';
+                html+='<div class="tree-room'+(isActive?' active':'')+'" id="'+p+'tree-room-'+r.id+'" onclick="selectDormitory('+r.id+')">🚪 '+r.roomNumber+' <span class="badge-tag '+netCls+'">'+formatScoreText(net,'net')+'分</span></div>';
             });
             html+='</div></div>';
         });
@@ -476,6 +482,11 @@
         // 班级账号：仅显示本班学生的记录及本班宿舍的集体记录
         if(classMode) records=filterRecordsByClass(records);
         var total=getTotalScore(records);
+        // 【修复】净分 = 扣分总和 - 加分总和，用于分数徽章与统计卡片展示
+        var netTotal=getNetScore(records);
+        var netBadgeCls = netTotal > 0 ? 'badge-danger' : (netTotal < 0 ? 'badge-bonus' : 'badge-primary');
+        var netScoreCls = netTotal > 0 ? 'score-deduct' : (netTotal < 0 ? 'score-bonus' : 'score-zero');
+        var netStatCardCls = netTotal > 0 ? 'danger' : '';
         // 汇总当前宿舍各状态人数（与成员列表状态标签同一套优先级逻辑，每次渲染实时计算）
         var statusOrder=['在住','请假中','停宿中','退宿申请中','已退宿']; // 按需求移除"停宿申请中"统计项
         var statusColorMap={'在住':'#34c759','请假中':'#4f6ef7','停宿中':'#a855f7','退宿申请中':'#ff9500','停宿申请中':'#ff9500','已退宿':'#ff3b30'};
@@ -556,7 +567,7 @@
                 +'</div></div>';
         }
         // 三个统计卡片内容（宿舍人数/扣分记录数/累计扣分）：PC 端合并在统计大卡内；移动端移至成员列表下方
-        var statThreeInner='<div class="stat-card"><div class="number">'+students.length+'</div><div class="label">👥 宿舍人数</div></div><div class="stat-card warning"><div class="number">'+records.length+'</div><div class="label">📋 扣分记录数</div></div><div class="stat-card danger"><div class="number">'+formatScoreText(total,'deduct')+'</div><div class="label">📊 累计扣分</div></div>';
+        var statThreeInner='<div class="stat-card"><div class="number">'+students.length+'</div><div class="label">👥 宿舍人数</div></div><div class="stat-card warning"><div class="number">'+records.length+'</div><div class="label">📋 扣分记录数</div></div><div class="stat-card '+netStatCardCls+'"><div class="number '+netScoreCls+'">'+formatScoreText(netTotal,'net')+'</div><div class="label">📊 累计净分</div></div>';
         // PC 端宿舍信息统计大卡：状态汇总行 + 三张统计卡片（保持原样）
         var statsCard='<div class="card"><div class="card-header">📊 宿舍信息统计</div><div class="card-body">'
             +'<div style="display:flex;flex-wrap:wrap;gap:8px 18px;padding:10px 14px;background:var(--gray-50);border-radius:6px;margin-bottom:14px">'+statusRowHtml+'</div>'
@@ -566,12 +577,13 @@
         var statusCard='<div class="card"><div class="card-header">📊 宿舍信息统计</div><div class="card-body">'
             +'<div style="display:flex;flex-wrap:wrap;gap:8px 18px;padding:10px 14px;background:var(--gray-50);border-radius:6px">'+statusRowHtml+'</div>'
             +'</div></div>';
-        var statThreeMobile='<div class="stat-cards-mobile"><div class="stat-item"><div class="number">'+students.length+'</div><div class="label">👥 宿舍人数</div></div><div class="stat-item"><div class="number" style="color:#f59e0b">'+records.length+'</div><div class="label">📋 扣分记录数</div></div><div class="stat-item"><div class="number" style="color:#ff3b30">'+formatScoreText(total,'deduct')+'</div><div class="label">📊 累计扣分</div></div></div>';
+        var netMobileColor = netTotal > 0 ? '#ff3b30' : (netTotal < 0 ? '#34c759' : '#1f2937');
+        var statThreeMobile='<div class="stat-cards-mobile"><div class="stat-item"><div class="number">'+students.length+'</div><div class="label">👥 宿舍人数</div></div><div class="stat-item"><div class="number" style="color:#f59e0b">'+records.length+'</div><div class="label">📋 扣分记录数</div></div><div class="stat-item"><div class="number" style="color:'+netMobileColor+'">'+formatScoreText(netTotal,'net')+'</div><div class="label">📊 累计净分</div></div></div>';
         // 页头仅保留标题（登记扣分入口统一收敛到功能首页/侧边栏/底部导航，住宿信息页只读）
         var memberOpsTh = isAdmin() ? '<th>操作</th>' : '';
         var membersCardPc='<div class="card"><div class="card-header">👥 宿舍成员</div><div style="overflow-x:auto"><table><thead><tr><th>姓名</th><th>班级</th><th>床号</th><th>状态</th><th>个人净分</th>'+memberOpsTh+'</tr></thead><tbody>'+studentHtml+'</tbody></table></div></div>';
         var membersCardMobile='<div class="card"><div class="card-header">👥 宿舍成员</div><div class="card-body" style="padding:2px 14px">'+memberCardHtml+'</div></div>';
-        var recordsCard='<div class="card"><div class="card-header">📜 历史记录 <span class="badge-tag badge-danger">'+formatScoreText(total,'deduct')+'分</span><span style="font-weight:400;font-size:0.8571rem;color:var(--gray-500);margin-left:6px">按日期倒序</span></div><div style="overflow-x:auto"><table class="mobile-h-table"><thead><tr><th>操作</th><th>日期</th><th>对象</th><th>卫生项目</th><th>分值</th><th>纪律项目</th><th>分值</th><th>备注</th></tr></thead><tbody id="historyTbody"></tbody></table></div></div>';
+        var recordsCard='<div class="card"><div class="card-header">📜 历史记录 <span class="badge-tag '+netBadgeCls+'">'+formatScoreText(netTotal,'net')+'分</span><span style="font-weight:400;font-size:0.8571rem;color:var(--gray-500);margin-left:6px">按日期倒序</span></div><div style="overflow-x:auto"><table class="mobile-h-table"><thead><tr><th>操作</th><th>日期</th><th>对象</th><th>卫生项目</th><th>分值</th><th>纪律项目</th><th>分值</th><th>备注</th></tr></thead><tbody id="historyTbody"></tbody></table></div></div>';
         // 移动端顺序：楼层/宿舍芯片 → 状态汇总 → 宿舍成员（单行紧凑）→ 三个统计卡片 → 历史扣分记录
         // PC 端顺序保持不变：统计大卡（状态+三卡片）→ 历史扣分记录 → 宿舍成员表
         container.innerHTML='<div class="content-header"><h2>📋 宿舍 '+dorm.roomNumber+'（'+floor.name+'）</h2></div>'+topCard+(isMobileH?(statusCard+membersCardMobile+statThreeMobile+recordsCard):(statsCard+recordsCard+membersCardPc));
@@ -730,16 +742,16 @@
         var hySection = '';
         var disSection = '';
         if (showHygiene) {
-            var hyCheckboxes=hyItems.map(function(i){return '<label><input type="checkbox" value="'+i.id+'" class="'+hyCls+'"> '+i.name+' ('+formatScoreText(i.defaultScore, itemKind)+'分)</label>';}).join('');
-            hyCheckboxes+='<label><input type="checkbox" value="custom" class="'+hyCls+' '+hyCustomCls+'"> ✏️ 自定义('+formatScoreText(defaultHyCustom, itemKind)+'分)</label>';
+            var hyCheckboxes=hyItems.map(function(i){return '<label><input type="checkbox" value="'+i.id+'" class="'+hyCls+'"> '+i.name+'</label>';}).join('');
+            hyCheckboxes+='<label><input type="checkbox" value="custom" class="'+hyCls+' '+hyCustomCls+'"> ✏️ 自定义</label>';
             hyCheckboxes+='<span id="'+hyCustomWrapId+'" style="display:none;margin-left:8px;"><input type="text" id="'+hyCustomNameId+'" placeholder="自定义项目名称" style="padding:4px 8px;border:1px dashed #ccc;border-radius:4px;"></span>';
             var hyScoreVal = addFormState[hyScoreRestoreKey] || 0;
             var hyScoreText = formatScoreText(hyScoreVal, itemKind);
             hySection = '<div class="form-group"><label>🧹 卫生'+scoreLabel+'（可多选）</label><div class="checkbox-group">'+hyCheckboxes+'</div><div style="margin-top:5px">卫生'+scoreLabel+'合计：<input type="text" id="'+hyScoreId+'" value="'+hyScoreText+'" inputmode="decimal" style="width:80px;padding:4px" onchange="addFormChange(\''+hyScoreRestoreKey+'\')"> 分</div></div>';
         }
         if (showDiscipline) {
-            var disCheckboxes=disItems.map(function(i){return '<label><input type="checkbox" value="'+i.id+'" class="'+disCls+'"> '+i.name+' ('+formatScoreText(i.defaultScore, itemKind)+'分)</label>';}).join('');
-            disCheckboxes+='<label><input type="checkbox" value="custom" class="'+disCls+' '+disCustomCls+'"> ✏️ 自定义('+formatScoreText(defaultDisCustom, itemKind)+'分)</label>';
+            var disCheckboxes=disItems.map(function(i){return '<label><input type="checkbox" value="'+i.id+'" class="'+disCls+'"> '+i.name+'</label>';}).join('');
+            disCheckboxes+='<label><input type="checkbox" value="custom" class="'+disCls+' '+disCustomCls+'"> ✏️ 自定义</label>';
             disCheckboxes+='<span id="'+disCustomWrapId+'" style="display:none;margin-left:8px;"><input type="text" id="'+disCustomNameId+'" placeholder="自定义项目名称" style="padding:4px 8px;border:1px dashed #ccc;border-radius:4px;"></span>';
             var disScoreVal = addFormState[disScoreRestoreKey] || 0;
             var disScoreText = formatScoreText(disScoreVal, itemKind);
@@ -930,8 +942,8 @@
                         ? '<span class="status-tag status-green">✅ 已确认（'+escapeHtmlAttr(conf.confirmedByName||'')+(formatConfirmedTime(conf.confirmedAt)?' · '+formatConfirmedTime(conf.confirmedAt):'')+'）</span>'
                         : (isToday
                             ? '<div style="display:inline-flex;gap:6px;white-space:nowrap;align-items:center">'
-                              + '<button class="btn btn-outline btn-xs" onclick="cancelInspection(\''+it.recordType+'\',\''+String(it.recordId).replace(/'/g,'')+'\')">取消</button>'
                               + '<button class="btn btn-danger btn-xs" onclick="confirmInspection(\''+it.recordType+'\',\''+String(it.recordId).replace(/'/g,'')+'\')">✅ 确认属实</button>'
+                              + '<button class="btn btn-outline btn-xs" onclick="cancelInspection(\''+it.recordType+'\',\''+String(it.recordId).replace(/'/g,'')+'\')">取消</button>'
                               + '</div>'
                             : '<span class="status-tag" style="background:var(--gray-100);color:var(--gray-500)">⏳ 待确认</span>');
                     if(isMobileLayout){
@@ -1540,31 +1552,31 @@
         var disItems=DB.deductionItems.discipline||[];
         var hyBonusItems=DB.deductionItems.hygieneBonus||[];
         var disBonusItems=DB.deductionItems.disciplineBonus||[];
-        function itemRows(items,delFn,prefix){
+        function itemRows(items,delFn,prefix,category){
             var kind = (prefix === '+') ? 'bonus' : 'deduct';
             var badgeCls = (prefix === '+') ? 'badge-bonus' : 'badge-danger';
-            return items.map(function(i){return '<div class="item-row"><span><b>'+i.name+'</b> <span class="badge-tag '+badgeCls+'">'+formatScoreText(i.defaultScore, kind)+'分</span></span><button class="btn btn-danger btn-xs" onclick="'+delFn+'('+i.id+')">删除</button></div>';}).join('');
+            return items.map(function(i){return '<div class="item-row"><span style="display:inline-flex;align-items:center;gap:8px;flex:1;min-width:0"><input type="checkbox" class="item-checkbox" data-item-category="'+category+'" data-item-id="'+i.id+'" style="flex-shrink:0"><span><b>'+i.name+'</b> <span class="badge-tag '+badgeCls+'">'+formatScoreText(i.defaultScore, kind)+'分</span></span></span><button class="btn btn-danger btn-xs" onclick="'+delFn+'('+i.id+')">删除</button></div>';}).join('');
         }
         function addForm(opts){
             return '<div style="display:flex;gap:8px;margin-top:12px"><input type="text" id="'+opts.nameId+'" placeholder="新项目名称" style="flex:1;padding:8px;border:1.5px solid #ddd;border-radius:6px"><input type="number" id="'+opts.scoreId+'" value="'+opts.defaultScore+'" min="0.1" step="0.1" style="width:70px;padding:8px;border:1.5px solid #ddd;border-radius:6px"><button class="btn btn-primary btn-sm" onclick="'+opts.addFn+'()">添加</button></div>'
                 +'<div style="margin-top:16px"><b>批量导入：</b><textarea id="'+opts.batchId+'" rows="4" style="width:100%;margin-top:4px;padding:8px;border:1.5px solid #ddd;border-radius:6px" placeholder="每行一个：项目名称,分值"></textarea><button class="btn btn-primary btn-sm" onclick="'+opts.batchFn+'()">📥 批量导入</button></div>';
         }
-        var hyRows=itemRows(hyItems,'deleteHygieneItem','-');
-        var disRows=itemRows(disItems,'deleteDisciplineItem','-');
-        var hyBonusRows=itemRows(hyBonusItems,'deleteHygieneBonusItem','+');
-        var disBonusRows=itemRows(disBonusItems,'deleteDisciplineBonusItem','+');
+        var hyRows=itemRows(hyItems,'deleteHygieneItem','-','hygiene');
+        var disRows=itemRows(disItems,'deleteDisciplineItem','-','discipline');
+        var hyBonusRows=itemRows(hyBonusItems,'deleteHygieneBonusItem','+','hygieneBonus');
+        var disBonusRows=itemRows(disBonusItems,'deleteDisciplineBonusItem','+','disciplineBonus');
         container.innerHTML='<div class="content-header"><h2>📋 加扣分项目管理</h2><button class="btn btn-outline btn-sm" onclick="copyItemsListForDiagnosis()" style="margin-left:auto">🔍 复制项目清单</button></div>'
             +'<div class="two-col-grid">'
-            +'<div class="card"><div class="card-header">🧹 卫生扣分项目（'+hyItems.length+'项）</div><div class="card-body"><div class="item-list">'+(hyRows||'<div style="color:#aaa;text-align:center;padding:20px">暂无项目</div>')+'</div>'
+            +'<div class="card"><div class="card-header"><span>🧹 卫生扣分项目（'+hyItems.length+'项）</span><span style="display:inline-flex;align-items:center;gap:8px"><label style="font-weight:400;cursor:pointer;display:inline-flex;align-items:center;gap:4px"><input type="checkbox" class="item-check-all" data-item-category="hygiene" onchange="toggleAllItemsByCategory(\'hygiene\',this.checked)"> 全选</label><button class="btn btn-danger btn-xs" onclick="deleteSelectedItemsByCategory(\'hygiene\')">🗑️ 批量删除</button></span></div><div class="card-body"><div class="item-list">'+(hyRows||'<div style="color:#aaa;text-align:center;padding:20px">暂无项目</div>')+'</div>'
             +addForm({nameId:'newHyItemName',scoreId:'newHyItemScore',defaultScore:2,addFn:'addHygieneItem',batchId:'hyBatchImport',batchFn:'batchImportHygieneItems'})
             +'</div></div>'
-            +'<div class="card"><div class="card-header">📏 纪律扣分项目（'+disItems.length+'项）</div><div class="card-body"><div class="item-list">'+(disRows||'<div style="color:#aaa;text-align:center;padding:20px">暂无项目</div>')+'</div>'
+            +'<div class="card"><div class="card-header"><span>📏 纪律扣分项目（'+disItems.length+'项）</span><span style="display:inline-flex;align-items:center;gap:8px"><label style="font-weight:400;cursor:pointer;display:inline-flex;align-items:center;gap:4px"><input type="checkbox" class="item-check-all" data-item-category="discipline" onchange="toggleAllItemsByCategory(\'discipline\',this.checked)"> 全选</label><button class="btn btn-danger btn-xs" onclick="deleteSelectedItemsByCategory(\'discipline\')">🗑️ 批量删除</button></span></div><div class="card-body"><div class="item-list">'+(disRows||'<div style="color:#aaa;text-align:center;padding:20px">暂无项目</div>')+'</div>'
             +addForm({nameId:'newDisItemName',scoreId:'newDisItemScore',defaultScore:1,addFn:'addDisciplineItem',batchId:'disBatchImport',batchFn:'batchImportDisciplineItems'})
             +'</div></div>'
-            +'<div class="card"><div class="card-header">🧹 卫生加分项目（'+hyBonusItems.length+'项）</div><div class="card-body"><div class="item-list">'+(hyBonusRows||'<div style="color:#aaa;text-align:center;padding:20px">暂无项目</div>')+'</div>'
+            +'<div class="card"><div class="card-header"><span>🧹 卫生加分项目（'+hyBonusItems.length+'项）</span><span style="display:inline-flex;align-items:center;gap:8px"><label style="font-weight:400;cursor:pointer;display:inline-flex;align-items:center;gap:4px"><input type="checkbox" class="item-check-all" data-item-category="hygieneBonus" onchange="toggleAllItemsByCategory(\'hygieneBonus\',this.checked)"> 全选</label><button class="btn btn-danger btn-xs" onclick="deleteSelectedItemsByCategory(\'hygieneBonus\')">🗑️ 批量删除</button></span></div><div class="card-body"><div class="item-list">'+(hyBonusRows||'<div style="color:#aaa;text-align:center;padding:20px">暂无项目</div>')+'</div>'
             +addForm({nameId:'newHyBonusItemName',scoreId:'newHyBonusItemScore',defaultScore:0.2,addFn:'addHygieneBonusItem',batchId:'hyBonusBatchImport',batchFn:'batchImportHygieneBonusItems'})
             +'</div></div>'
-            +'<div class="card"><div class="card-header">📏 纪律加分项目（'+disBonusItems.length+'项）</div><div class="card-body"><div class="item-list">'+(disBonusRows||'<div style="color:#aaa;text-align:center;padding:20px">暂无项目</div>')+'</div>'
+            +'<div class="card"><div class="card-header"><span>📏 纪律加分项目（'+disBonusItems.length+'项）</span><span style="display:inline-flex;align-items:center;gap:8px"><label style="font-weight:400;cursor:pointer;display:inline-flex;align-items:center;gap:4px"><input type="checkbox" class="item-check-all" data-item-category="disciplineBonus" onchange="toggleAllItemsByCategory(\'disciplineBonus\',this.checked)"> 全选</label><button class="btn btn-danger btn-xs" onclick="deleteSelectedItemsByCategory(\'disciplineBonus\')">🗑️ 批量删除</button></span></div><div class="card-body"><div class="item-list">'+(disBonusRows||'<div style="color:#aaa;text-align:center;padding:20px">暂无项目</div>')+'</div>'
             +addForm({nameId:'newDisBonusItemName',scoreId:'newDisBonusItemScore',defaultScore:1,addFn:'addDisciplineBonusItem',batchId:'disBonusBatchImport',batchFn:'batchImportDisciplineBonusItems'})
             +'</div></div>'
             +'</div>';
@@ -1609,6 +1621,7 @@
             ? '<span class="badge-tag" style="background:#e5f7ea;color:#15803d">已读</span>'
             : '<span class="badge-tag badge-danger">未读</span>';
         return '<tr>'
+            + '<td data-label="选择"><input type="checkbox" class="notif-record-checkbox" data-notif-id="'+escapeHtmlAttr(r.id)+'"></td>'
             + '<td data-label="时间" style="white-space:nowrap">'+notifFormatDateTime(r.createdAt)+'</td>'
             + '<td data-label="接收人">'+notifReceiverText(r)+'</td>'
             + '<td data-label="类型"><span style="color:'+catColor+';font-weight:600">'+(NOTIF_CATEGORY_LABELS[cat] || '手动')+'</span></td>'
@@ -1782,7 +1795,11 @@
             + '<div class="form-group"><label>类型</label><select id="notifFilterType" onchange="applyNotifFilter()"><option value="all">全部</option><option value="warning">预警</option><option value="approval">审核</option><option value="manual">手动</option></select></div>'
             + '<div class="form-group"><label>状态</label><select id="notifFilterStatus" onchange="applyNotifFilter()"><option value="all">全部</option><option value="read">已读</option><option value="unread">未读</option></select></div>'
             + '</div>'
-            + '<div style="overflow-x:auto"><table><thead><tr><th>时间</th><th>接收人</th><th>类型</th><th>标题</th><th>状态</th><th>操作</th></tr></thead>'
+            + '<div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap">'
+            + '<label style="display:inline-flex;align-items:center;gap:4px;font-weight:400;cursor:pointer"><input type="checkbox" id="notifSelectAll" onchange="toggleAllNotifRecords(this.checked)"> 全选</label>'
+            + '<button class="btn btn-danger btn-sm" onclick="deleteSelectedNotifRecords()">🗑️ 批量删除</button>'
+            + '</div>'
+            + '<div style="overflow-x:auto"><table><thead><tr><th style="width:30px"></th><th>时间</th><th>接收人</th><th>类型</th><th>标题</th><th>状态</th><th>操作</th></tr></thead>'
             + '<tbody id="notifRecordsTbody"></tbody></table></div></div>';
         html += notifFoldBlock('notif-fold-records', '📋 通知记录', recordsBody);
         // 4) 通知模板管理
