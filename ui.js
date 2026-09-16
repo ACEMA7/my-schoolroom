@@ -307,102 +307,160 @@
         });
     }
 
-    // ==================== PC 端拖拽框选复选框 ====================
-    // 交互：在页面任意位置（非输入框、非按钮、非链接）按下鼠标左键 → 拖动 →
-    // 显示半透明蓝色矩形 → 松开鼠标时，所有"矩形碰到其复选框"的复选框被勾选。
-    // 判定：矩形与复选框元素的 DOM 矩形有交集（哪怕只碰到一角）。
-    // 启用范围：仅 PC 端（窗口宽 > 768px 且非触摸设备）；手机端不做此功能。
-    var _dragSelectState = { active: false, startX: 0, startY: 0, boxEl: null, targetSelector: null, container: null };
+    // ==================== PC 端拖拽框选复选框（优化版） ====================
+    // 交互：鼠标在内容区任意位置按下 → 移动超过 5 像素 → 进入框选模式 → 显示半透明蓝色矩形
+    //       → 拖动 → 松开 → 所有"矩形碰到其复选框"的复选框被勾选。
+    // 判定：矩形与复选框本身（getBoundingClientRect）有交集（哪怕只碰到一角）。
+    // 跨表：一次拖拽可以覆盖多个表格的复选框（例如今日明细页的多个宿舍表）。
+    // 防误触：按下后移动 < 5 像素视为单击，不触发框选，保留正常点击行为。
+    // 启用范围：仅 PC 端（窗口宽 > 768 且非触摸设备）；手机端不做此功能。
+    var _dragSelectState = {
+        active: false,        // 是否已正式进入框选模式
+        pending: false,       // 鼠标已按下，等待移动阈值
+        startX: 0,
+        startY: 0,
+        curX: 0,
+        curY: 0,
+        boxEl: null,
+        checkboxSelectors: [],  // 需要监听的复选框选择器列表
+        moveThreshold: 5        // 移动超过此像素数才进入框选
+    };
 
     /**
-     * 给某个容器启用拖拽框选。
-     * @param {HTMLElement} container - 限定鼠标按下与拖拽范围（如表格 tbody 的父容器）
-     * @param {string} checkboxSelector - 该容器内复选框的 CSS 选择器（如 '.student-checkbox'）
+     * 初始化拖拽框选（全局一次即可）。PC 端页面加载时调用。
+     * 覆盖的复选框类型由 checkboxSelectors 决定。
      */
-    function enableDragSelect(container, checkboxSelector) {
-        if (!container || !checkboxSelector) return;
-        // 已启用过则跳过
-        if (container._dragSelectEnabled === checkboxSelector) return;
-        container._dragSelectEnabled = checkboxSelector;
-        container.addEventListener('mousedown', function(ev){
-            // PC 端判断：窗口宽度 > 768 且非触摸事件
-            if (window.innerWidth <= 768) return;
-            // 忽略右键/中键
-            if (ev.button !== 0) return;
-            // 忽略在输入框、按钮、链接、复选框本身上的按下
-            var tag = ev.target && ev.target.tagName ? ev.target.tagName.toUpperCase() : '';
-            if (tag === 'INPUT' || tag === 'BUTTON' || tag === 'A' || tag === 'TEXTAREA' || tag === 'SELECT') return;
-            // 忽略在模态框、抽屉等浮层内的按下
-            if (ev.target.closest && (ev.target.closest('.modal-overlay') || ev.target.closest('.notif-drawer') || ev.target.closest('.font-scale-panel'))) return;
-            _startDragSelect(ev, container, checkboxSelector);
-        });
+    function initDragSelectGlobal() {
+        if (window.innerWidth <= 768) return;
+        if (window._dragSelectGlobalInited) return;
+        window._dragSelectGlobalInited = true;
+        // 需要识别的复选框选择器（与 5 个模块一一对应）
+        _dragSelectState.checkboxSelectors = [
+            '.student-checkbox',
+            '.item-checkbox',
+            '.notif-record-checkbox',
+            '.acct-check',
+            '.today-record-checkbox'
+        ];
+        _dragSelectState.boxEl = document.getElementById('dragSelectBox');
+        // 全局监听：mousedown 在 document 上（覆盖整个内容区）
+        document.addEventListener('mousedown', _onDragSelectMouseDown, true);
     }
 
-    /** 开始拖拽框选（内部） */
-    function _startDragSelect(ev, container, checkboxSelector) {
-        var boxEl = document.getElementById('dragSelectBox');
-        if (!boxEl) return;
-        var startX = ev.clientX;
-        var startY = ev.clientY;
-        _dragSelectState.active = true;
-        _dragSelectState.startX = startX;
-        _dragSelectState.startY = startY;
-        _dragSelectState.boxEl = boxEl;
-        _dragSelectState.targetSelector = checkboxSelector;
-        _dragSelectState.container = container;
-        // 记录"拖拽之前已勾选"的复选框集合，供松开时合并勾选状态
-        var boxes = container.querySelectorAll(checkboxSelector);
-        _dragSelectState.initChecked = {};
-        boxes.forEach(function(b){ if (b.checked) _dragSelectState.initChecked[_getCheckboxKey(b)] = true; });
-        boxEl.style.display = 'block';
-        boxEl.style.left = startX + 'px';
-        boxEl.style.top = startY + 'px';
-        boxEl.style.width = '0px';
-        boxEl.style.height = '0px';
-        // 阻止文本选择（拖拽时选中文字会干扰）
-        document.body.style.userSelect = 'none';
-        document.body.style.webkitUserSelect = 'none';
-        document.addEventListener('mousemove', _onDragSelectMove);
-        document.addEventListener('mouseup', _onDragSelectEnd);
-        ev.preventDefault();
+    /** 鼠标按下：先记录起点，等待移动阈值再进入框选模式 */
+    function _onDragSelectMouseDown(ev) {
+        if (window.innerWidth <= 768) return;
+        if (ev.button !== 0) return;
+        // 已在拖拽中忽略
+        if (_dragSelectState.active || _dragSelectState.pending) return;
+        var target = ev.target;
+        if (!target || !target.tagName) return;
+        var tag = target.tagName.toUpperCase();
+        // 忽略输入框、按钮、链接、下拉框、文本域上的按下（保留正常交互）
+        if (tag === 'INPUT' || tag === 'BUTTON' || tag === 'A' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+        // 忽略模态框、抽屉、字体面板等浮层内的按下
+        if (target.closest && (target.closest('.modal-overlay') || target.closest('.notif-drawer') || target.closest('.font-scale-panel'))) return;
+        // 忽略侧边栏内的按下
+        if (target.closest && target.closest('#sidebar')) return;
+        // 忽略顶栏（含手动同步按钮、通知铃铛等）
+        if (target.closest && target.closest('.header')) return;
+        // 忽略返回顶部按钮
+        if (target.closest && target.closest('.back-to-top')) return;
+        // 进入"等待移动"状态
+        _dragSelectState.pending = true;
+        _dragSelectState.active = false;
+        _dragSelectState.startX = ev.clientX;
+        _dragSelectState.startY = ev.clientY;
+        _dragSelectState.curX = ev.clientX;
+        _dragSelectState.curY = ev.clientY;
+        document.addEventListener('mousemove', _onDragSelectMouseMove, true);
+        document.addEventListener('mouseup', _onDragSelectMouseUp, true);
     }
 
-    /** 生成复选框的唯一 key（用于记录初始勾选状态） */
-    function _getCheckboxKey(cb){
-        if (!cb) return '';
-        if (cb.classList.contains('student-checkbox')) return 'stu:' + (cb.getAttribute('data-student-id') || '');
-        if (cb.classList.contains('item-checkbox')) return 'item:' + (cb.getAttribute('data-item-category') || '') + ':' + (cb.getAttribute('data-item-id') || '');
-        if (cb.classList.contains('notif-record-checkbox')) return 'notif:' + (cb.getAttribute('data-notif-id') || '');
-        if (cb.classList.contains('acct-check')) return 'acct:' + (cb.getAttribute('data-user-id') || '');
-        if (cb.classList.contains('today-record-checkbox')) return 'today:' + (cb.getAttribute('data-record-id') || '');
-        return '';
+    /** 鼠标移动：超过阈值才正式进入框选模式 */
+    function _onDragSelectMouseMove(ev) {
+        if (!_dragSelectState.pending && !_dragSelectState.active) return;
+        _dragSelectState.curX = ev.clientX;
+        _dragSelectState.curY = ev.clientY;
+        // 未进入框选模式：判断是否超过移动阈值
+        if (!_dragSelectState.active) {
+            var dx = Math.abs(ev.clientX - _dragSelectState.startX);
+            var dy = Math.abs(ev.clientY - _dragSelectState.startY);
+            if (dx < _dragSelectState.moveThreshold && dy < _dragSelectState.moveThreshold) return;
+            // 超过阈值：正式进入框选模式
+            _dragSelectState.active = true;
+            _startDragSelectVisual();
+        }
+        if (_dragSelectState.active) {
+            _updateDragSelectVisual();
+        }
     }
 
-    /** 拖拽中：更新矩形位置与尺寸 */
-    function _onDragSelectMove(ev){
-        if (!_dragSelectState.active) return;
+    /** 鼠标松开：若已进入框选模式，执行勾选；否则视为普通单击，不干扰正常点击 */
+    function _onDragSelectMouseUp(ev) {
+        document.removeEventListener('mousemove', _onDragSelectMouseMove, true);
+        document.removeEventListener('mouseup', _onDragSelectMouseUp, true);
+        var wasActive = _dragSelectState.active;
+        _dragSelectState.pending = false;
+        _dragSelectState.active = false;
+        if (wasActive) {
+            _applyDragSelectResult(ev);
+        }
+        _hideDragSelectVisual();
+    }
+
+    /** 显示框选矩形（进入框选模式时调用一次） */
+    function _startDragSelectVisual() {
         var boxEl = _dragSelectState.boxEl;
         if (!boxEl) return;
-        var x1 = Math.min(_dragSelectState.startX, ev.clientX);
-        var y1 = Math.min(_dragSelectState.startY, ev.clientY);
-        var x2 = Math.max(_dragSelectState.startX, ev.clientX);
-        var y2 = Math.max(_dragSelectState.startY, ev.clientY);
+        boxEl.style.display = 'block';
+        boxEl.style.left = _dragSelectState.startX + 'px';
+        boxEl.style.top = _dragSelectState.startY + 'px';
+        boxEl.style.width = '0px';
+        boxEl.style.height = '0px';
+        document.body.style.userSelect = 'none';
+        document.body.style.webkitUserSelect = 'none';
+    }
+
+    /** 更新框选矩形位置（移动中实时调用） */
+    function _updateDragSelectVisual() {
+        var boxEl = _dragSelectState.boxEl;
+        if (!boxEl) return;
+        var x1 = Math.min(_dragSelectState.startX, _dragSelectState.curX);
+        var y1 = Math.min(_dragSelectState.startY, _dragSelectState.curY);
+        var x2 = Math.max(_dragSelectState.startX, _dragSelectState.curX);
+        var y2 = Math.max(_dragSelectState.startY, _dragSelectState.curY);
         boxEl.style.left = x1 + 'px';
         boxEl.style.top = y1 + 'px';
         boxEl.style.width = (x2 - x1) + 'px';
         boxEl.style.height = (y2 - y1) + 'px';
-        // 实时预览：矩形范围内的复选框视觉上高亮（仅视觉，不真正改变 checked，
-        // 避免拖拽中途用户看到勾选变化引发误解；松开时才真正勾选）
+        // 实时预览：矩形范围内的复选框高亮
         _previewDragSelectHighlight({ left: x1, top: y1, right: x2, bottom: y2 });
     }
 
-    /** 拖拽中：给矩形内的复选框加视觉高亮（用 outline），矩形外的清除高亮 */
-    function _previewDragSelectHighlight(rect){
-        var container = _dragSelectState.container;
-        var selector = _dragSelectState.targetSelector;
-        if (!container || !selector) return;
-        var boxes = container.querySelectorAll(selector);
-        boxes.forEach(function(cb){
+    /** 隐藏框选矩形并清除高亮 */
+    function _hideDragSelectVisual() {
+        var boxEl = _dragSelectState.boxEl;
+        if (boxEl) boxEl.style.display = 'none';
+        document.body.style.userSelect = '';
+        document.body.style.webkitUserSelect = '';
+        // 清除所有复选框的高亮 outline
+        _getAllCheckboxes().forEach(function(cb){ cb.style.outline = ''; });
+    }
+
+    /** 取当前页面所有被纳入框选的复选框（5 类） */
+    function _getAllCheckboxes() {
+        var sels = _dragSelectState.checkboxSelectors || [];
+        var result = [];
+        sels.forEach(function(sel){
+            document.querySelectorAll(sel).forEach(function(cb){ result.push(cb); });
+        });
+        return result;
+    }
+
+    /** 拖拽中：给矩形内的复选框加视觉高亮 */
+    function _previewDragSelectHighlight(rect) {
+        _getAllCheckboxes().forEach(function(cb){
             var b = cb.getBoundingClientRect();
             var hit = !(b.right < rect.left || b.left > rect.right || b.bottom < rect.top || b.top > rect.bottom);
             if (hit) cb.style.outline = '2px solid #4f6ef7';
@@ -410,73 +468,41 @@
         });
     }
 
-    /** 松开鼠标：矩形覆盖到的复选框勾选（合并拖拽前已勾选的状态），清理状态 */
-    function _onDragSelectEnd(ev){
-        if (!_dragSelectState.active) return;
-        _dragSelectState.active = false;
-        var container = _dragSelectState.container;
-        var selector = _dragSelectState.targetSelector;
-        var boxEl = _dragSelectState.boxEl;
-        // 计算最终矩形
+    /** 松开鼠标：矩形覆盖到的复选框被勾选 */
+    function _applyDragSelectResult(ev) {
         var x1 = Math.min(_dragSelectState.startX, ev.clientX);
         var y1 = Math.min(_dragSelectState.startY, ev.clientY);
         var x2 = Math.max(_dragSelectState.startX, ev.clientX);
         var y2 = Math.max(_dragSelectState.startY, ev.clientY);
         var rect = { left: x1, top: y1, right: x2, bottom: y2 };
-        // 隐藏矩形与清除高亮
-        if (boxEl){ boxEl.style.display = 'none'; }
-        document.body.style.userSelect = '';
-        document.body.style.webkitUserSelect = '';
-        document.removeEventListener('mousemove', _onDragSelectMove);
-        document.removeEventListener('mouseup', _onDragSelectEnd);
-        // 判定并勾选
-        if (container && selector){
-            var boxes = container.querySelectorAll(selector);
-            boxes.forEach(function(cb){
-                cb.style.outline = '';
-                var b = cb.getBoundingClientRect();
-                // 判定：矩形与复选框本身有交集（哪怕只碰到一角）
-                var hit = !(b.right < rect.left || b.left > rect.right || b.bottom < rect.top || b.top > rect.bottom);
-                if (hit) cb.checked = true;
-            });
-        }
-        // 通知外层更新选中计数（调用方已存在的方法）
+        var hitCount = 0;
+        _getAllCheckboxes().forEach(function(cb){
+            var b = cb.getBoundingClientRect();
+            // 判定：矩形与复选框本身有交集（哪怕只碰到一角）
+            var hit = !(b.right < rect.left || b.left > rect.right || b.bottom < rect.top || b.top > rect.bottom);
+            if (hit) { cb.checked = true; hitCount++; }
+        });
+        // 通知外层同步"已选 N 条"等计数显示
         try {
             if (document.getElementById('todaySelectedCount') && typeof updateTodaySelectedCount === 'function') updateTodaySelectedCount();
             if (document.getElementById('selectAllStudents') && typeof updateSelectedCount === 'function') updateSelectedCount();
         } catch(e){}
-        _dragSelectState.container = null;
-        _dragSelectState.targetSelector = null;
-        _dragSelectState.boxEl = null;
     }
 
     /**
-     * 自动为当前页面上的 5 类批量操作表格启用拖拽框选（幂等）。
-     * 由 renderXxxView 在渲染完成后调用，或在 DOMContentLoaded / 视图切换后调用。
+     * 兼容旧调用：保留原函数名 initDragSelectForAllTables。
+     * 现在拖拽框选是全局监听的，不再按表格逐个启用；本函数仅作为"确保全局初始化"入口，
+     * 供各视图渲染完成后调用（幂等，重复调用无副作用）。
      */
-    function initDragSelectForAllTables(){
-        if (window.innerWidth <= 768) return; // 仅 PC 端
-        // 1) 学生名单：容器 #studentsTbody
-        var stuTbody = document.getElementById('studentsTbody');
-        if (stuTbody) enableDragSelect(stuTbody, '.student-checkbox');
-        // 2) 扣分项目管理：容器 .item-list（4 个）
-        document.querySelectorAll('.item-list').forEach(function(el){
-            enableDragSelect(el, '.item-checkbox');
-        });
-        // 3) 通知管理：容器 #notifRecordsTbody
-        var notifTbody = document.getElementById('notifRecordsTbody');
-        if (notifTbody) enableDragSelect(notifTbody, '.notif-record-checkbox');
-        // 4) 账号管理：容器为其所在 table 的 tbody（无 id，通过 .acct-check 反查）
-        var acctCb = document.querySelector('.acct-check');
-        if (acctCb){
-            var acctTbody = acctCb.closest('tbody');
-            if (acctTbody) enableDragSelect(acctTbody, '.acct-check');
-        }
-        // 5) 今日明细：容器为所有 [id^="todayTbody-"] 元素
-        document.querySelectorAll('[id^="todayTbody-"]').forEach(function(el){
-            enableDragSelect(el, '.today-record-checkbox');
-        });
+    function initDragSelectForAllTables() {
+        initDragSelectGlobal();
     }
+
+    /**
+     * 兼容旧调用：保留原函数名 enableDragSelect。
+     * 全局拖拽不再按容器绑定，本函数保留为空操作（幂等），避免旧调用处报错。
+     */
+    function enableDragSelect() { /* 空操作：由全局监听统一处理 */ }
 
     // ==================== 手机端功能首页（色块导航） ====================
     /**
