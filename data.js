@@ -453,22 +453,16 @@
     }
 
     /**
-     * 计算指定学生的个人累计净分（新口径）。
-     *
-     * 【新口径规则】
-     *   - 每条个人记录里，卫生侧只要有分（无论原始登记 0.2、0.4 还是 0.6），就折算 ±1；
-     *   - 每条个人记录里，纪律侧只要有分（无论原始登记 1、2 还是 3），就折算 ±1；
-     *   - 一条记录卫生、纪律两侧都有分 → 两侧各算一次，共 ±2；
-     *   - 正负由 recordMode 决定（bonus=+1/侧，deduct=-1/侧）。
-     *   - 个人净分 = 该学生所有个人记录的折算分相加（结果为整数）。
-     *
-     * 【设计意图】登记层面的原始分数（0.2、1 等）保持不变，本函数只做"运行时折算"，
-     *   不修改任何历史记录、不做数据迁移；导出 Excel 仍显示原始分数。
-     *
-     * 只统计个人记录（r.studentId 严格等于 studentId），宿舍集体记录（studentId=null）
-     * 不在此函数计算（集体分已通过 autoDerived 派生记录落到个人账上，避免重复计算）。
+     * 计算指定学生的个人累计净分（新口径·底层老规矩）。
+     * 折算规则：每条个人记录里，卫生侧只要有分就折算 1，纪律侧只要有分就折算 1；
+     *           两侧都有的记录折算 2。
+     * 符号口径（与系统老规矩一致）：
+     *   - 扣分记录：底层累加【正数】（如被扣 1 → 底层 +1 → 显示 -1）
+     *   - 加分记录：底层累加【负数】（如被加 1 → 底层 -1 → 显示 +1）
+     * 返回值：正数 = 净扣分，负数 = 净加分，0 = 净分为 0。
+     * 只统计个人记录（r.studentId 严格等于 studentId），宿舍集体记录（studentId=null）不在此函数计算。
      * @param {number|string} studentId - 学生 ID
-     * @returns {number} 个人净分（整数）；无记录返回 0
+     * @returns {number} 个人净分（整数，底层老口径）
      */
     function getStudentNetScore(studentId) {
         if (!DB || !Array.isArray(DB.deductionRecords) || studentId == null) return 0;
@@ -476,27 +470,24 @@
         DB.deductionRecords.forEach(function(r) {
             if (!r || String(r.studentId) !== String(studentId)) return;
             var isBonus = (r.recordMode === 'bonus');
-            var sign = isBonus ? 1 : -1;
-            // 卫生侧：只要有分就折算 ±1（无论原始是 0.2 还是 0.6）
+            // 【关键修复】符号反转为系统老口径：
+            // 加分记录 → 累减（底层负数，显示正数）
+            // 扣分记录 → 累加（底层正数，显示负数）
+            var sign = isBonus ? -1 : 1;
             if ((r.hygieneScore || 0) > 0) total += sign;
-            // 纪律侧：只要有分就折算 ±1（无论原始是 1 还是 2）
             if ((r.disciplineScore || 0) > 0) total += sign;
         });
         return roundScore1(total);
     }
 
     /**
-     * 计算某宿舍的累计净分（新口径）。
-     *
-     * 【新口径规则】宿舍累计净分 = 该宿舍所有在住学生的"个人净分"之和
-     *   （个人净分口径见 getStudentNetScore：运行时折算、卫生/纪律各 ±1）。
-     *   例如：宿舍 3 人，两个 -1、一个 +1 → 宿舍累计 = -1。
-     *
-     * 【设计意图】纯运行时按在住学生聚合，不读取/修改任何宿舍集体汇总记录，
-     *   历史数据不做迁移。
+     * 计算某宿舍的累计净分（新口径·底层老规矩）。
+     * 算法：该宿舍所有在住学生的个人净分之和。
+     * 符号口径：与 getStudentNetScore 一致（正数=净扣、负数=净加、0=净分为 0）。
+     *   底层正数 → 显示负号（扣分，红色）；底层负数 → 显示正号（加分，绿色）。
      * @param {number} dormitoryId - 宿舍 ID
      * @param {string} [classNameFilter] - 可选，仅统计指定班级的学生（班级账号用）
-     * @returns {number} 累计净分
+     * @returns {number} 累计净分（底层老口径）
      */
     function getDormCumulativeNetScore(dormitoryId, classNameFilter) {
         if (!DB || dormitoryId == null) return 0;
@@ -510,16 +501,13 @@
     }
 
     /**
-     * 计算某楼层的累计净分（新口径）。
-     *
-     * 【新口径规则】楼层累计净分 = 该楼层所有宿舍在住学生的"个人净分"之和
-     *   （个人净分口径见 getStudentNetScore：运行时折算、卫生/纪律各 ±1）。
-     *
-     * 【设计意图】纯运行时按在住学生聚合，不读取/修改任何楼层汇总记录，
-     *   历史数据不做迁移。
+     * 计算某楼层的累计净分（新口径·底层老规矩）。
+     * 算法：该楼层所有宿舍在住学生的个人净分之和。
+     * 符号口径：与 getStudentNetScore 一致（正数=净扣、负数=净加、0=净分为 0）。
+     *   底层正数 → 显示负号（扣分，红色）；底层负数 → 显示正号（加分，绿色）。
      * @param {number} floorId - 楼层 ID
      * @param {string} [classNameFilter] - 可选，仅统计指定班级的学生（班级账号用）
-     * @returns {number} 累计净分
+     * @returns {number} 累计净分（底层老口径）
      */
     function getFloorCumulativeNetScore(floorId, classNameFilter) {
         if (!DB || floorId == null) return 0;
