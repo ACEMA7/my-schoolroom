@@ -181,13 +181,38 @@
     }
 
     /**
-     * 查询某宿舍的全部在住学生（不含已退宿/走读）。
+     * 查询某宿舍的全部在住学生（不含已退宿/走读），并按床号升序排序。
+     *
+     * 排序效果（一处改，全局生效）：
+     *   - 宿舍成员列表（住宿信息页）按床号 1、2、3… 升序显示；
+     *   - 调换床位后（如 3 号床 → 7 号床），刷新页面即按新床号重新排序；
+     *   - 扣分登记页的扣分对象芯片、异常上报学生下拉、调宿弹层等
+     *     所有依赖本函数的位置一并生效；
+     *   - 无需修改其他函数（renderHierarchyView、renderAddView、buildAnomalyStudentForm 等），
+     *     它们都调用本函数，排序逻辑集中在此。
+     *
+     * 归一化规则：床号归一化为数字；空/无效值排到最后（按 999 处理）；
+     *   床号相同时（异常数据）按姓名中文排序，保证结果稳定。
      * @param {number} dormitoryId - 宿舍 ID
-     * @returns {Array} 学生对象数组（床号 bedNumber 为字符串 '1'-'8'）
+     * @returns {Array} 学生对象数组（按床号升序，床号 bedNumber 为字符串 '1'-'8'）
      */
     function getStudentsByDormitory(dormitoryId) {
         if (!DB || !DB.students) return [];
-        return DB.students.filter(function(s) { return s.dormitoryId === dormitoryId; });
+        var list = DB.students.filter(function(s) { return s.dormitoryId === dormitoryId; });
+        list.sort(function(a, b) {
+            // 床号归一化为数字：空/无效值排到最后
+            var ba = (a.bedNumber !== null && a.bedNumber !== undefined && String(a.bedNumber).trim() !== '')
+                ? parseInt(a.bedNumber, 10) : 999;
+            var bb = (b.bedNumber !== null && b.bedNumber !== undefined && String(b.bedNumber).trim() !== '')
+                ? parseInt(b.bedNumber, 10) : 999;
+            if (isNaN(ba)) ba = 999;
+            if (isNaN(bb)) bb = 999;
+            // 主要排序：床号从小到大
+            if (ba !== bb) return ba - bb;
+            // 次要排序：床号相同时（异常数据）按姓名中文排序，保证结果稳定
+            return String(a.name || '').localeCompare(String(b.name || ''), 'zh-Hans-CN');
+        });
+        return list;
     }
     // 判断是否为非住宿生（走读生）：dormitoryId 为 null 或未定义
     function isNonResidentStudent(student){
@@ -523,6 +548,35 @@
             total += getStudentNetScore(s.id);
         });
         return roundScore1(total);
+    }
+
+    /**
+     * 查找某条"宿舍集体记录"所派生的全部个人记录（用于级联删除）。
+     * 判定规则（5 个条件同时满足）：
+     *   1. 同 dormitoryId；2. 同 recordDate；3. 同 recordMode；
+     *   4. autoDerived === true；5. createdAt 与集体记录相差 ≤ 5000 毫秒。
+     * 若传入的记录不是"宿舍集体记录"（studentId 非 null），返回空数组。
+     * @param {object} parentRecord - 一条宿舍集体扣分/加分记录
+     * @returns {Array} 其派生的个人记录数组（可能为空）
+     */
+    function findDerivedRecords(parentRecord) {
+        if (!parentRecord || parentRecord.studentId != null) return [];
+        if (parentRecord.autoDerived === true) return [];
+        if (!DB || !Array.isArray(DB.deductionRecords)) return [];
+        var parentTime = parentRecord.createdAt || 0;
+        return DB.deductionRecords.filter(function(r) {
+            if (!r || r.autoDerived !== true) return false;
+            if (r.studentId == null) return false;
+            if (String(r.dormitoryId) !== String(parentRecord.dormitoryId)) return false;
+            if (r.recordDate !== parentRecord.recordDate) return false;
+            if ((r.recordMode || 'deduct') !== (parentRecord.recordMode || 'deduct')) return false;
+            // 时间接近：同一次提交派生（5000ms 容差，与 migrateDerivedDeductionRecords 一致）
+            if (parentTime > 0) {
+                var childTime = r.createdAt || 0;
+                if (Math.abs(childTime - parentTime) > 5000) return false;
+            }
+            return true;
+        });
     }
 
     /**
@@ -1117,7 +1171,7 @@
         var notifications = [];
         var notificationTemplates = DEFAULT_NOTIFICATION_TEMPLATES.map(function(t){ return Object.assign({}, t); });
         var floorChangeRequests = [];
-        DB = { floors, dormitories, dormitoryList, students, deductionItems, deductionRecords: records, leaveRecords: leaveRecords, absenceRecords: absenceRecords, inspectionConfirmations: inspectionConfirmations, anomalyReports: anomalyReports, dailyInspectionSummaries: dailyInspectionSummaries, notifications: notifications, notificationTemplates: notificationTemplates, floorChangeRequests: floorChangeRequests, users, nextIds: { floor:9, dormitory: dormId, student: stuId, item:300, record: recId, leave:1, absence:1, user: nextUserId, confirmation:1, anomaly:1, summary:1 } };
+        DB = { floors, dormitories, dormitoryList, students, deductionItems, deductionRecords: records, leaveRecords: leaveRecords, absenceRecords: absenceRecords, inspectionConfirmations: inspectionConfirmations, anomalyReports: anomalyReports, dailyInspectionSummaries: dailyInspectionSummaries, notifications: notifications, notificationTemplates: notificationTemplates, floorChangeRequests: floorChangeRequests, users, masterBindHash: '', nextIds: { floor:9, dormitory: dormId, student: stuId, item:300, record: recId, leave:1, absence:1, user: nextUserId, confirmation:1, anomaly:1, summary:1 } };
         saveDBToLocal();
         });
     }
@@ -1152,6 +1206,7 @@
                 leave: 1, absence: 1, user: 1, confirmation: 1, anomaly: 1, summary: 1
             },
             syncEpoch: 0,
+            masterBindHash: '',
             lastSyncTime: 0,
             dirtyByType: {},
             deletedByType: {},
@@ -1285,6 +1340,8 @@
             if(!DB.dirtyByType[m.type]) DB.dirtyByType[m.type] = {};
             if(!DB.deletedByType[m.type]) DB.deletedByType[m.type] = {};
         });
+        // masterBindHash：主控绑定密码哈希（云端 meta 字段，首次由管理员设置）；旧库无此字段时补齐空串
+        if(typeof DB.masterBindHash !== 'string') DB.masterBindHash='';
         if(!Array.isArray(DB.absenceRecords)) DB.absenceRecords=[];
         // 站内通知子系统：旧版本地存档缺少两表时补齐空数组（模板由云端权威数据回填）
         if(!Array.isArray(DB.notifications)) DB.notifications=[];
@@ -1446,7 +1503,7 @@
         if(!meta || !DB) return [];
         if(meta.specialMeta){
             // meta 类型：固定返回一条 {id:'main', data:{...}}，epoch 为数据版本号
-            return [{ id: 'main', dormitoryList: DB.dormitoryList || [], nextIds: DB.nextIds || {}, epoch: DB.syncEpoch || 0 }];
+            return [{ id: 'main', dormitoryList: DB.dormitoryList || [], nextIds: DB.nextIds || {}, epoch: DB.syncEpoch || 0, masterBindHash: DB.masterBindHash || '' }];
         }
         if(meta.specialItems){
             // deductionItems: 扁平化 hygiene + discipline + hygieneBonus + disciplineBonus 为独立记录
@@ -1995,6 +2052,7 @@ window.getStudentNetScore = getStudentNetScore;
 window.getDormCumulativeNetScore = getDormCumulativeNetScore;
 window.getFloorCumulativeNetScore = getFloorCumulativeNetScore;
 window.migrateDerivedDeductionRecords = migrateDerivedDeductionRecords;
+window.findDerivedRecords = findDerivedRecords;
 window.formatStudentBedName = formatStudentBedName;
 // 注意：copyItemsListForDiagnosis 定义在 app.js（晚于 data.js 加载），
 // 不能在此处做 window 导出（会抛 ReferenceError）；app.js 为 classic script，

@@ -179,35 +179,63 @@
 
     /**
      * 将当前设备绑定为主控设备：
-     *   弹出 prompt 要求输入绑定密码（MASTER_BIND_PASSWORD）；
-     *   密码正确则把 localStorage 中的 dorm_device_id 覆盖为 MASTER_DEVICE_ID，
+     *   绑定密码哈希存于云端 meta 表 masterBindHash 字段（首次由管理员设置）。
+     *   - 若本地 DB.masterBindHash 为空（云端从未设置）：prompt 让当前管理员设置绑定密码
+     *     （至少 8 位），hashPassword 哈希后写入 DB.masterBindHash、标脏上传、saveDBToLocal，
+     *     再继续原有绑定流程（清空本地数据 → 写入主控设备 ID → 刷新拉取云端）。
+     *   - 若 DB.masterBindHash 已设置：prompt 输入绑定密码，hashPassword 哈希后与本地哈希比对，
+     *     匹配则继续绑定流程；不匹配则提示「绑定密码错误」并中止。
+     *   绑定成功后 localStorage 中的 dorm_device_id 被覆盖为 MASTER_DEVICE_ID，
      *   刷新页面后 IS_MASTER_DEVICE 自动变为 true，获得主控权限。
      * 仅管理员可调用（UI 层已限制入口）；非管理员调用直接拒绝。
      */
     function bindCurrentDeviceAsMaster(){
         if(!isAdmin()){ toast('无权限，仅管理员可绑定主控设备','error'); return; }
         if(IS_MASTER_DEVICE){ toast('当前设备已是主控设备，无需重复绑定','success'); return; }
+
+        // 原有绑定流程：清空本地数据 → 设置强制拉取标志 → 覆盖 DEVICE_ID → 刷新
+        function proceedWithBind(){
+            try{
+                // 【关键】先清除本地全部业务数据（清空 DB_KEY），再设置强制拉取标志，
+                // 让下次启动走"空库 → 从云端拉取"流程，防止设备 B 本地残留的旧数据
+                // 被当成"主控设备本地宝贵数据"上传污染云端。
+                // 提前弹出确认，让用户明确知道本机数据将被丢弃、改用云端数据。
+                if(!confirm('绑定主控设备前，本机现有的全部数据（学生名单、扣分记录、请假记录等）将被清除，改为从云端下载最新数据。\n\n如果本机数据是你现在要用的正确数据，请先点"取消"，改用其它方式处理。\n\n确认后页面将自动刷新。刷新过程中还会再弹出一次"检测到云端数据版本更新…是否确认以云端数据覆盖本地"的确认框，请务必再次点击【确定】完成云端数据下载；若点【取消】，会保留刚清空的本机数据，本机将无法立即获得云端完整数据。\n\n确认绑定并清除本机数据？')) return;
+                try { localStorage.removeItem(DB_KEY); } catch(e) {}
+                localStorage.setItem('dorm_force_pull_from_cloud', 'true');
+                localStorage.setItem('dorm_device_id', MASTER_DEVICE_ID);
+            }catch(e){
+                toast('绑定失败：无法写入本地存储（'+(e&&e.message||e)+'）','error');
+                return;
+            }
+            toast('绑定成功！本机数据已清除，即将刷新并从云端重新下载...');
+            setTimeout(function(){ window.location.reload(); }, 1500);
+        }
+
+        // 分支 A：masterBindHash 为空 → 管理员首次设置绑定密码
+        if(!DB.masterBindHash){
+            var newPwd = prompt('请设置主控设备绑定密码（至少 8 位）：\n（设置后，其他管理员在非主控设备上输入此密码即可获得主控权限。该密码经 SHA-256 哈希后存于云端 meta 表 masterBindHash 字段，仅首次设置时明文输入）');
+            if(newPwd === null){ toast('已取消设置绑定密码','error'); return; } // 用户点了取消
+            if(String(newPwd).length < 8){ toast('绑定密码至少需要 8 位，已取消','error'); return; }
+            hashPassword(newPwd).then(function(h){
+                DB.masterBindHash = h;
+                v3MarkDirty('meta', 'main');
+                saveDBToLocal();
+                proceedWithBind();
+            });
+            return;
+        }
+
+        // 分支 B：masterBindHash 已设置 → 输入并校验绑定密码
         var pwd = prompt('请输入主控设备绑定密码：\n（绑定后当前设备将获得修改基础数据、重置云端等主控权限）');
         if(pwd === null) return; // 用户点了取消
-        if(String(pwd) !== MASTER_BIND_PASSWORD){
-            toast('绑定密码错误，请重试','error');
-            return;
-        }
-        try{
-            // 【关键】先清除本地全部业务数据（清空 DB_KEY），再设置强制拉取标志，
-            // 让下次启动走"空库 → 从云端拉取"流程，防止设备 B 本地残留的旧数据
-            // 被当成"主控设备本地宝贵数据"上传污染云端。
-            // 提前弹出确认，让用户明确知道本机数据将被丢弃、改用云端数据。
-            if(!confirm('绑定主控设备前，本机现有的全部数据（学生名单、扣分记录、请假记录等）将被清除，改为从云端下载最新数据。\n\n如果本机数据是你现在要用的正确数据，请先点"取消"，改用其它方式处理。\n\n确认后页面将自动刷新。刷新过程中还会再弹出一次"检测到云端数据版本更新…是否确认以云端数据覆盖本地"的确认框，请务必再次点击【确定】完成云端数据下载；若点【取消】，会保留刚清空的本机数据，本机将无法立即获得云端完整数据。\n\n确认绑定并清除本机数据？')) return;
-            try { localStorage.removeItem(DB_KEY); } catch(e) {}
-            localStorage.setItem('dorm_force_pull_from_cloud', 'true');
-            localStorage.setItem('dorm_device_id', MASTER_DEVICE_ID);
-        }catch(e){
-            toast('绑定失败：无法写入本地存储（'+(e&&e.message||e)+'）','error');
-            return;
-        }
-        toast('绑定成功！本机数据已清除，即将刷新并从云端重新下载...');
-        setTimeout(function(){ window.location.reload(); }, 1500);
+        hashPassword(pwd).then(function(inputHash){
+            if(inputHash !== DB.masterBindHash){
+                toast('绑定密码错误','error');
+                return;
+            }
+            proceedWithBind();
+        });
     }
 
     // ==================== 版本守卫（登录/同步前置强制检查） ====================
@@ -707,18 +735,42 @@
     /**
      * 删除一条扣分记录（仅管理员，confirm 确认）：打 V3 墓碑标记、
      * saveDB 落库同步、重绘住宿信息视图。
+     * 【级联删除】若被删记录为"宿舍集体记录"（studentId=null），则连带删除
+     *   其派生的全部个人加减分记录（autoDerived=true），保证个人净分同步减少。
+     * 删除个人记录（非集体，autoDerived 不为 true）时，行为不变（只删自己）。
      * @param {string|number} id - 扣分记录 ID
      */
     function deleteRecord(id){
         if(!isAdmin()){toast('无权限操作','error');return;}
-        if(!confirm('确认删除？')) return;
-        DB.deductionRecords=DB.deductionRecords.filter(function(r){return String(r.id)!==String(id);});
-        // 登记删除墓碑：防止该记录在下次拉取时从云端回灌（saveDB 全量上传时云端同步剔除）
-        if(DB.deletedRecordIds.indexOf(String(id))===-1) DB.deletedRecordIds.push(String(id));
-        // V3 按行存储：标记删除
-        v3MarkDeleted('deduction_record', id);
+        if(!confirm('确认删除？\n（若为宿舍集体记录，其派生的个人加减分记录将一并删除）')) return;
+        // 1) 找到待删除的记录
+        var target = DB.deductionRecords.find(function(r){ return String(r.id) === String(id); });
+        if(!target){ toast('记录不存在或已被删除','error'); return; }
+        // 2) 若为宿舍集体记录，先找出它派生的全部个人记录
+        var derivedList = findDerivedRecords(target);
+        // 3) 收集所有要删除的 id（集体本身 + 派生的个人记录），用 Set 去重
+        var idsToDelete = {};
+        idsToDelete[String(target.id)] = true;
+        derivedList.forEach(function(r){ idsToDelete[String(r.id)] = true; });
+        // 4) 逐条：打 V3 墓碑 + 从数组移除
+        var removedCount = 0;
+        DB.deductionRecords = DB.deductionRecords.filter(function(r){
+            var k = String(r.id);
+            if(idsToDelete[k]){
+                v3MarkDeleted('deduction_record', r.id);
+                if(DB.deletedRecordIds.indexOf(k) === -1) DB.deletedRecordIds.push(k);
+                removedCount++;
+                return false;
+            }
+            return true;
+        });
         saveDB();
-        toast('已删除');
+        // 5) 提示
+        if(derivedList.length > 0){
+            toast('已删除记录（含 ' + derivedList.length + ' 条派生的个人加减分记录）');
+        } else {
+            toast('已删除');
+        }
         renderView();
         renderTree();
     }
@@ -1162,7 +1214,7 @@
         // 加分模式：生成宿舍集体记录 + 每个学生各一条个人记录
         if(isBonus){
             // 宿舍层面记录（studentId=null，recordMode='bonus'，记录生活老师实际输入分数）
-            var dormRecord={id:generateRecordId(),createdAt:Date.now(),dormitoryId:addFormState.dormitoryId,studentId:null,hygieneItemIds:hygieneItemIds,hygieneScore:hygieneScore,disciplineItemIds:disciplineItemIds,disciplineScore:disciplineScore,recordDate:addFormState.recordDate,remark:addFormState.remark||'',recordMode:mode};
+            var dormRecord={id:generateRecordId(),createdAt:Date.now(),lastModified:Date.now(),dormitoryId:addFormState.dormitoryId,studentId:null,hygieneItemIds:hygieneItemIds,hygieneScore:hygieneScore,disciplineItemIds:disciplineItemIds,disciplineScore:disciplineScore,recordDate:addFormState.recordDate,remark:addFormState.remark||'',recordMode:mode};
             DB.deductionRecords.push(dormRecord);
             v3MarkDirty('deduction_record', dormRecord.id);
             // 个人层面：为该宿舍每个学生各生成一条个人加分记录
@@ -1174,7 +1226,7 @@
                 // 【关键】给派生的个人加分记录打上 autoDerived: true，
                 // 使其不计入宿舍汇总分（避免"一次集体加分被算成多人加分之和"），
                 // 但仍计入个人净分（学生个人账上确实加了分）。
-                var stuRecord={id:generateRecordId(),createdAt:Date.now(),dormitoryId:addFormState.dormitoryId,studentId:s.id,hygieneItemIds:hygieneItemIds,hygieneScore:perHyScore,disciplineItemIds:disciplineItemIds,disciplineScore:perDisScore,recordDate:addFormState.recordDate,remark:addFormState.remark||'',recordMode:mode,autoDerived:true};
+                var stuRecord={id:generateRecordId(),createdAt:Date.now(),lastModified:Date.now(),dormitoryId:addFormState.dormitoryId,studentId:s.id,hygieneItemIds:hygieneItemIds,hygieneScore:perHyScore,disciplineItemIds:disciplineItemIds,disciplineScore:perDisScore,recordDate:addFormState.recordDate,remark:addFormState.remark||'',recordMode:mode,autoDerived:true};
                 DB.deductionRecords.push(stuRecord);
                 v3MarkDirty('deduction_record', stuRecord.id);
             });
@@ -1182,7 +1234,7 @@
             toast('加分成功！'+dormStudents.length+'名学生各获加分');
         }else{
             // 扣分模式：原有逻辑
-            var newRecord={id:generateRecordId(),createdAt:Date.now(),dormitoryId:addFormState.dormitoryId,studentId:addFormState.studentId||null,hygieneItemIds:hygieneItemIds,hygieneScore:hygieneScore,disciplineItemIds:disciplineItemIds,disciplineScore:disciplineScore,recordDate:addFormState.recordDate,remark:addFormState.remark||'',recordMode:'deduct'};
+            var newRecord={id:generateRecordId(),createdAt:Date.now(),lastModified:Date.now(),dormitoryId:addFormState.dormitoryId,studentId:addFormState.studentId||null,hygieneItemIds:hygieneItemIds,hygieneScore:hygieneScore,disciplineItemIds:disciplineItemIds,disciplineScore:disciplineScore,recordDate:addFormState.recordDate,remark:addFormState.remark||'',recordMode:'deduct'};
             DB.deductionRecords.push(newRecord);
             v3MarkDirty('deduction_record', newRecord.id);
             // 【新增】扣分模式下，如果是宿舍集体扣分，为宿舍每个学生派生一条个人扣分记录
@@ -1194,6 +1246,7 @@
                     var stuRecord = {
                         id: generateRecordId(),
                         createdAt: Date.now(),
+                        lastModified: Date.now(),
                         dormitoryId: addFormState.dormitoryId,
                         studentId: s.id,
                         hygieneItemIds: hygieneItemIds,
@@ -2295,7 +2348,7 @@
             id:generateRecordId(), type:type, className:className, name:name,
             dormitory:dormitory, bed:bed, date:date, reason:reason,
             status:status, studentId:stu?stu.id:null,
-            startDate:startDate, endDate:endDate, createdAt:Date.now(),
+            startDate:startDate, endDate:endDate, createdAt:Date.now(), lastModified:Date.now(),
             localNew:true   // 本地新增标记：云端拉取合并时据此保留尚未上传的新记录
         };
         if(!DB.leaveRecords) DB.leaveRecords=[];
@@ -2521,10 +2574,10 @@
         if(endDate<startDate){toast('结束日期不能早于开始日期','error');return;}
         var stu=isNonRes?matchedStu:matchStudentBySnapshot(className,name,dormitory,bed);
         var newRec={
-            id:DB.nextIds.absence++, studentId:stu?stu.id:null,
+            id:generateRecordId(), studentId:stu?stu.id:null,
             className:className, name:name, dormitory:dormitory, bed:bed,
             type:type, reason:reason, startDate:startDate, endDate:endDate,
-            status:'approved', createdAt:Date.now(),
+            status:'approved', createdAt:Date.now(), lastModified:Date.now(),
             localNew:true   // 本地新增标记：云端拉取合并时据此保留尚未上传的新记录
         };
         if(!DB.absenceRecords) DB.absenceRecords=[];
@@ -2778,6 +2831,7 @@
             var dedRec={
                 id: generateRecordId(),
                 createdAt: now,
+                lastModified: now,
                 dormitoryId: dormitoryId,
                 studentId: stu ? stu.id : null,
                 hygieneItemIds: [], hygieneScore: 0,
@@ -4175,7 +4229,7 @@
                     className:className, name:name, dormitory:dormitory, bed:bed,
                     type:recType, reason:(row.length>7)?String(row[7]||'').trim():'',
                     startDate:start, endDate:end,
-                    status:'approved', createdAt:Date.now(),
+                    status:'approved', createdAt:Date.now(), lastModified:Date.now(),
                     localNew:true   // 本地新增标记：云端拉取合并时据此保留尚未上传的新记录
                 };
             }else{
@@ -4186,7 +4240,7 @@
                     dormitory:dormitory, bed:bed, date:dateText,
                     reason:(row.length>6)?String(row[6]||'').trim():'',
                     status:'approved', studentId:stu?stu.id:null,
-                    startDate:start, endDate:end, createdAt:Date.now(),
+                    startDate:start, endDate:end, createdAt:Date.now(), lastModified:Date.now(),
                     localNew:true
                 };
             }
@@ -4836,32 +4890,53 @@
 
     /**
      * 今日明细页：批量删除所有勾选的记录（仅管理员）。
-     * 二次确认后逐条调用 deleteRecord 的底层逻辑（打 V3 墓碑 + 落库同步），
-     * 完成后重绘视图并提示删除条数。
+     * 【级联删除】若选中记录中含"宿舍集体记录"，则连带删除其派生的全部
+     *   个人加减分记录（autoDerived=true），保证个人净分同步减少。
+     * 二次确认后逐条打 V3 墓碑 + 落库同步，完成后重绘视图并提示删除条数。
      */
     function deleteSelectedTodayRecords(){
-        if(!IS_MASTER_DEVICE){ toast('当前设备为受限设备，无权限删除记录','error'); return; }
         if(!isAdmin()){ toast('无权限','error'); return; }
         var checked = document.querySelectorAll('.today-record-checkbox:checked');
         if(checked.length === 0){ toast('请先勾选要删除的记录','error'); return; }
-        if(!confirm('确认删除选中的 ' + checked.length + ' 条记录？此操作不可撤销！')) return;
-        var ids = [];
+        if(!confirm('确认删除选中的 ' + checked.length + ' 条记录？\n（若含宿舍集体记录，其派生的个人加减分记录将一并删除）\n此操作不可撤销！')) return;
+        // 1) 收集用户勾选的 id
+        var selectedIds = [];
         for(var i = 0; i < checked.length; i++){
             var id = checked[i].getAttribute('data-record-id');
-            if(id) ids.push(String(id));
+            if(id) selectedIds.push(String(id));
         }
-        var deletedCount = 0;
-        ids.forEach(function(id){
-            var before = DB.deductionRecords.length;
-            DB.deductionRecords = DB.deductionRecords.filter(function(r){ return String(r.id) !== id; });
-            if(DB.deductionRecords.length < before){
-                if(DB.deletedRecordIds.indexOf(id) === -1) DB.deletedRecordIds.push(id);
-                v3MarkDeleted('deduction_record', id);
-                deletedCount++;
+        // 2) 对待删的每条集体记录，找出其派生的个人记录，合并成待删集合（Set 去重）
+        var idsToDelete = {};
+        selectedIds.forEach(function(id){ idsToDelete[id] = true; });
+        var derivedTotal = 0;
+        selectedIds.forEach(function(id){
+            var parent = DB.deductionRecords.find(function(r){ return String(r.id) === id; });
+            if(!parent) return;
+            var derivedList = findDerivedRecords(parent);
+            derivedList.forEach(function(r){
+                var k = String(r.id);
+                if(!idsToDelete[k]){ idsToDelete[k] = true; derivedTotal++; }
+            });
+        });
+        // 3) 逐条打墓碑 + 移除
+        var removedCount = 0;
+        DB.deductionRecords = DB.deductionRecords.filter(function(r){
+            var k = String(r.id);
+            if(idsToDelete[k]){
+                v3MarkDeleted('deduction_record', r.id);
+                if(DB.deletedRecordIds.indexOf(k) === -1) DB.deletedRecordIds.push(k);
+                removedCount++;
+                return false;
             }
+            return true;
         });
         saveDB();
-        toast('已删除 ' + deletedCount + ' 条记录');
+        // 4) 提示（区分"直接勾选"与"级联删除"的条数）
+        if(derivedTotal > 0){
+            toast('已删除 ' + selectedIds.length + ' 条选中记录 + ' + derivedTotal + ' 条派生的个人加减分记录');
+        } else {
+            toast('已删除 ' + removedCount + ' 条记录');
+        }
         renderTodayView(document.getElementById('contentArea'));
         renderTree();
     }

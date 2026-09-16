@@ -647,8 +647,18 @@
         var classDormSet = classMode ? getClassDormIds() : null;
 
         // 1) 取今日全部记录
+        // 【关键过滤】隐藏"集体加分/集体扣分派生的个人记录"（autoDerived=true）。
+        // 一次宿舍集体加分/扣分在今日明细中只呈现 1 行（宿舍集体那条），
+        // 派生的个人记录已通过集体记录体现，不应在明细中重复罗列。
+        // 老师单独给某学生手动登记的记录不带此标记，正常显示。
+        // 效果：一次集体加分 → 1 行；一次集体扣分 → 1 行；手动个人登记 → 正常显示。
+        // "今日记录数"统计卡会相应变小（派生记录不再计入），
+        // "涉及宿舍数"和"今日净分"不变。
+        // （派生记录本身在数据库里保留，否则学生个人分会错；如需调试显示可加全局开关。）
         var todayRecords = (DB.deductionRecords || []).filter(function(r){
-            return r.recordDate === today;
+            if (r.recordDate !== today) return false;
+            if (r.autoDerived === true) return false;
+            return true;
         });
         // 2) 班级账号过滤：仅本班学生 / 本班宿舍
         if(classMode) todayRecords = filterRecordsByClass(todayRecords);
@@ -3302,6 +3312,10 @@
             if (studentName && (!student || student.name !== studentName)) return false;
             return true;
         });
+        // 过滤掉"集体加分派生的个人记录"（autoDerived: true）：
+        // 一次集体加分只应在预览中呈现 1 行（宿舍集体那条）；
+        // 派生个人记录的加分效果已体现到"个人净分"里，不应在预览列表中重复铺开。
+        records = records.filter(function(r){ return r.autoDerived !== true; });
 
         records.sort(function(a, b) {
             var dateCompare = a.recordDate.localeCompare(b.recordDate);
@@ -3502,6 +3516,10 @@
             if(studentName && (!student || student.name!==studentName)) return false;
             return true;
         });
+        // 过滤掉"集体加分派生的个人记录"（autoDerived: true）：
+        // 一次集体加分只应在导出中呈现 1 行（宿舍集体那条）；
+        // 派生个人记录的加分效果已体现到"个人净分"里，不应在导出列表中重复铺开。
+        records = records.filter(function(r){ return r.autoDerived !== true; });
         records.sort(function(a,b){
             var dateCompare=a.recordDate.localeCompare(b.recordDate);
             if(dateCompare!==0) return dateCompare;
@@ -3570,6 +3588,10 @@
             var bedA=getBedNumberForSort(a); var bedB=getBedNumberForSort(b);
             return bedA-bedB;
         });
+        // 过滤掉"集体加分派生的个人记录"（autoDerived: true）：
+        // 一次集体加分只应在导出中呈现 1 行（宿舍集体那条）；
+        // 派生个人记录的加分效果已体现到"个人净分"里，不应在导出列表中重复铺开。
+        records = records.filter(function(r){ return r.autoDerived !== true; });
         var csv='\uFEFF日期,宿舍号,床号,班级,学生,卫生项目,卫生分值,纪律项目,纪律分值,备注\n';
         records.forEach(function(r){
             var dorm=getDormitoryById(r.dormitoryId);

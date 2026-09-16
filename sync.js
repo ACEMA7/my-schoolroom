@@ -416,11 +416,15 @@
                 }
 
                 var resetCount = 0;
-                // meta：dormitoryList + nextIds
+                // meta：dormitoryList + nextIds + masterBindHash
                 var mLive = grouped['meta'] ? grouped['meta'].find(function(r){ return !r.deleted; }) : null;
                 if(mLive && mLive.data){
                     if(Array.isArray(mLive.data.dormitoryList)) DB.dormitoryList = mLive.data.dormitoryList;
                     if(mLive.data.nextIds) DB.nextIds = mLive.data.nextIds;
+                    // masterBindHash：从云端 meta 行恢复（云端未设置则置空，等待管理员首次设置）
+                    DB.masterBindHash = (typeof mLive.data.masterBindHash === 'string') ? mLive.data.masterBindHash : '';
+                } else {
+                    DB.masterBindHash = '';
                 }
                 // 数组类型：floor / dormitory / student / user + 三类业务记录 + 巡查核实三类记录 + 站内通知两类（通知 + 通知模板）
                 ['floor','dormitory','student','user','deduction_record','leave_record','absence_record','inspection_confirmation','anomaly_report','daily_summary','notification','notification_template'].forEach(function(type){
@@ -470,6 +474,14 @@
                         Object.keys(md.nextIds).forEach(function(k){
                             DB.nextIds[k] = Math.max(DB.nextIds[k] || 0, md.nextIds[k] || 0);
                         });
+                    }
+                    // masterBindHash：云端已设置即覆盖本地（管理员首次设置后同步到所有设备）；
+                    // 云端为空但本地已设置（管理员在本机刚设、尚未上传）→ 标脏补种，让云端补齐
+                    if(typeof md.masterBindHash === 'string' && md.masterBindHash.length > 0){
+                        DB.masterBindHash = md.masterBindHash;
+                    } else if(typeof DB.masterBindHash === 'string' && DB.masterBindHash.length > 0){
+                        v3MarkDirty('meta', 'main');
+                        result.rescued++;
                     }
                 } else if(split.total === 0){
                     // 云端完全没有 meta 行：保留本地，标脏补种

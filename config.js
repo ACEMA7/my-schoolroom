@@ -45,9 +45,7 @@
     // 主控设备 ID：唯一允许上传基础数据的设备，防止管理员非主控设备（手机/家里电脑）脏数据污染云端
     var MASTER_DEVICE_ID = 'd4ezy733t0';
 
-    // 主控设备绑定密码：管理员在非主控设备上输入此密码，可将当前设备的 DEVICE_ID 覆盖为 MASTER_DEVICE_ID，
-    // 从而获得主控权限（修改基础数据、重置云端等）。修改此密码后，已绑定设备不受影响，仅新绑定需用新密码。
-    var MASTER_BIND_PASSWORD = 'admin_bind_2026';
+    // 绑定密码已迁移至云端 meta 表 masterBindHash 字段，首次由管理员设置
 
     // 是否为主控设备：决定是否允许修改基础数据（非主控设备仅可读，UI 熔断 + 函数入口拦截）
     var IS_MASTER_DEVICE = (DEVICE_ID === MASTER_DEVICE_ID);
