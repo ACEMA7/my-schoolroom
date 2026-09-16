@@ -531,6 +531,22 @@
         return keys.length > 0 ? keys.join('/') : '-';
     }
 
+    /**
+     * 格式化"学生"为"床号·姓名"显示文本，便于生活老师按床号识别。
+     * 规则：
+     *   - 有床号：返回 "N号·姓名"（如 "1号·蔡冠宇"）
+     *   - 无床号：返回 "未知·姓名"（如 "未知·蔡冠宇"）
+     *   - 学生对象为空：返回空串
+     * 用途：移动端扣分对象芯片、今日明细页对象列等需要按床号辨识学生的位置。
+     * @param {object} student - 学生对象（需含 name、bedNumber 字段）
+     * @returns {string}
+     */
+    function formatStudentBedName(student) {
+        if (!student) return '';
+        var bed = (student.bedNumber !== null && student.bedNumber !== undefined && String(student.bedNumber).trim() !== '') ? String(student.bedNumber).trim() : '未知';
+        return bed + '号·' + (student.name || '');
+    }
+
     function getClassNameForRecord(record) {
         if (record.studentId) {
             var student = getStudentById(record.studentId);
@@ -1916,6 +1932,7 @@ window.dedupeStudentsByClassAndName = dedupeStudentsByClassAndName;
 window.getDormCollectiveNetScore = getDormCollectiveNetScore;
 window.getDormSummaryNetScore = getDormSummaryNetScore;
 window.migrateDerivedDeductionRecords = migrateDerivedDeductionRecords;
+window.formatStudentBedName = formatStudentBedName;
 // 注意：copyItemsListForDiagnosis 定义在 app.js（晚于 data.js 加载），
 // 不能在此处做 window 导出（会抛 ReferenceError）；app.js 为 classic script，
 // 其顶层 function 声明天然是全局函数，ui.js 内联 onclick 可直接调用，无需导出。

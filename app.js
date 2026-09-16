@@ -673,6 +673,8 @@
         } else if (!isMobile) {
             closeSidebar();
         }
+        // PC/移动端切换后，重新评估拖拽框选（移动端自动禁用）
+        if(typeof initDragSelectForAllTables === 'function') initDragSelectForAllTables();
     });
 
     // ==================== 手机端住宿信息：芯片选择器 ====================
@@ -2647,6 +2649,9 @@
         var dorm=getDormitoryById(did);
         if(!dorm){ stuArea.innerHTML=''; return; }
         stuArea.innerHTML=buildAnomalyStudentForm(dorm);
+        // 【新增】表单渲染后立即触发一次异常类型变更逻辑：
+        // 默认类型为"无假条"，会自动填入备注"已联系家长确认"，无需用户手动选一次。
+        try { onAnomalyTypeChange(); } catch(e) { /* 静默 */ }
     }
     /** 关闭异常上报模态框 */
     function closeAnomalyModal(){
@@ -4751,6 +4756,63 @@
         saveDB();
         toast('已删除全部楼层调整记录');
         if(currentView === 'export') renderExportView(document.getElementById('contentArea'));
+    }
+
+    /**
+     * 今日明细页：全选/取消全选所有记录复选框。
+     * 仅管理员可见（此函数由管理员工具栏上的"全选"复选框触发）。
+     * @param {boolean} checked - true=全选；false=全部取消
+     */
+    function toggleAllTodayRecords(checked){
+        var boxes = document.querySelectorAll('.today-record-checkbox');
+        for(var i = 0; i < boxes.length; i++) boxes[i].checked = checked;
+        updateTodaySelectedCount();
+    }
+
+    /** 更新"今日明细"工具栏上的"已选 N 条"提示与全选框状态 */
+    function updateTodaySelectedCount(){
+        var boxes = document.querySelectorAll('.today-record-checkbox');
+        var checked = document.querySelectorAll('.today-record-checkbox:checked');
+        var cntEl = document.getElementById('todaySelectedCount');
+        if(cntEl){
+            cntEl.textContent = checked.length > 0 ? ('已选中 ' + checked.length + ' 条') : '未选中';
+        }
+        var sa = document.getElementById('todaySelectAll');
+        if(sa){
+            sa.checked = (boxes.length > 0 && checked.length === boxes.length);
+        }
+    }
+
+    /**
+     * 今日明细页：批量删除所有勾选的记录（仅管理员）。
+     * 二次确认后逐条调用 deleteRecord 的底层逻辑（打 V3 墓碑 + 落库同步），
+     * 完成后重绘视图并提示删除条数。
+     */
+    function deleteSelectedTodayRecords(){
+        if(!IS_MASTER_DEVICE){ toast('当前设备为受限设备，无权限删除记录','error'); return; }
+        if(!isAdmin()){ toast('无权限','error'); return; }
+        var checked = document.querySelectorAll('.today-record-checkbox:checked');
+        if(checked.length === 0){ toast('请先勾选要删除的记录','error'); return; }
+        if(!confirm('确认删除选中的 ' + checked.length + ' 条记录？此操作不可撤销！')) return;
+        var ids = [];
+        for(var i = 0; i < checked.length; i++){
+            var id = checked[i].getAttribute('data-record-id');
+            if(id) ids.push(String(id));
+        }
+        var deletedCount = 0;
+        ids.forEach(function(id){
+            var before = DB.deductionRecords.length;
+            DB.deductionRecords = DB.deductionRecords.filter(function(r){ return String(r.id) !== id; });
+            if(DB.deductionRecords.length < before){
+                if(DB.deletedRecordIds.indexOf(id) === -1) DB.deletedRecordIds.push(id);
+                v3MarkDeleted('deduction_record', id);
+                deletedCount++;
+            }
+        });
+        saveDB();
+        toast('已删除 ' + deletedCount + ' 条记录');
+        renderTodayView(document.getElementById('contentArea'));
+        renderTree();
     }
 
     /**

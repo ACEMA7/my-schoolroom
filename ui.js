@@ -307,6 +307,177 @@
         });
     }
 
+    // ==================== PC 端拖拽框选复选框 ====================
+    // 交互：在页面任意位置（非输入框、非按钮、非链接）按下鼠标左键 → 拖动 →
+    // 显示半透明蓝色矩形 → 松开鼠标时，所有"矩形碰到其复选框"的复选框被勾选。
+    // 判定：矩形与复选框元素的 DOM 矩形有交集（哪怕只碰到一角）。
+    // 启用范围：仅 PC 端（窗口宽 > 768px 且非触摸设备）；手机端不做此功能。
+    var _dragSelectState = { active: false, startX: 0, startY: 0, boxEl: null, targetSelector: null, container: null };
+
+    /**
+     * 给某个容器启用拖拽框选。
+     * @param {HTMLElement} container - 限定鼠标按下与拖拽范围（如表格 tbody 的父容器）
+     * @param {string} checkboxSelector - 该容器内复选框的 CSS 选择器（如 '.student-checkbox'）
+     */
+    function enableDragSelect(container, checkboxSelector) {
+        if (!container || !checkboxSelector) return;
+        // 已启用过则跳过
+        if (container._dragSelectEnabled === checkboxSelector) return;
+        container._dragSelectEnabled = checkboxSelector;
+        container.addEventListener('mousedown', function(ev){
+            // PC 端判断：窗口宽度 > 768 且非触摸事件
+            if (window.innerWidth <= 768) return;
+            // 忽略右键/中键
+            if (ev.button !== 0) return;
+            // 忽略在输入框、按钮、链接、复选框本身上的按下
+            var tag = ev.target && ev.target.tagName ? ev.target.tagName.toUpperCase() : '';
+            if (tag === 'INPUT' || tag === 'BUTTON' || tag === 'A' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+            // 忽略在模态框、抽屉等浮层内的按下
+            if (ev.target.closest && (ev.target.closest('.modal-overlay') || ev.target.closest('.notif-drawer') || ev.target.closest('.font-scale-panel'))) return;
+            _startDragSelect(ev, container, checkboxSelector);
+        });
+    }
+
+    /** 开始拖拽框选（内部） */
+    function _startDragSelect(ev, container, checkboxSelector) {
+        var boxEl = document.getElementById('dragSelectBox');
+        if (!boxEl) return;
+        var startX = ev.clientX;
+        var startY = ev.clientY;
+        _dragSelectState.active = true;
+        _dragSelectState.startX = startX;
+        _dragSelectState.startY = startY;
+        _dragSelectState.boxEl = boxEl;
+        _dragSelectState.targetSelector = checkboxSelector;
+        _dragSelectState.container = container;
+        // 记录"拖拽之前已勾选"的复选框集合，供松开时合并勾选状态
+        var boxes = container.querySelectorAll(checkboxSelector);
+        _dragSelectState.initChecked = {};
+        boxes.forEach(function(b){ if (b.checked) _dragSelectState.initChecked[_getCheckboxKey(b)] = true; });
+        boxEl.style.display = 'block';
+        boxEl.style.left = startX + 'px';
+        boxEl.style.top = startY + 'px';
+        boxEl.style.width = '0px';
+        boxEl.style.height = '0px';
+        // 阻止文本选择（拖拽时选中文字会干扰）
+        document.body.style.userSelect = 'none';
+        document.body.style.webkitUserSelect = 'none';
+        document.addEventListener('mousemove', _onDragSelectMove);
+        document.addEventListener('mouseup', _onDragSelectEnd);
+        ev.preventDefault();
+    }
+
+    /** 生成复选框的唯一 key（用于记录初始勾选状态） */
+    function _getCheckboxKey(cb){
+        if (!cb) return '';
+        if (cb.classList.contains('student-checkbox')) return 'stu:' + (cb.getAttribute('data-student-id') || '');
+        if (cb.classList.contains('item-checkbox')) return 'item:' + (cb.getAttribute('data-item-category') || '') + ':' + (cb.getAttribute('data-item-id') || '');
+        if (cb.classList.contains('notif-record-checkbox')) return 'notif:' + (cb.getAttribute('data-notif-id') || '');
+        if (cb.classList.contains('acct-check')) return 'acct:' + (cb.getAttribute('data-user-id') || '');
+        if (cb.classList.contains('today-record-checkbox')) return 'today:' + (cb.getAttribute('data-record-id') || '');
+        return '';
+    }
+
+    /** 拖拽中：更新矩形位置与尺寸 */
+    function _onDragSelectMove(ev){
+        if (!_dragSelectState.active) return;
+        var boxEl = _dragSelectState.boxEl;
+        if (!boxEl) return;
+        var x1 = Math.min(_dragSelectState.startX, ev.clientX);
+        var y1 = Math.min(_dragSelectState.startY, ev.clientY);
+        var x2 = Math.max(_dragSelectState.startX, ev.clientX);
+        var y2 = Math.max(_dragSelectState.startY, ev.clientY);
+        boxEl.style.left = x1 + 'px';
+        boxEl.style.top = y1 + 'px';
+        boxEl.style.width = (x2 - x1) + 'px';
+        boxEl.style.height = (y2 - y1) + 'px';
+        // 实时预览：矩形范围内的复选框视觉上高亮（仅视觉，不真正改变 checked，
+        // 避免拖拽中途用户看到勾选变化引发误解；松开时才真正勾选）
+        _previewDragSelectHighlight({ left: x1, top: y1, right: x2, bottom: y2 });
+    }
+
+    /** 拖拽中：给矩形内的复选框加视觉高亮（用 outline），矩形外的清除高亮 */
+    function _previewDragSelectHighlight(rect){
+        var container = _dragSelectState.container;
+        var selector = _dragSelectState.targetSelector;
+        if (!container || !selector) return;
+        var boxes = container.querySelectorAll(selector);
+        boxes.forEach(function(cb){
+            var b = cb.getBoundingClientRect();
+            var hit = !(b.right < rect.left || b.left > rect.right || b.bottom < rect.top || b.top > rect.bottom);
+            if (hit) cb.style.outline = '2px solid #4f6ef7';
+            else cb.style.outline = '';
+        });
+    }
+
+    /** 松开鼠标：矩形覆盖到的复选框勾选（合并拖拽前已勾选的状态），清理状态 */
+    function _onDragSelectEnd(ev){
+        if (!_dragSelectState.active) return;
+        _dragSelectState.active = false;
+        var container = _dragSelectState.container;
+        var selector = _dragSelectState.targetSelector;
+        var boxEl = _dragSelectState.boxEl;
+        // 计算最终矩形
+        var x1 = Math.min(_dragSelectState.startX, ev.clientX);
+        var y1 = Math.min(_dragSelectState.startY, ev.clientY);
+        var x2 = Math.max(_dragSelectState.startX, ev.clientX);
+        var y2 = Math.max(_dragSelectState.startY, ev.clientY);
+        var rect = { left: x1, top: y1, right: x2, bottom: y2 };
+        // 隐藏矩形与清除高亮
+        if (boxEl){ boxEl.style.display = 'none'; }
+        document.body.style.userSelect = '';
+        document.body.style.webkitUserSelect = '';
+        document.removeEventListener('mousemove', _onDragSelectMove);
+        document.removeEventListener('mouseup', _onDragSelectEnd);
+        // 判定并勾选
+        if (container && selector){
+            var boxes = container.querySelectorAll(selector);
+            boxes.forEach(function(cb){
+                cb.style.outline = '';
+                var b = cb.getBoundingClientRect();
+                // 判定：矩形与复选框本身有交集（哪怕只碰到一角）
+                var hit = !(b.right < rect.left || b.left > rect.right || b.bottom < rect.top || b.top > rect.bottom);
+                if (hit) cb.checked = true;
+            });
+        }
+        // 通知外层更新选中计数（调用方已存在的方法）
+        try {
+            if (document.getElementById('todaySelectedCount') && typeof updateTodaySelectedCount === 'function') updateTodaySelectedCount();
+            if (document.getElementById('selectAllStudents') && typeof updateSelectedCount === 'function') updateSelectedCount();
+        } catch(e){}
+        _dragSelectState.container = null;
+        _dragSelectState.targetSelector = null;
+        _dragSelectState.boxEl = null;
+    }
+
+    /**
+     * 自动为当前页面上的 5 类批量操作表格启用拖拽框选（幂等）。
+     * 由 renderXxxView 在渲染完成后调用，或在 DOMContentLoaded / 视图切换后调用。
+     */
+    function initDragSelectForAllTables(){
+        if (window.innerWidth <= 768) return; // 仅 PC 端
+        // 1) 学生名单：容器 #studentsTbody
+        var stuTbody = document.getElementById('studentsTbody');
+        if (stuTbody) enableDragSelect(stuTbody, '.student-checkbox');
+        // 2) 扣分项目管理：容器 .item-list（4 个）
+        document.querySelectorAll('.item-list').forEach(function(el){
+            enableDragSelect(el, '.item-checkbox');
+        });
+        // 3) 通知管理：容器 #notifRecordsTbody
+        var notifTbody = document.getElementById('notifRecordsTbody');
+        if (notifTbody) enableDragSelect(notifTbody, '.notif-record-checkbox');
+        // 4) 账号管理：容器为其所在 table 的 tbody（无 id，通过 .acct-check 反查）
+        var acctCb = document.querySelector('.acct-check');
+        if (acctCb){
+            var acctTbody = acctCb.closest('tbody');
+            if (acctTbody) enableDragSelect(acctTbody, '.acct-check');
+        }
+        // 5) 今日明细：容器为所有 [id^="todayTbody-"] 元素
+        document.querySelectorAll('[id^="todayTbody-"]').forEach(function(el){
+            enableDragSelect(el, '.today-record-checkbox');
+        });
+    }
+
     // ==================== 手机端功能首页（色块导航） ====================
     /**
      * 渲染首页（功能宫格导航：点击进入各业务模块）。
@@ -514,9 +685,13 @@
             } else if(staffMode){
                 actionHtml = '<td data-label="操作"><button class="btn btn-primary btn-xs" onclick="editRecord(\''+r.id+'\')">修改</button></td>';
             }
-            return '<tr>'+actionHtml
+            // 【新增】管理员额外显示复选框列；其他角色该列为空（保持表格列数一致）
+            var checkHtml = isAdminUser
+                ? '<td data-label="选择" style="width:30px;text-align:center"><input type="checkbox" class="today-record-checkbox" data-record-id="'+escapeHtmlAttr(r.id)+'"></td>'
+                : '<td data-label="选择" style="width:0;padding:0;border:none"></td>';
+            return '<tr>'+checkHtml+actionHtml
                 + '<td data-label="日期">'+r.recordDate+'</td>'
-                + '<td data-label="对象">'+modeTag+(student ? escapeHtmlAttr(student.name) : '宿舍集体')+'</td>'
+                + '<td data-label="对象">'+modeTag+(student ? escapeHtmlAttr(formatStudentBedName(student)) : '宿舍集体')+'</td>'
                 + '<td data-label="卫生项目">'+(hyNames||'-')+'</td>'
                 + '<td data-label="卫生分值" class="'+(isBonusRec?'score-bonus':'score-deduct')+'">'+formatScoreText(r.hygieneScore||0, kind)+'</td>'
                 + '<td data-label="纪律项目">'+(disNames||'-')+'</td>'
@@ -533,6 +708,14 @@
             + '<div class="stat-card warning"><div class="number">'+totalDorms+'</div><div class="label">🚪 涉及宿舍数</div></div>'
             + '<div class="stat-card '+netCardCls+'"><div class="number '+netCls+'">'+formatScoreText(totalNet,'net')+'</div><div class="label">📊 今日净分</div></div>'
             + '</div>';
+        // 【新增】管理员专属工具栏（全选 + 批量删除）；其他角色不显示
+        if(isAdminUser){
+            html += '<div style="display:flex;align-items:center;gap:12px;padding:10px 14px;background:#fff;border:1px solid var(--gray-200);border-radius:8px;margin-bottom:14px">'
+                + '<label style="display:inline-flex;align-items:center;gap:6px;font-weight:400;cursor:pointer"><input type="checkbox" id="todaySelectAll" onchange="toggleAllTodayRecords(this.checked)"> 全选</label>'
+                + '<button class="btn btn-danger btn-sm" onclick="deleteSelectedTodayRecords()">🗑️ 批量删除</button>'
+                + '<span id="todaySelectedCount" style="color:var(--gray-500);font-size:0.9286rem">未选中</span>'
+                + '</div>';
+        }
 
         // 楼层 → 宿舍 → 记录
         if(floorIds.length === 0){
@@ -543,9 +726,11 @@
                 var floorHtml = '<div class="card" style="margin-bottom:16px"><div class="card-header">🏢 '+escapeHtmlAttr(fg.floor ? fg.floor.name : ('楼层'+fid))+'</div>';
                 fg.sortedRoomIds.forEach(function(rid){
                     var bucket = fg.rooms[rid];
+                    // 【新增】管理员显示复选框列头；其他角色显示空列（保持列数一致）
+                    var checkTh = isAdminUser ? '<th style="width:30px"></th>' : '<th style="width:0;padding:0;border:none"></th>';
                     floorHtml += '<div style="padding:12px 14px;border-bottom:1px dashed var(--gray-200)">'
                         + '<div style="font-weight:700;font-size:1rem;margin-bottom:8px;color:var(--primary)">🚪 '+escapeHtmlAttr(bucket.dorm.roomNumber)+' 宿舍</div>'
-                        + '<div style="overflow-x:auto"><table class="mobile-h-table"><thead><tr><th>操作</th><th>日期</th><th>对象</th><th>卫生项目</th><th>分值</th><th>纪律项目</th><th>分值</th><th>备注</th></tr></thead><tbody id="todayTbody-'+bucket.dorm.id+'"></tbody></table></div>'
+                        + '<div style="overflow-x:auto"><table class="mobile-h-table"><thead><tr>'+checkTh+'<th>操作</th><th>日期</th><th>对象</th><th>卫生项目</th><th>分值</th><th>纪律项目</th><th>分值</th><th>备注</th></tr></thead><tbody id="todayTbody-'+bucket.dorm.id+'"></tbody></table></div>'
                         + '</div>';
                 });
                 floorHtml += '</div>';
@@ -562,12 +747,23 @@
                     var bucket = fg.rooms[rid];
                     var tb = document.getElementById('todayTbody-'+bucket.dorm.id);
                     if(tb){
-                        renderListInChunks(tb, bucket.records, todayRecordRowHtml, 50, null,
-                            { emptyHtml:'<tr><td colspan="8" style="text-align:center;color:#aaa">暂无记录</td></tr>' });
+                        renderListInChunks(tb, bucket.records, todayRecordRowHtml, 50, function(){
+                            // 分片完成后：给所有复选框绑定勾选变化事件（委托在 tbody 上更稳）
+                            if(tb._todayCheckBound) return;
+                            tb._todayCheckBound = true;
+                            tb.addEventListener('change', function(ev){
+                                if(ev.target && ev.target.classList.contains('today-record-checkbox')){
+                                    if(typeof updateTodaySelectedCount === 'function') updateTodaySelectedCount();
+                                }
+                            });
+                        },
+                            { emptyHtml:'<tr><td colspan="9" style="text-align:center;color:#aaa">暂无记录</td></tr>' });
                     }
                 });
             });
         }
+        // 渲染完成后启用拖拽框选（PC 端）
+        if(typeof initDragSelectForAllTables === 'function') initDragSelectForAllTables();
     }
 
     // ==================== 住宿信息视图 ====================
@@ -666,30 +862,9 @@
             }
             return '<div class="mem-row"><span class="mem-name">'+s.name+'</span><span class="mem-status" style="color:'+dotColor+'"><span class="mem-dot" style="background:'+dotColor+'"></span>'+st.label+'</span><span class="mem-sub">'+(s.className||'-')+'·床号'+(s.bedNumber||'-')+'</span><span class="mem-score '+ssCls+'">'+formatScoreText(ss,'net')+'分</span>'+memOps+'</div>';
         }).join('')||'<div class="empty-state" style="padding:18px">该宿舍暂无成员</div>';
-        // 按日期倒序排列：当天记录显示在最顶部（同日内较新记录优先；兼容字符串ID与旧数字ID）
-        var sortedRecords=records.slice().sort(function(a,b){
-            if(a.recordDate!==b.recordDate) return a.recordDate<b.recordDate?1:-1;
-            var ta=a.createdAt||0, tb=b.createdAt||0;
-            if(ta!==tb) return tb-ta;
-            return String(b.id)<String(a.id)?-1:(String(b.id)>String(a.id)?1:0);
-        });
         // 注意：局部变量不可命名为 isStaff，否则会因 var 提升遮蔽 data.js 的全局
         // 函数 isStaff()，导致本函数上方第397行调用时抛 "isStaff is not a function"
         var staffMode=currentUser&&currentUser.role==='STAFF';
-        // 单行历史记录 HTML（供分片渲染逐条调用）
-        function historyRowHtml(r){
-            var student=r.studentId?getStudentById(r.studentId):null;
-            var isBonusRec = (r.recordMode === 'bonus');
-            var nameGetter = isBonusRec ? getBonusItemNameByIdOrCustom : getItemNameByIdOrCustom;
-            var hyNames=(r.hygieneItemIds||[]).map(nameGetter).filter(Boolean).join('、');
-            var disNames=(r.disciplineItemIds||[]).map(nameGetter).filter(Boolean).join('、');
-            var modeTag = isBonusRec ? '<span class="badge-tag badge-primary" style="margin-right:4px">加分</span>' : '';
-            // 操作列：管理员可删除，生活老师（STAFF）可修改，其他角色无操作（ID为字符串需加引号传参）
-            var actionHtml='<td data-label="操作">-</td>';
-            if(isAdmin()) actionHtml='<td data-label="操作"><button class="btn btn-danger btn-xs" onclick="deleteRecord(\''+r.id+'\')">删除</button></td>';
-            else if(staffMode) actionHtml='<td data-label="操作"><button class="btn btn-primary btn-xs" onclick="editRecord(\''+r.id+'\')">修改</button></td>';
-            return '<tr>'+actionHtml+'<td data-label="日期">'+r.recordDate+'</td><td data-label="对象">'+modeTag+(student?student.name:'宿舍集体')+'</td><td data-label="卫生项目">'+(hyNames||'-')+'</td><td data-label="卫生分值" class="'+(isBonusRec?'score-bonus':'score-deduct')+'">'+formatScoreText(r.hygieneScore||0, isBonusRec?'bonus':'deduct')+'</td><td data-label="纪律项目">'+(disNames||'-')+'</td><td data-label="纪律分值" class="'+(isBonusRec?'score-bonus':'score-deduct')+'">'+formatScoreText(r.disciplineScore||0, isBonusRec?'bonus':'deduct')+'</td><td data-label="备注">'+escapeHtmlAttr(r.remark||'-')+'</td></tr>';
-        }
         // 手机端顶部导航卡：楼层芯片(每行4个均匀分布) + 宿舍横滑条，与扣分登记页交互一致；桌面端不渲染（侧边栏树保留）
         var topCard='';
         if (window.innerWidth<=768) {
@@ -714,7 +889,7 @@
                 +'</div></div>';
         }
         // 三个统计卡片内容（宿舍人数/扣分记录数/累计扣分）：PC 端合并在统计大卡内；移动端移至成员列表下方
-        var statThreeInner='<div class="stat-card"><div class="number">'+students.length+'</div><div class="label">👥 宿舍人数</div></div><div class="stat-card warning"><div class="number">'+records.length+'</div><div class="label">📋 扣分记录数</div></div><div class="stat-card '+netStatCardCls+'"><div class="number '+netScoreCls+'">'+formatScoreText(netTotal,'net')+'</div><div class="label">📊 累计净分</div></div>';
+        var statThreeInner='<div class="stat-card"><div class="number">'+students.length+'</div><div class="label">👥 宿舍人数</div></div><div class="stat-card warning"><div class="number">'+records.length+'</div><div class="label">📋 登记数</div></div><div class="stat-card '+netStatCardCls+'"><div class="number '+netScoreCls+'">'+formatScoreText(netTotal,'net')+'</div><div class="label">📊 累计净分</div></div>';
         // PC 端宿舍信息统计大卡：状态汇总行 + 三张统计卡片（保持原样）
         var statsCard='<div class="card"><div class="card-header">📊 宿舍信息统计</div><div class="card-body">'
             +'<div style="display:flex;flex-wrap:wrap;gap:8px 18px;padding:10px 14px;background:var(--gray-50);border-radius:6px;margin-bottom:14px">'+statusRowHtml+'</div>'
@@ -725,18 +900,20 @@
             +'<div style="display:flex;flex-wrap:wrap;gap:8px 18px;padding:10px 14px;background:var(--gray-50);border-radius:6px">'+statusRowHtml+'</div>'
             +'</div></div>';
         var netMobileColor = netTotal > 0 ? '#ff3b30' : (netTotal < 0 ? '#34c759' : '#1f2937');
-        var statThreeMobile='<div class="stat-cards-mobile"><div class="stat-item"><div class="number">'+students.length+'</div><div class="label">👥 宿舍人数</div></div><div class="stat-item"><div class="number" style="color:#f59e0b">'+records.length+'</div><div class="label">📋 扣分记录数</div></div><div class="stat-item"><div class="number" style="color:'+netMobileColor+'">'+formatScoreText(netTotal,'net')+'</div><div class="label">📊 累计净分</div></div></div>';
+        var statThreeMobile='<div class="stat-cards-mobile"><div class="stat-item"><div class="number">'+students.length+'</div><div class="label">👥 宿舍人数</div></div><div class="stat-item"><div class="number" style="color:#f59e0b">'+records.length+'</div><div class="label">📋 登记数</div></div><div class="stat-item"><div class="number" style="color:'+netMobileColor+'">'+formatScoreText(netTotal,'net')+'</div><div class="label">📊 累计净分</div></div></div>';
         // 页头仅保留标题（登记扣分入口统一收敛到功能首页/侧边栏/底部导航，住宿信息页只读）
         var memberOpsTh = isAdmin() ? '<th>操作</th>' : '';
         var membersCardPc='<div class="card"><div class="card-header">👥 宿舍成员</div><div style="overflow-x:auto"><table><thead><tr><th>姓名</th><th>班级</th><th>床号</th><th>状态</th><th>个人净分</th>'+memberOpsTh+'</tr></thead><tbody>'+studentHtml+'</tbody></table></div></div>';
         var membersCardMobile='<div class="card"><div class="card-header">👥 宿舍成员</div><div class="card-body" style="padding:2px 14px">'+memberCardHtml+'</div></div>';
-        var recordsCard='<div class="card"><div class="card-header">📜 历史记录 <span class="badge-tag '+netBadgeCls+'">'+formatScoreText(netTotal,'net')+'分</span><span style="font-weight:400;font-size:0.8571rem;color:var(--gray-500);margin-left:6px">按日期倒序</span></div><div style="overflow-x:auto"><table class="mobile-h-table"><thead><tr><th>操作</th><th>日期</th><th>对象</th><th>卫生项目</th><th>分值</th><th>纪律项目</th><th>分值</th><th>备注</th></tr></thead><tbody id="historyTbody"></tbody></table></div></div>';
-        // 移动端顺序：楼层/宿舍芯片 → 状态汇总 → 宿舍成员（单行紧凑）→ 三个统计卡片 → 历史扣分记录
-        // PC 端顺序保持不变：统计大卡（状态+三卡片）→ 历史扣分记录 → 宿舍成员表
-        container.innerHTML='<div class="content-header"><h2>📋 宿舍 '+dorm.roomNumber+'（'+floor.name+'）</h2></div>'+topCard+(isMobileH?(statusCard+membersCardMobile+statThreeMobile+recordsCard):(statsCard+recordsCard+membersCardPc));
-        // 历史记录分片填充：切换宿舍时上一轮分片自动作废（令牌机制），空数据显示占位行
-        renderListInChunks(document.getElementById('historyTbody'), sortedRecords, historyRowHtml, 50, null,
-            { emptyHtml:'<tr><td colspan="8" style="text-align:center;color:#aaa">暂无记录</td></tr>' });
+        // 【删除】历史记录卡片已移除：日常改/删记录走"今日明细"页，
+        // 历史数据查询走"数据管理"页。recordsCard 变量不再需要。
+        // （原变量名 recordsCard 在本函数下方还被引用，见改动 5，需一并调整）
+        // 移动端顺序：楼层/宿舍芯片 → 状态汇总 → 三个统计卡（宿舍人数/登记数/累计净分）→ 宿舍成员
+        // PC 端顺序：统计大卡（状态+三卡片）→ 宿舍成员表
+        // 【调整】移动端三个统计卡从"宿舍成员下方"移到"状态汇总与宿舍成员之间"；
+        // 【删除】历史记录卡片已整体移除，不再渲染。
+        container.innerHTML='<div class="content-header"><h2>📋 宿舍 '+dorm.roomNumber+'（'+floor.name+'）</h2></div>'+topCard+(isMobileH?(statusCard+statThreeMobile+membersCardMobile):(statsCard+membersCardPc));
+        // 【删除】历史记录分片渲染调用已移除（tbody#historyTbody 已不存在于页面中）
     }
 
     /**
@@ -921,9 +1098,11 @@
                 var dormLabel = dorm ? dorm.roomNumber : '';
                 targetChips='<div class="chip active">🏠 '+dormLabel+'宿舍集体</div>';
             }else{
+                // 【修改】扣分对象芯片显示"床号·姓名"（无床号显示"未知·姓名"），
+                // 便于生活老师按床号快速定位学生。宿舍集体保持原样。
                 targetChips='<div class="chip'+(addFormState.studentId===null?' active':'')+'" onclick="mobilePickTarget(this,null)">🏠 宿舍集体</div>'
                     +students.map(function(s){
-                        return '<div class="chip'+(addFormState.studentId===s.id?' active':'')+'" onclick="mobilePickTarget(this,'+s.id+')">'+s.name+'</div>';
+                        return '<div class="chip'+(addFormState.studentId===s.id?' active':'')+'" onclick="mobilePickTarget(this,'+s.id+')">'+formatStudentBedName(s)+'</div>';
                     }).join('');
             }
             container.innerHTML='<div class="content-header"><h2>📝 '+(isBonus?'加分':'扣分')+'登记</h2></div><div class="card"><div class="card-header">'+modeSwitchHtml+'</div><div class="card-body">'
@@ -1667,6 +1846,8 @@
             // 分片插入期间用户若已点"全选"，全部行就绪后补同步一次
             var sa=document.getElementById('selectAllStudents');
             if(sa && sa.checked) toggleAllStudents(true);
+            // 分片完成后启用拖拽框选（PC 端）
+            if(typeof initDragSelectForAllTables === 'function') initDragSelectForAllTables();
         }, { emptyHtml:'<tr><td colspan="8" style="text-align:center;color:#aaa">暂无符合条件的学生</td></tr>' });
     }
 
@@ -1735,6 +1916,8 @@
             +addForm({nameId:'newDisBonusItemName',scoreId:'newDisBonusItemScore',defaultScore:1,addFn:'addDisciplineBonusItem',batchId:'disBonusBatchImport',batchFn:'batchImportDisciplineBonusItems'})
             +'</div></div>'
             +'</div>';
+        // 渲染完成后启用拖拽框选（PC 端）
+        if(typeof initDragSelectForAllTables === 'function') initDragSelectForAllTables();
     }
 
     // ==================== 通知管理视图（仅 ADMIN） ====================
@@ -1995,6 +2178,8 @@
         container.innerHTML = html;
         // 记录表 tbody 为空骨架，落 DOM 后按当前筛选分片填充
         applyNotifFilter();
+        // 渲染完成后启用拖拽框选（PC 端）
+        if(typeof initDragSelectForAllTables === 'function') initDragSelectForAllTables();
     }
 
     // ==================== 学生管理视图 ====================
@@ -2553,6 +2738,8 @@
         // 初始化联动
         refreshExportSelects();
         initDatePickers(document); // 初始化导出筛选日期选择器
+        // 渲染完成后启用拖拽框选（PC 端）
+        if(typeof initDragSelectForAllTables === 'function') initDragSelectForAllTables();
     }
 
     // ==================== 账号管理（仅管理员，数据管理视图内卡片） ====================
@@ -3497,7 +3684,7 @@
         return '<div class="form-group" style="color:var(--gray-500);font-size:0.9286rem">已选宿舍：<b>'+escapeHtmlAttr(dorm.roomNumber)+'</b></div>'
             +'<div class="form-group"><label>学生 *</label><select id="anomalyStudent" onchange="onAnomalyStudentChange()">'+stuOpts+'</select></div>'
             +'<div class="form-group" id="anomalyManualWrap" style="display:none"><label>学生姓名 *</label><input type="text" id="anomalyName" placeholder="手动输入学生姓名"></div>'
-            +'<div class="form-group"><label>异常类型 *</label><select id="anomalyType" onchange="onAnomalyTypeChange()"><option value="picked_up">🚗 家长接走（不扣分）</option><option value="no_note">⚠️ 无假条（自动生成纪律扣分：无请假信息 1分）</option></select></div>'
+            +'<div class="form-group"><label>异常类型 *</label><select id="anomalyType" onchange="onAnomalyTypeChange()"><option value="no_note" selected>⚠️ 无假条（自动生成纪律扣分：无请假信息 1分）</option><option value="picked_up">🚗 家长接走（不扣分）</option></select></div>'
             +'<div class="form-group"><label>备注</label><input type="text" id="anomalyNote" placeholder="可选：具体情况说明"></div>';
     }
     /**
@@ -3789,5 +3976,7 @@ window.categorizeError = categorizeError;
 window.appendErrorLog = appendErrorLog;
 window.safeAsync = safeAsync;
 window.renderListInChunks = renderListInChunks;
+window.initDragSelectForAllTables = initDragSelectForAllTables;
+window.enableDragSelect = enableDragSelect;
 
 
