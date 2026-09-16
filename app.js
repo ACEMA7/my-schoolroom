@@ -1185,6 +1185,30 @@
             var newRecord={id:generateRecordId(),createdAt:Date.now(),dormitoryId:addFormState.dormitoryId,studentId:addFormState.studentId||null,hygieneItemIds:hygieneItemIds,hygieneScore:hygieneScore,disciplineItemIds:disciplineItemIds,disciplineScore:disciplineScore,recordDate:addFormState.recordDate,remark:addFormState.remark||'',recordMode:'deduct'};
             DB.deductionRecords.push(newRecord);
             v3MarkDirty('deduction_record', newRecord.id);
+            // 【新增】扣分模式下，如果是宿舍集体扣分，为宿舍每个学生派生一条个人扣分记录
+            if (!isBonus && (addFormState.studentId === null || addFormState.studentId === undefined)) {
+                var dormStudents = getStudentsByDormitory(addFormState.dormitoryId);
+                dormStudents.forEach(function(s){
+                    var perHyScore = hygieneScore > 0 ? 1 : 0;
+                    var perDisScore = disciplineScore > 0 ? 1 : 0;
+                    var stuRecord = {
+                        id: generateRecordId(),
+                        createdAt: Date.now(),
+                        dormitoryId: addFormState.dormitoryId,
+                        studentId: s.id,
+                        hygieneItemIds: hygieneItemIds,
+                        hygieneScore: perHyScore,
+                        disciplineItemIds: disciplineItemIds,
+                        disciplineScore: perDisScore,
+                        recordDate: addFormState.recordDate,
+                        remark: addFormState.remark || '',
+                        recordMode: 'deduct',
+                        autoDerived: true
+                    };
+                    DB.deductionRecords.push(stuRecord);
+                    v3MarkDirty('deduction_record', stuRecord.id);
+                });
+            }
             saveDB();
             // 扣分预警：个人记录检查该学生；宿舍集体记录（studentId=null）检查该宿舍全体在住学生。
             // 已通知过的阈值由 notifiedThresholds 天然去重；异常不阻断主流程。

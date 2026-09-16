@@ -559,12 +559,12 @@
                 rooms=rooms.filter(function(r){ return dormSet[r.id]; });
                 if(rooms.length===0) return;
             }
-            var floorNet=getDormSummaryNetScore(filterRecordsByClass(getRecordsByFloor(f.id)));
+            var floorNet=getFloorCumulativeNetScore(f.id, classMode ? currentUser.className : '');
             var floorNetCls = floorNet > 0 ? 'badge-danger' : (floorNet < 0 ? 'badge-bonus' : 'badge-primary');
             var isOpen = (f.id === selectedFloorId);
             html+='<div class="tree-floor"><div class="tree-floor-header" onclick="toggleFloor('+f.id+',\''+p+'\')"><span id="'+p+'arrow-'+f.id+'">'+(isOpen?'▼':'▶')+'</span>📁 '+f.name+' <span class="badge-tag '+floorNetCls+'">'+formatScoreText(floorNet,'net')+'分</span></div><div class="tree-rooms'+(isOpen?' open':'')+'" id="'+p+'rooms-'+f.id+'">';
             rooms.forEach(function(r){
-                var net=getDormSummaryNetScore(filterRecordsByClass(getRecordsByDormitory(r.id)));
+                var net=getDormCumulativeNetScore(r.id, classMode ? currentUser.className : '');
                 var netCls;
                 if(net > 10) netCls='badge-danger';
                 else if(net > 3) netCls='badge-warning';
@@ -850,9 +850,9 @@
         // 班级账号：仅显示本班学生的记录及本班宿舍的集体记录
         if(classMode) records=filterRecordsByClass(records);
         var total=getTotalScore(records);
-        // 宿舍层面汇总分：集体记录 + 个人直接记录，排除"集体加分派生的个人记录"
-        // （派生记录已通过 autoDerived:true 标记）。个人派生加分只体现在"个人净分"列。
-        var netTotal=getDormSummaryNetScore(records);
+        // 宿舍累计净分（新口径）：该宿舍所有在住学生的"个人净分（折算后）"之和；
+        // 班级账号仅统计本班学生。records 变量仍用于成员个人分明细等展示，不可删除。
+        var netTotal=getDormCumulativeNetScore(dorm.id, classMode ? currentUser.className : '');
         var netBadgeCls = netTotal > 0 ? 'badge-danger' : (netTotal < 0 ? 'badge-bonus' : 'badge-primary');
         var netScoreCls = netTotal > 0 ? 'score-deduct' : (netTotal < 0 ? 'score-bonus' : 'score-zero');
         var netStatCardCls = netTotal > 0 ? 'danger' : '';
@@ -865,8 +865,9 @@
             return '<span style="display:inline-flex;align-items:center;gap:6px;font-size:0.9286rem;font-weight:600;color:var(--gray-700)"><span style="width:10px;height:10px;border-radius:50%;background:'+statusColorMap[k]+';flex-shrink:0"></span>'+k+': '+statusCounts[k]+'人</span>';
         }).join('');
         var studentHtml=students.map(function(s){
-            var sr=records.filter(function(r){return r.studentId===s.id;});
-            var ss=getNetScore(sr);
+            // 个人净分（新口径）：卫生/纪律每侧有分折算 ±1，与"累计净分"卡同一口径，
+            // 全体在住成员个人净分之和即宿舍累计净分（不再用登记原始分 0.2/1 直接相加）。
+            var ss=getStudentNetScore(s.id);
             var ssCls = ss>0 ? 'score-deduct' : (ss<0 ? 'score-bonus' : 'score-zero');
             var st=getStudentStatus(s.id);
             var ops = '';
@@ -875,10 +876,11 @@
             }
             return '<tr><td data-label="姓名"><b>'+s.name+'</b></td><td data-label="班级">'+(s.className||'-')+'</td><td data-label="床号">'+(s.bedNumber||'-')+'</td><td data-label="状态"><span class="status-tag '+st.cls+'">'+st.label+'</span></td><td data-label="个人净分" class="'+ssCls+'">'+formatScoreText(ss,'net')+'</td>'+ops+'</tr>';
         }).join('')||'<tr><td colspan="5" style="text-align:center;color:#aaa">该宿舍暂无成员</td></tr>';
-        // 移动端成员单行紧凑列表：姓名 + 彩色圆点状态（圆点与文字同色）+ 班级·床号，右侧个人扣分（0分绿色/有分红色）
+        // 移动端成员单行紧凑列表：姓名 + 彩色圆点状态（圆点与文字同色）+ 班级·床号，右侧个人净分（折算口径，0分绿色/净扣红色/净加绿色）
         var memberCardHtml=students.map(function(s){
-            var sr=records.filter(function(r){return r.studentId===s.id;});
-            var ss=getNetScore(sr);
+            // 个人净分（新口径）：卫生/纪律每侧有分折算 ±1，与"累计净分"卡同一口径，
+            // 全体在住成员个人净分之和即宿舍累计净分（不再用登记原始分 0.2/1 直接相加）。
+            var ss=getStudentNetScore(s.id);
             var ssCls = ss>0 ? 'score-deduct' : (ss<0 ? 'score-bonus' : 'score-zero');
             var st=getStudentStatus(s.id);
             var dotColor=statusColorMap[st.label]||'#9ca3af';
@@ -1546,16 +1548,16 @@
         var allRecords = DB.deductionRecords;
         var total = getTotalScore(allRecords);
         // 楼层排名：净分（扣分 − 加分）从高到低，同分按楼层原顺序（稳定排序）
-        // 【修复】只算宿舍集体记录（studentId===null），与宿舍页、树导航口径一致。
-        var floorStats = DB.floors.map(function(f){ var r=getRecordsByFloor(f.id); return {id:f.id,name:f.name,score:getDormSummaryNetScore(r),count:r.length}; }).sort(function(a,b){return b.score-a.score;});
+        // 【新口径】楼层累计净分 = 该楼层所有在住学生的个人净分（折算后）之和。
+        var floorStats = DB.floors.map(function(f){ var r=getRecordsByFloor(f.id); return {id:f.id,name:f.name,score:getFloorCumulativeNetScore(f.id),count:r.length}; }).sort(function(a,b){return b.score-a.score;});
         // 全校宿舍排行：扣分从高到低，同分按宿舍号升序（含 0 分宿舍，排名连续）；已删除的宿舍号不参与排行
         var dormStatsAll = [];
         DB.dormitories.forEach(function(d){
             if(isDormitoryDeleted(d.roomNumber)) return;
             var r = getRecordsByDormitory(d.id);
-            // 【修复】宿舍排行榜只算宿舍集体记录（studentId===null），
-            // 与宿舍页徽章、树导航徽章口径一致，避免个人加分重复累加。
-            var score = getDormSummaryNetScore(r);
+            // 【新口径】宿舍累计净分 = 该宿舍所有在住学生的个人净分（折算后）之和，
+            // 与宿舍页徽章、树导航徽章口径一致。
+            var score = getDormCumulativeNetScore(d.id);
             dormStatsAll.push({ roomNumber: d.roomNumber, name: d.roomNumber + ' (' + getFloorById(d.floorId).name + ')', className: getDormitoryClassName(d.id), score: score, count: r.length });
         });
         dormStatsAll.sort(function(a,b){ if(a.score!==b.score) return b.score-a.score; return a.roomNumber.localeCompare(b.roomNumber,'zh-Hans-CN',{numeric:true}); });
@@ -1610,8 +1612,8 @@
             var roomsInFloor = getDormitoriesByFloor(statsFloorPickId);
             var dormList = roomsInFloor.map(function(d){
                 var r = getRecordsByDormitory(d.id);
-                // 【修复】楼层扣分情况：只算宿舍集体记录，与宿舍页、树导航口径一致。
-                return { roomNumber: d.roomNumber, className: getDormitoryClassName(d.id), score: getDormSummaryNetScore(r), count: r.length };
+                // 【新口径】楼层详情：宿舍累计净分 = 在住学生个人净分（折算后）之和，与宿舍页、树导航口径一致。
+                return { roomNumber: d.roomNumber, className: getDormitoryClassName(d.id), score: getDormCumulativeNetScore(d.id), count: r.length };
             });
             // 净分从低到高排序（净加分多/净扣分少在前），同分按宿舍号升序
             dormList.sort(function(a,b){ if(a.score !== b.score) return a.score - b.score; return a.roomNumber.localeCompare(b.roomNumber,'zh-Hans-CN',{numeric:true}); });
@@ -1653,8 +1655,8 @@
             var roomsInFloor = getDormitoriesByFloor(f.id);
             var dormList = roomsInFloor.map(function(d){
                 var r = getRecordsByDormitory(d.id);
-                // 【修复】各楼层详情卡：只算宿舍集体记录，与宿舍页、树导航口径一致。
-                var score = getDormSummaryNetScore(r);
+                // 【新口径】各楼层详情卡：宿舍累计净分 = 在住学生个人净分（折算后）之和，与宿舍页、树导航口径一致。
+                var score = getDormCumulativeNetScore(d.id);
                 return { roomNumber: d.roomNumber, className: getDormitoryClassName(d.id), score: score, count: r.length };
             });
             dormList.sort(function(a,b){ if(a.score !== b.score) return a.score - b.score; return a.roomNumber.localeCompare(b.roomNumber,'zh-Hans-CN',{numeric:true}); });

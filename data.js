@@ -453,16 +453,88 @@
     }
 
     /**
-     * 计算指定学生的个人累计净扣分（扣分总和 - 加分总和，保留 1 位小数）。
-     * 仅统计个人记录（r.studentId 严格等于 studentId），宿舍集体记录（studentId=null）
-     * 不计入任何学生的个人净分。
+     * 计算指定学生的个人累计净分（新口径）。
+     *
+     * 【新口径规则】
+     *   - 每条个人记录里，卫生侧只要有分（无论原始登记 0.2、0.4 还是 0.6），就折算 ±1；
+     *   - 每条个人记录里，纪律侧只要有分（无论原始登记 1、2 还是 3），就折算 ±1；
+     *   - 一条记录卫生、纪律两侧都有分 → 两侧各算一次，共 ±2；
+     *   - 正负由 recordMode 决定（bonus=+1/侧，deduct=-1/侧）。
+     *   - 个人净分 = 该学生所有个人记录的折算分相加（结果为整数）。
+     *
+     * 【设计意图】登记层面的原始分数（0.2、1 等）保持不变，本函数只做"运行时折算"，
+     *   不修改任何历史记录、不做数据迁移；导出 Excel 仍显示原始分数。
+     *
+     * 只统计个人记录（r.studentId 严格等于 studentId），宿舍集体记录（studentId=null）
+     * 不在此函数计算（集体分已通过 autoDerived 派生记录落到个人账上，避免重复计算）。
      * @param {number|string} studentId - 学生 ID
-     * @returns {number} 净扣分；无记录返回 0
+     * @returns {number} 个人净分（整数）；无记录返回 0
      */
     function getStudentNetScore(studentId) {
         if (!DB || !Array.isArray(DB.deductionRecords) || studentId == null) return 0;
-        var recs = DB.deductionRecords.filter(function(r) { return r.studentId === studentId; });
-        return getNetScore(recs);
+        var total = 0;
+        DB.deductionRecords.forEach(function(r) {
+            if (!r || String(r.studentId) !== String(studentId)) return;
+            var isBonus = (r.recordMode === 'bonus');
+            var sign = isBonus ? 1 : -1;
+            // 卫生侧：只要有分就折算 ±1（无论原始是 0.2 还是 0.6）
+            if ((r.hygieneScore || 0) > 0) total += sign;
+            // 纪律侧：只要有分就折算 ±1（无论原始是 1 还是 2）
+            if ((r.disciplineScore || 0) > 0) total += sign;
+        });
+        return roundScore1(total);
+    }
+
+    /**
+     * 计算某宿舍的累计净分（新口径）。
+     *
+     * 【新口径规则】宿舍累计净分 = 该宿舍所有在住学生的"个人净分"之和
+     *   （个人净分口径见 getStudentNetScore：运行时折算、卫生/纪律各 ±1）。
+     *   例如：宿舍 3 人，两个 -1、一个 +1 → 宿舍累计 = -1。
+     *
+     * 【设计意图】纯运行时按在住学生聚合，不读取/修改任何宿舍集体汇总记录，
+     *   历史数据不做迁移。
+     * @param {number} dormitoryId - 宿舍 ID
+     * @param {string} [classNameFilter] - 可选，仅统计指定班级的学生（班级账号用）
+     * @returns {number} 累计净分
+     */
+    function getDormCumulativeNetScore(dormitoryId, classNameFilter) {
+        if (!DB || dormitoryId == null) return 0;
+        var students = getStudentsByDormitory(dormitoryId);
+        if (classNameFilter) {
+            students = students.filter(function(s){ return s.className === classNameFilter; });
+        }
+        var total = 0;
+        students.forEach(function(s){ total += getStudentNetScore(s.id); });
+        return roundScore1(total);
+    }
+
+    /**
+     * 计算某楼层的累计净分（新口径）。
+     *
+     * 【新口径规则】楼层累计净分 = 该楼层所有宿舍在住学生的"个人净分"之和
+     *   （个人净分口径见 getStudentNetScore：运行时折算、卫生/纪律各 ±1）。
+     *
+     * 【设计意图】纯运行时按在住学生聚合，不读取/修改任何楼层汇总记录，
+     *   历史数据不做迁移。
+     * @param {number} floorId - 楼层 ID
+     * @param {string} [classNameFilter] - 可选，仅统计指定班级的学生（班级账号用）
+     * @returns {number} 累计净分
+     */
+    function getFloorCumulativeNetScore(floorId, classNameFilter) {
+        if (!DB || floorId == null) return 0;
+        var floors = DB.floors || [];
+        var floor = floors.find(function(f){ return f.id === floorId; });
+        if (!floor) return 0;
+        var total = 0;
+        (DB.students || []).forEach(function(s){
+            if (s.dormitoryId == null) return;
+            var dorm = getDormitoryById(s.dormitoryId);
+            if (!dorm || dorm.floorId !== floorId) return;
+            if (classNameFilter && s.className !== classNameFilter) return;
+            total += getStudentNetScore(s.id);
+        });
+        return roundScore1(total);
     }
 
     /**
@@ -1931,6 +2003,9 @@ window.getDefaultNotificationTemplate = getDefaultNotificationTemplate;
 window.dedupeStudentsByClassAndName = dedupeStudentsByClassAndName;
 window.getDormCollectiveNetScore = getDormCollectiveNetScore;
 window.getDormSummaryNetScore = getDormSummaryNetScore;
+window.getStudentNetScore = getStudentNetScore;
+window.getDormCumulativeNetScore = getDormCumulativeNetScore;
+window.getFloorCumulativeNetScore = getFloorCumulativeNetScore;
 window.migrateDerivedDeductionRecords = migrateDerivedDeductionRecords;
 window.formatStudentBedName = formatStudentBedName;
 // 注意：copyItemsListForDiagnosis 定义在 app.js（晚于 data.js 加载），
