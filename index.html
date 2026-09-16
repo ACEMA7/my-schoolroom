@@ -940,6 +940,7 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
             <div class="sidebar" id="sidebar">
                 <div class="sidebar-nav">
                     <div class="nav-item active" data-view="hierarchy" id="navHierarchy" onclick="switchView('hierarchy')">🌳 住宿信息</div>
+                    <div class="nav-item" data-view="today" id="navToday" onclick="switchView('today')">📅 今日明细</div>
                     <div class="nav-item" data-view="add" id="navAdd" onclick="switchView('add')">📝 扣分登记</div>
                     <div class="nav-item" data-view="stats" id="navStats" onclick="switchView('stats')">📊 统计报表</div>
                     <div class="nav-item" data-view="inspection" id="navInspection" style="display:none" onclick="switchView('inspection')">👀 巡查核实</div>
@@ -990,6 +991,10 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
     <!-- 批量导入请假/退宿/停宿记录弹层（内容由 ui.js buildLeaveImportModalHtml 动态拼装） -->
     <div class="modal-overlay" id="leaveImportModal" onclick="if(event.target===this) closeLeaveImportModal()">
         <div class="edit-modal" id="leaveImportModalBox" role="dialog" aria-label="批量导入请假/退宿/停宿记录"></div>
+    </div>
+    <!-- 批量导入扣分/加分记录弹层（内容由 ui.js buildDeductionImportModalHtml 动态拼装） -->
+    <div class="modal-overlay" id="deductionImportModal" onclick="if(event.target===this) closeDeductionImportModal()">
+        <div class="edit-modal" id="deductionImportModalBox" role="dialog" aria-label="批量导入扣分/加分记录"></div>
     </div>
     <div class="modal-overlay" id="notifTemplateModal" onclick="if(event.target===this) closeNotifTemplateModal()"><div class="edit-modal" id="notifTemplateModalBox" role="dialog" aria-label="编辑通知模板"></div></div>
     <div class="modal-overlay" id="floorChangeRejectModal" onclick="if(event.target===this) closeFloorChangeRejectModal()">

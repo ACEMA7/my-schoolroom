@@ -141,7 +141,7 @@
         }
 
         // 先隐藏所有菜单
-        var menuIds = ['navHierarchy', 'navAdd', 'navStats', 'navInspection', 'navFloorChange', 'navStudents', 'navItems', 'navLeaveManage', 'navExport', 'navNotifications', 'navChangePwd'];
+        var menuIds = ['navHierarchy', 'navToday', 'navAdd', 'navStats', 'navInspection', 'navFloorChange', 'navStudents', 'navItems', 'navLeaveManage', 'navExport', 'navNotifications', 'navChangePwd'];
         menuIds.forEach(function(id) {
             var el = document.getElementById(id);
             if (el) el.style.display = 'none';
@@ -149,12 +149,13 @@
 
         if (admin) {
             // 管理员显示全部菜单（含仅 ADMIN 可见的"通知管理"）
-            ['navHierarchy','navAdd','navStats','navInspection','navStudents','navItems','navLeaveManage','navExport','navNotifications'].forEach(function(id){
+            ['navHierarchy','navToday','navAdd','navStats','navInspection','navStudents','navItems','navLeaveManage','navExport','navNotifications'].forEach(function(id){
                 document.getElementById(id).style.display = 'flex';
             });
         } else if (classAdmin) {
-            // 班级账号：住宿信息（仅本班数据）+ 学生管理 + 数据管理
+            // 班级账号：住宿信息（仅本班数据）+ 今日明细（仅本班数据）+ 学生管理 + 数据管理
             document.getElementById('navHierarchy').style.display = 'flex';
+            document.getElementById('navToday').style.display = 'flex';
             document.getElementById('navLeaveManage').style.display = 'flex';
             document.getElementById('navExport').style.display = 'flex';
             document.getElementById('navChangePwd').style.display = 'flex';
@@ -163,6 +164,7 @@
             // 移动端（<=768px）额外隐藏"统计报表"和"学生管理"，侧边栏/底栏更聚焦日常操作；桌面端保持不变
             var staffMobile = window.innerWidth <= 768;
             document.getElementById('navHierarchy').style.display = 'flex';
+            document.getElementById('navToday').style.display = 'flex';
             document.getElementById('navAdd').style.display = 'flex';
             document.getElementById('navStats').style.display = staffMobile ? 'none' : 'flex';
             document.getElementById('navInspection').style.display = 'flex';
@@ -196,7 +198,7 @@
             // 让下次启动走"空库 → 从云端拉取"流程，防止设备 B 本地残留的旧数据
             // 被当成"主控设备本地宝贵数据"上传污染云端。
             // 提前弹出确认，让用户明确知道本机数据将被丢弃、改用云端数据。
-            if(!confirm('绑定主控设备前，本机现有的全部数据（学生名单、扣分记录、请假记录等）将被清除，改为从云端下载最新数据。\n\n如果本机数据是你现在要用的正确数据，请先点"取消"，改用其它方式处理。\n\n确认绑定并清除本机数据？')) return;
+            if(!confirm('绑定主控设备前，本机现有的全部数据（学生名单、扣分记录、请假记录等）将被清除，改为从云端下载最新数据。\n\n如果本机数据是你现在要用的正确数据，请先点"取消"，改用其它方式处理。\n\n确认后页面将自动刷新。刷新过程中还会再弹出一次"检测到云端数据版本更新…是否确认以云端数据覆盖本地"的确认框，请务必再次点击【确定】完成云端数据下载；若点【取消】，会保留刚清空的本机数据，本机将无法立即获得云端完整数据。\n\n确认绑定并清除本机数据？')) return;
             try { localStorage.removeItem(DB_KEY); } catch(e) {}
             localStorage.setItem('dorm_force_pull_from_cloud', 'true');
             localStorage.setItem('dorm_device_id', MASTER_DEVICE_ID);
@@ -613,6 +615,7 @@
         var c=document.getElementById('contentArea');
         if(currentView==='home') renderHomeView(c);
         else if(currentView==='hierarchy') renderHierarchyView(c);
+        else if(currentView==='today') renderTodayView(c);
         else if(currentView==='add') renderAddView(c);
         else if(currentView==='stats') renderStatsView(c);
         else if(currentView==='inspection') renderInspectionView(c);
@@ -4193,6 +4196,254 @@
         }
         XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(aoa), sheetName);
         XLSX.writeFile(wb, fileName);
+    }
+
+    // ==================== 批量导入扣分/加分记录 ====================
+    // 批量导入状态：Tab、文件、文本草稿、解析结果
+    var deductionImportState = { importType: 'text', file: null, text: '', parsed: null };
+
+    /**
+     * 打开「批量导入扣分/加分记录」弹层：重置状态并渲染阶段1（数据源）。
+     * 仅管理员在主控设备可用（写业务记录且会同步到云端）。
+     */
+    function openDeductionImportModal(){
+        if(!IS_MASTER_DEVICE){ toast('当前设备为受限设备，无权限修改基础数据！请在主控设备操作。','error'); return; }
+        if(!isAdmin()){ toast('无权限，仅管理员可批量导入','error'); return; }
+        deductionImportState.importType = 'text';
+        deductionImportState.file = null;
+        deductionImportState.text = '';
+        deductionImportState.parsed = null;
+        document.getElementById('deductionImportModalBox').innerHTML = buildDeductionImportModalHtml();
+        document.getElementById('deductionImportModal').classList.add('show');
+    }
+
+    /** 关闭「批量导入扣分/加分记录」弹层 */
+    function closeDeductionImportModal(){
+        var m = document.getElementById('deductionImportModal');
+        if(m) m.classList.remove('show');
+    }
+
+    /** 切换导入方式 Tab（保留文本草稿，避免误切换丢内容） */
+    function switchDeductionImportTab(tab){
+        var ta = document.getElementById('deductionImportText');
+        if(ta) deductionImportState.text = ta.value;
+        deductionImportState.importType = (tab === 'excel') ? 'excel' : 'text';
+        document.getElementById('deductionImportModalBox').innerHTML = buildDeductionImportModalHtml();
+        var ta2 = document.getElementById('deductionImportText');
+        if(ta2 && deductionImportState.text) ta2.value = deductionImportState.text;
+    }
+
+    /** Excel 文件选择回调：记录文件并显示文件名 */
+    function onDeductionImportExcelChange(file){
+        if(!file) return;
+        deductionImportState.file = file;
+        var el = document.getElementById('deductionImportFileName');
+        if(el) el.textContent = '已选择：' + file.name;
+    }
+
+    /** 预览阶段"返回修改"：清空解析结果回到阶段1 */
+    function backDeductionImportEdit(){
+        deductionImportState.parsed = null;
+        document.getElementById('deductionImportModalBox').innerHTML = buildDeductionImportModalHtml();
+    }
+
+    /** 解析预览入口（阶段1 → 阶段2） */
+    function parseDeductionImportPreview(){
+        if(deductionImportState.importType === 'text'){
+            var ta = document.getElementById('deductionImportText');
+            var raw = ta ? String(ta.value || '') : '';
+            if(!raw.trim()){ toast('请先粘贴文本数据','error'); return; }
+            deductionImportState.text = raw;
+            parseDeductionImportRows(parseDeductionImportFromText(raw));
+            document.getElementById('deductionImportModalBox').innerHTML = buildDeductionImportModalHtml();
+        } else {
+            if(!deductionImportState.file){ toast('请先选择 Excel 文件','error'); return; }
+            safeAsync(function(){
+                return parseDeductionImportFromExcel(deductionImportState.file).then(function(rows){
+                    parseDeductionImportRows(rows);
+                    document.getElementById('deductionImportModalBox').innerHTML = buildDeductionImportModalHtml();
+                });
+            }, '解析 Excel（批量导入扣分/加分记录）', { retry: false });
+        }
+    }
+
+    /** 文本解析：按行拆分（支持中英文逗号/制表符），返回 rows 二维数组（空行已剔除） */
+    function parseDeductionImportFromText(text){
+        var rows = [];
+        String(text || '').split(/\r?\n/).forEach(function(line){
+            var s = line.trim();
+            if(!s) return;
+            rows.push(s.split(/[,，\t]/).map(function(c){ return String(c || '').trim(); }));
+        });
+        return rows;
+    }
+
+    /** Excel 解析（复用现有 window.XLSX，首表） */
+    function parseDeductionImportFromExcel(file){
+        return new Promise(function(resolve, reject){
+            var reader = new FileReader();
+            reader.onerror = function(){ reject(reader.error || new Error('文件读取失败')); };
+            reader.onload = function(e){
+                try{
+                    var data = new Uint8Array(e.target.result);
+                    var workbook = XLSX.read(data, { type: 'array' });
+                    var firstSheet = workbook.Sheets[workbook.SheetNames[0]];
+                    var rows = XLSX.utils.sheet_to_json(firstSheet, { header: 1, defval: '' });
+                    resolve(rows || []);
+                }catch(err){ reject(err); }
+            };
+            reader.readAsArrayBuffer(file);
+        });
+    }
+
+    /**
+     * 判断一条待导入记录是否与库中已有记录（或本批次已收集记录）重复。
+     * 去重口径：日期 + 宿舍 + 学生 + 模式(扣分/加分) + 侧别(卫生/纪律) + 项目名。
+     * 同一对象同一天允许存在不同项目的多条记录；同项目重复行才跳过。
+     * @param {Object} rec - 已构造的记录对象
+     * @param {string} side - 'hygiene' | 'discipline'
+     * @param {string} itemName - 项目名（custom: 前缀已去除）
+     * @param {Object} batchSeen - 本批次去重索引（key→true）
+     * @returns {boolean}
+     */
+    function isDeductionRecordDuplicate(rec, side, itemName, batchSeen){
+        var stuKey = (rec.studentId == null) ? 'null' : String(rec.studentId);
+        var key = [rec.recordDate, rec.dormitoryId, stuKey, rec.recordMode, side, itemName].join('|');
+        if(batchSeen && batchSeen[key]) return true;
+        var getter = (rec.recordMode === 'bonus') ? getBonusItemNameByIdOrCustom : getItemNameByIdOrCustom;
+        var dup = (DB.deductionRecords || []).some(function(x){
+            if(x.recordDate !== rec.recordDate) return false;
+            if(String(x.dormitoryId) !== String(rec.dormitoryId)) return false;
+            if(String(x.studentId == null ? 'null' : x.studentId) !== stuKey) return false;
+            if((x.recordMode || 'deduct') !== rec.recordMode) return false;
+            var ids = (side === 'hygiene') ? (x.hygieneItemIds || []) : (x.disciplineItemIds || []);
+            return ids.some(function(id){ return getter(id) === itemName; });
+        });
+        if(!dup && batchSeen) batchSeen[key] = true;
+        return dup;
+    }
+
+    /**
+     * 核心解析：批量导入扣分/加分记录。
+     * 列格式：日期、宿舍号、班级、姓名、类型(卫生/纪律/加分)、项目、分值、备注。
+     *   - 首行日期无法识别时按表头跳过（与请假导入一致）；
+     *   - 姓名为"宿舍集体/集体"时生成宿舍集体记录（studentId=null），否则按"班级+姓名"匹配学生；
+     *   - 分值省略时：卫生 0.2、纪律 1、加分 1；填写时取绝对值（扣分统一按正数存储）；
+     *   - 【侧别规则】扣分：卫生→卫生侧、纪律→纪律侧；加分：含"纪律"→纪律加分侧，
+     *     其余（卫生加分/仅写"加分"）→卫生加分侧。每条记录只落单侧——
+     *     getTotalBonusScore = 卫生分+纪律分，加分落两侧会导致加分翻倍、今日明细重复显示。
+     * 解析结果写入 deductionImportState.parsed（valid 附加预览用展示字段，落库前剥离）。
+     * @param {Array[]} rows - 二维数据行
+     */
+    function parseDeductionImportRows(rows){
+        var result = { valid: [], skipped: [], duplicates: 0 };
+        var batchSeen = {};
+        rows.forEach(function(row, idx){
+            if(!row || row.length === 0 || row.every(function(c){ return c === undefined || c === null || String(c).trim() === ''; })) return;
+            var date = parseLeaveImportDate(row[0]);
+            if(!date){
+                result.skipped.push(idx === 0 ? '第1行：首行按表头跳过' : '第' + (idx+1) + '行：日期无法识别（' + String(row[0]).substring(0, 20) + '）');
+                return;
+            }
+            var dormitoryRoom = String(row[1] || '').trim();
+            var className = String(row[2] || '').trim();
+            var name = String(row[3] || '').trim();
+            var type = String(row[4] || '').trim();
+            var itemName = String(row[5] || '').trim();
+            var scoreRaw = String(row[6] || '').trim();
+            var remark = String(row[7] || '').trim();
+            if(!dormitoryRoom || !className || !name || !type || !itemName){
+                result.skipped.push('第' + (idx+1) + '行：缺少必填字段（日期/宿舍号/班级/姓名/类型/项目）'); return;
+            }
+            var dorm = getDormitoryByRoomNumber(dormitoryRoom);
+            if(!dorm){ result.skipped.push('第' + (idx+1) + '行：宿舍号不存在（' + dormitoryRoom + '）'); return; }
+            var isBonus = (type.indexOf('加分') !== -1 || type === 'bonus' || type === 'add');
+            var isHygiene = (type.indexOf('卫生') !== -1);
+            var isDiscipline = (type.indexOf('纪律') !== -1);
+            if(!isBonus && !isHygiene && !isDiscipline){
+                result.skipped.push('第' + (idx+1) + '行：类型必须为 卫生/纪律/加分（实际：' + type + '）'); return;
+            }
+            var isCollective = (name === '宿舍集体' || name === '集体');
+            var student = isCollective ? null : ((DB.students || []).find(function(s){ return s.name === name && s.className === className; }) || null);
+            if(!student && !isCollective){
+                result.skipped.push('第' + (idx+1) + '行：未找到学生（' + className + ' ' + name + '）'); return;
+            }
+            var score = parseFloat(scoreRaw);
+            if(isNaN(score)){
+                score = isBonus ? 1 : (isHygiene ? 0.2 : 1);
+            } else {
+                score = Math.abs(score);
+            }
+            score = roundScore1(score);
+            // 单侧归属（见函数头说明）：加分默认卫生侧，含"纪律"才走纪律侧
+            var useHygieneSide = isBonus ? !isDiscipline : isHygiene;
+            var useDisciplineSide = isBonus ? isDiscipline : (!isHygiene && isDiscipline);
+            var side = useHygieneSide ? 'hygiene' : 'discipline';
+            var itemId = 'custom:' + itemName;
+            var rec = {
+                id: generateRecordId(),
+                createdAt: Date.now(),
+                dormitoryId: dorm.id,
+                studentId: student ? student.id : null,
+                hygieneItemIds: useHygieneSide ? [itemId] : [],
+                hygieneScore: useHygieneSide ? score : 0,
+                disciplineItemIds: useDisciplineSide ? [itemId] : [],
+                disciplineScore: useDisciplineSide ? score : 0,
+                recordDate: date,
+                remark: remark,
+                recordMode: isBonus ? 'bonus' : 'deduct'
+            };
+            if(isDeductionRecordDuplicate(rec, side, itemName, batchSeen)){
+                result.duplicates++;
+                return;
+            }
+            // 仅用于预览展示的附加字段，confirmDeductionImportImpl 落库前会删除
+            result.valid.push(Object.assign({}, rec, {
+                itemName: itemName,
+                side: side,
+                scoreText: formatScoreText(score, isBonus ? 'bonus' : 'deduct'),
+                date: date,
+                dormitory: dormitoryRoom,
+                className: className,
+                name: isCollective ? '宿舍集体' : name
+            }));
+        });
+        deductionImportState.parsed = result;
+    }
+
+    /** 确认导入：防抖包裹实际落库逻辑 */
+    function confirmDeductionImport(){
+        if(confirmDeductionImport._busy) return;
+        confirmDeductionImport._busy = true;
+        setTimeout(function(){ confirmDeductionImport._busy = false; }, 800);
+        safeAsync(confirmDeductionImportImpl, '批量导入扣分/加分记录', { retry: true });
+    }
+
+    /** 确认导入实际逻辑：剥离预览字段 → 落库 → 逐条 V3 标脏 → saveDB → 刷新 */
+    function confirmDeductionImportImpl(){
+        var st = deductionImportState;
+        if(!st.parsed || !st.parsed.valid || !st.parsed.valid.length){ toast('没有可导入的记录','error'); return Promise.resolve(); }
+        var n = 0;
+        st.parsed.valid.forEach(function(rec){
+            var cleanRec = Object.assign({}, rec);
+            // 剥离仅用于预览展示的附加字段，不写入 DB
+            delete cleanRec.itemName;
+            delete cleanRec.scoreText;
+            delete cleanRec.side;
+            delete cleanRec.date;
+            delete cleanRec.dormitory;
+            delete cleanRec.className;
+            delete cleanRec.name;
+            DB.deductionRecords.push(cleanRec);
+            v3MarkDirty('deduction_record', cleanRec.id);
+            n++;
+        });
+        saveDB();
+        toast('导入完成：成功导入 ' + n + ' 条记录' + (st.parsed.duplicates > 0 ? '，重复跳过 ' + st.parsed.duplicates + ' 条' : '') + (st.parsed.skipped.length > 0 ? '，无效跳过 ' + st.parsed.skipped.length + ' 条' : ''));
+        closeDeductionImportModal();
+        renderView();
+        renderTree();
+        return Promise.resolve();
     }
     /**
      * 保存楼层分工配置（楼层分配管理卡片）：更新所选生活老师的

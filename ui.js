@@ -231,6 +231,7 @@
     var NAV_META = {
         home:{icon:'🏠',label:'首页'},
         hierarchy:{icon:'🌳',label:'住宿'},
+        today:{icon:'📅',label:'今日'},
         add:{icon:'📝',label:'登记'},
         stats:{icon:'📊',label:'统计'},
         inspection:{icon:'👀',label:'巡查'},
@@ -318,6 +319,7 @@
         // 权限与侧边栏菜单可见性保持一致：ADMIN全部 / CLASS_ADMIN层级(仅本班)+退宿+数据 / STAFF为层级+登记+统计+退宿
         var all = [
             {view:'hierarchy',  icon:'🌳', name:'住宿信息',     color:'#4f6ef7', roles:['ADMIN','STAFF','CLASS_ADMIN']},
+            {view:'today',      icon:'📅', name:'今日明细',     color:'#6366f1', roles:['ADMIN','STAFF','CLASS_ADMIN']},
             {view:'add',        icon:'📝', name:'扣分登记',     color:'#34c759', roles:['ADMIN','STAFF']},
             {view:'stats',      icon:'📊', name:'统计报表',     color:'#ff9500', roles:['ADMIN','STAFF']},
             {view:'inspection', icon:'👀', name:'巡查核实',     color:'#0ea5e9', roles:['ADMIN','STAFF']},
@@ -421,6 +423,150 @@
             });
             renderHierarchyView(document.getElementById('contentArea'));
             if (window.innerWidth <= 768) closeSidebar();
+        }
+    }
+
+    /**
+     * 渲染「今日明细」视图：按"楼层 → 宿舍"两级分组，一次性展示当天全部记录。
+     * 权限范围：
+     *   - ADMIN：全部楼层
+     *   - STAFF：负责楼层范围内（getAssignedFloorIds）
+     *   - CLASS_ADMIN：本班学生 / 本班宿舍记录（filterRecordsByClass）
+     * 数据源：DB.deductionRecords 中 recordDate === 今天的记录（含扣分与加分）。
+     * 排序：楼层按 sortOrder 升序，宿舍按宿舍号数字升序，每条记录按 createdAt 倒序。
+     * 操作列权限：管理员"删除"、生活老师"修改"、班主任不显示。
+     * @param {HTMLElement} container - contentArea 容器
+     */
+    function renderTodayView(container){
+        var today = getTodayLocalStr();
+        var role = currentUser ? currentUser.role : 'STAFF';
+        var isAdminUser = isAdmin();
+        var staffMode = (role === 'STAFF');
+        var classMode = isClassAdmin();
+
+        // 权限范围：楼层白名单（STAFF 按分工过滤，ADMIN/CLASS_ADMIN 全部）
+        var allowedFloorSet = {};
+        getAssignedFloorIds().forEach(function(fid){ allowedFloorSet[fid] = true; });
+        var classDormSet = classMode ? getClassDormIds() : null;
+
+        // 1) 取今日全部记录
+        var todayRecords = (DB.deductionRecords || []).filter(function(r){
+            return r.recordDate === today;
+        });
+        // 2) 班级账号过滤：仅本班学生 / 本班宿舍
+        if(classMode) todayRecords = filterRecordsByClass(todayRecords);
+
+        // 3) 按 楼层 → 宿舍 分组
+        var floorMap = {};
+        todayRecords.forEach(function(r){
+            var dorm = getDormitoryById(r.dormitoryId);
+            if(!dorm) return;
+            if(!allowedFloorSet[dorm.floorId]) return;
+            if(!floorMap[dorm.floorId]){
+                floorMap[dorm.floorId] = { floor: getFloorById(dorm.floorId), rooms: {} };
+            }
+            if(!floorMap[dorm.floorId].rooms[dorm.id]){
+                floorMap[dorm.floorId].rooms[dorm.id] = { dorm: dorm, records: [] };
+            }
+            floorMap[dorm.floorId].rooms[dorm.id].records.push(r);
+        });
+
+        // 4) 楼层排序（按 sortOrder 升序）+ 宿舍排序（按宿舍号数字升序）+ 记录排序（时间倒序）
+        var floorIds = Object.keys(floorMap).map(Number).sort(function(a, b){
+            var fa = floorMap[a].floor, fb = floorMap[b].floor;
+            return ((fa && fa.sortOrder) || a) - ((fb && fb.sortOrder) || b);
+        });
+        floorIds.forEach(function(fid){
+            var rooms = floorMap[fid].rooms;
+            var sortedRoomIds = Object.keys(rooms).sort(function(a, b){
+                return String(rooms[a].dorm.roomNumber).localeCompare(String(rooms[b].dorm.roomNumber), 'zh-Hans-CN', {numeric:true});
+            });
+            sortedRoomIds.forEach(function(rid){
+                rooms[rid].records.sort(function(a, b){
+                    var ta = a.createdAt || 0, tb = b.createdAt || 0;
+                    if(ta !== tb) return tb - ta;
+                    return String(b.id) < String(a.id) ? -1 : (String(b.id) > String(a.id) ? 1 : 0);
+                });
+            });
+            floorMap[fid].sortedRoomIds = sortedRoomIds;
+        });
+
+        // 5) 统计卡数据
+        var totalRecords = todayRecords.length;
+        var totalDorms = 0;
+        floorIds.forEach(function(fid){ totalDorms += floorMap[fid].sortedRoomIds.length; });
+        var totalNet = getNetScore(todayRecords);
+        var netCls = totalNet > 0 ? 'score-deduct' : (totalNet < 0 ? 'score-bonus' : 'score-zero');
+        var netCardCls = totalNet > 0 ? 'danger' : '';
+
+        // 6) 单行记录 HTML（供分片渲染逐条调用）
+        function todayRecordRowHtml(r){
+            var student = r.studentId ? getStudentById(r.studentId) : null;
+            var isBonusRec = (r.recordMode === 'bonus');
+            var nameGetter = isBonusRec ? getBonusItemNameByIdOrCustom : getItemNameByIdOrCustom;
+            var hyNames = (r.hygieneItemIds || []).map(nameGetter).filter(Boolean).join('、');
+            var disNames = (r.disciplineItemIds || []).map(nameGetter).filter(Boolean).join('、');
+            var modeTag = isBonusRec ? '<span class="badge-tag badge-primary" style="margin-right:4px">加分</span>' : '';
+            var kind = isBonusRec ? 'bonus' : 'deduct';
+            var actionHtml = '<td data-label="操作">-</td>';
+            if(isAdminUser){
+                actionHtml = '<td data-label="操作"><button class="btn btn-danger btn-xs" onclick="deleteRecord(\''+r.id+'\')">删除</button></td>';
+            } else if(staffMode){
+                actionHtml = '<td data-label="操作"><button class="btn btn-primary btn-xs" onclick="editRecord(\''+r.id+'\')">修改</button></td>';
+            }
+            return '<tr>'+actionHtml
+                + '<td data-label="日期">'+r.recordDate+'</td>'
+                + '<td data-label="对象">'+modeTag+(student ? escapeHtmlAttr(student.name) : '宿舍集体')+'</td>'
+                + '<td data-label="卫生项目">'+(hyNames||'-')+'</td>'
+                + '<td data-label="卫生分值" class="'+(isBonusRec?'score-bonus':'score-deduct')+'">'+formatScoreText(r.hygieneScore||0, kind)+'</td>'
+                + '<td data-label="纪律项目">'+(disNames||'-')+'</td>'
+                + '<td data-label="纪律分值" class="'+(isBonusRec?'score-bonus':'score-deduct')+'">'+formatScoreText(r.disciplineScore||0, kind)+'</td>'
+                + '<td data-label="备注">'+escapeHtmlAttr(r.remark||'-')+'</td></tr>';
+        }
+
+        // 7) 拼装 HTML
+        var html = '<div class="content-header"><h2>📅 今日明细（'+today+'）</h2></div>';
+
+        // 统计卡：记录数 / 涉及宿舍数 / 今日净分
+        html += '<div class="stat-cards">'
+            + '<div class="stat-card"><div class="number">'+totalRecords+'</div><div class="label">📋 今日记录数</div></div>'
+            + '<div class="stat-card warning"><div class="number">'+totalDorms+'</div><div class="label">🚪 涉及宿舍数</div></div>'
+            + '<div class="stat-card '+netCardCls+'"><div class="number '+netCls+'">'+formatScoreText(totalNet,'net')+'</div><div class="label">📊 今日净分</div></div>'
+            + '</div>';
+
+        // 楼层 → 宿舍 → 记录
+        if(floorIds.length === 0){
+            html += '<div class="card"><div class="card-body"><div class="empty-state" style="padding:24px">今日暂无扣分/加分记录</div></div></div>';
+        } else {
+            floorIds.forEach(function(fid){
+                var fg = floorMap[fid];
+                var floorHtml = '<div class="card" style="margin-bottom:16px"><div class="card-header">🏢 '+escapeHtmlAttr(fg.floor ? fg.floor.name : ('楼层'+fid))+'</div>';
+                fg.sortedRoomIds.forEach(function(rid){
+                    var bucket = fg.rooms[rid];
+                    floorHtml += '<div style="padding:12px 14px;border-bottom:1px dashed var(--gray-200)">'
+                        + '<div style="font-weight:700;font-size:1rem;margin-bottom:8px;color:var(--primary)">🚪 '+escapeHtmlAttr(bucket.dorm.roomNumber)+' 宿舍</div>'
+                        + '<div style="overflow-x:auto"><table class="mobile-h-table"><thead><tr><th>操作</th><th>日期</th><th>对象</th><th>卫生项目</th><th>分值</th><th>纪律项目</th><th>分值</th><th>备注</th></tr></thead><tbody id="todayTbody-'+bucket.dorm.id+'"></tbody></table></div>'
+                        + '</div>';
+                });
+                floorHtml += '</div>';
+                html += floorHtml;
+            });
+        }
+        container.innerHTML = html;
+
+        // 8) 分片渲染每间宿舍的 tbody
+        if(floorIds.length > 0){
+            floorIds.forEach(function(fid){
+                var fg = floorMap[fid];
+                fg.sortedRoomIds.forEach(function(rid){
+                    var bucket = fg.rooms[rid];
+                    var tb = document.getElementById('todayTbody-'+bucket.dorm.id);
+                    if(tb){
+                        renderListInChunks(tb, bucket.records, todayRecordRowHtml, 50, null,
+                            { emptyHtml:'<tr><td colspan="8" style="text-align:center;color:#aaa">暂无记录</td></tr>' });
+                    }
+                });
+            });
         }
     }
 
@@ -2333,6 +2479,13 @@
             + '<p style="margin:0 0 10px;color:var(--text-light);font-size:0.9rem">支持粘贴文本或 Excel 批量导入请假（absence）、退宿（leave）、停宿（stop）记录；自动按"班级+姓名"匹配学生，重复记录自动跳过，导入前可预览确认。</p>'
             + '<button class="btn btn-primary" onclick="openLeaveImportModal()">📥 批量导入请假/退宿/停宿记录</button>'
             + '</div></div>';
+        // 批量导入扣分/加分记录（仅管理员在主控设备可用：写业务记录且影响全量统计）
+        if(isAdmin() && IS_MASTER_DEVICE){
+            html += '<div class="card"><div class="card-header">📥 批量导入扣分/加分记录</div><div class="card-body">'
+                + '<p style="margin:0 0 10px;color:var(--text-light);font-size:0.9rem">支持粘贴文本或 Excel 导入当天的扣分/加分记录。列顺序：日期、宿舍号、班级、姓名、类型(卫生/纪律/加分)、项目、分值、备注。</p>'
+                + '<button class="btn btn-primary" onclick="openDeductionImportModal()">📥 批量导入扣分/加分记录</button>'
+                + '</div></div>';
+        }
 
         if (!isClassAdmin) {
             // 主控设备绑定入口：管理员可将当前设备设为主控（非主控设备可见，主控设备也显示但点击提示已绑定）
@@ -3501,6 +3654,71 @@
             +'<button class="btn btn-outline btn-sm" onclick="downloadLeaveImportTemplate()">📥 下载导入模板</button>'
             +'<button class="btn btn-outline" onclick="closeLeaveImportModal()">取消</button>'
             +'</div>';
+    }
+
+    /**
+     * 拼装「批量导入扣分/加分记录」弹层 HTML（两阶段：数据源 → 预览确认）。
+     * 列格式：日期、宿舍号、班级、姓名、类型(卫生/纪律/加分)、项目、分值、备注。
+     * @returns {string}
+     */
+    function buildDeductionImportModalHtml(){
+        var st = deductionImportState;
+        // 导入方式切换条（粘贴文本 / Excel）
+        var tabs = '<div class="batch-tab-bar">'
+            + '<div class="batch-tab ' + (st.importType === 'text' ? 'active' : '') + '" onclick="switchDeductionImportTab(\'text\')">📋 粘贴文本</div>'
+            + '<div class="batch-tab ' + (st.importType === 'excel' ? 'active' : '') + '" onclick="switchDeductionImportTab(\'excel\')">📂 Excel导入</div>'
+            + '</div>';
+        var hint = '<div class="batch-hint">每行一条记录，列顺序（逗号分隔或制表符分隔均可）：<b>日期, 宿舍号, 班级, 姓名, 类型, 项目, 分值, 备注</b><br>'
+            + '示例：2026-09-16, 801, 三28, 宿舍集体, 纪律, 讲话责任不详, -1, 2人讲话<br>'
+            + '类型支持：卫生（扣分）、纪律（扣分）、加分（"卫生加分/纪律加分"可指定侧别，仅写"加分"默认卫生加分）；分值可省略，省略时按系统默认值（卫生-0.2、纪律-1、加分+1）自动填充。<br>'
+            + '“干净加分”请填写：类型=加分，项目=干净，姓名=宿舍集体。</div>';
+        var body;
+        if(st.parsed){
+            // ============ 阶段2：预览确认 ============
+            var p = st.parsed;
+            var statHtml = '<div style="margin-bottom:10px;font-size:0.9286rem">'
+                + '<span style="color:var(--success,#34c759);font-weight:600">✅ 可导入 ' + p.valid.length + ' 条</span>'
+                + '&nbsp;&nbsp;<span style="color:#eab308;font-weight:600">🔁 重复跳过 ' + p.duplicates + ' 条</span>'
+                + '&nbsp;&nbsp;<span style="color:var(--danger);font-weight:600">⛔ 无效跳过 ' + p.skipped.length + ' 条</span>'
+                + '</div>';
+            var skipHtml = '';
+            if(p.skipped.length > 0){
+                var showMax = 20;
+                var lines = p.skipped.slice(0, showMax).map(function(s){ return '<li style="margin-bottom:2px">' + escapeHtmlAttr(s) + '</li>'; }).join('');
+                if(p.skipped.length > showMax) lines += '<li style="color:var(--gray-500)">……等共 ' + p.skipped.length + ' 条</li>';
+                skipHtml = '<div style="background:var(--gray-50);border:1px solid var(--gray-200);border-radius:8px;padding:10px;max-height:180px;overflow-y:auto">'
+                    + '<b style="font-size:0.8571rem">跳过明细：</b><ul style="margin:6px 0 0;padding-left:18px;font-size:0.8571rem;color:var(--gray-600)">' + lines + '</ul></div>';
+            }
+            var okHtml = '';
+            if(p.valid.length > 0){
+                var okLines = p.valid.slice(0, 10).map(function(r){
+                    return '<li>' + escapeHtmlAttr(r.date + ' ' + r.dormitory + ' ' + r.className + ' ' + r.name + ' ' + r.itemName + ' ' + r.scoreText) + '</li>';
+                }).join('');
+                if(p.valid.length > 10) okLines += '<li style="color:var(--gray-500)">……等共 ' + p.valid.length + ' 条</li>';
+                okHtml = '<div style="margin-top:10px"><b style="font-size:0.8571rem">前 10 条预览：</b><ul style="margin:6px 0 0;padding-left:18px;font-size:0.8571rem;color:var(--gray-600)">' + okLines + '</ul></div>';
+            }
+            body = '<div class="batch-hint">即将批量导入，请核对以下预览结果：</div>' + statHtml + skipHtml + okHtml;
+            return '<div class="em-header"><span>📥 批量导入扣分/加分记录</span><button class="em-close" aria-label="关闭" onclick="closeDeductionImportModal()">✕</button></div>'
+                + '<div class="em-body">' + body + '</div>'
+                + '<div class="em-footer">'
+                + '<button class="btn btn-primary" onclick="confirmDeductionImport()">✅ 确认导入</button>'
+                + '<button class="btn btn-outline" onclick="backDeductionImportEdit()">↩ 返回修改</button>'
+                + '</div>';
+        }
+        // ============ 阶段1：数据源 ============
+        if(st.importType === 'text'){
+            body = hint + '<textarea id="deductionImportText" rows="9" style="width:100%;padding:10px;border:1.5px solid var(--gray-200);border-radius:8px;font-size:0.9286rem" placeholder="2026-09-16,801,三28,宿舍集体,纪律,讲话责任不详,-1,2人讲话"></textarea>';
+        } else {
+            body = hint + '<div style="margin-bottom:10px"><span class="file-upload-wrapper"><span class="file-upload-btn">📂 选择Excel文件</span><input type="file" id="deductionImportExcel" accept=".xlsx,.xls" onchange="onDeductionImportExcelChange(this.files[0])"></span>'
+                + '<span id="deductionImportFileName" style="margin-left:8px;color:var(--gray-600);font-size:0.8571rem">' + (st.file ? escapeHtmlAttr(st.file.name) : '未选择文件') + '</span></div>';
+        }
+        return '<div class="em-header"><span>📥 批量导入扣分/加分记录</span><button class="em-close" aria-label="关闭" onclick="closeDeductionImportModal()">✕</button></div>'
+            + tabs
+            + '<div class="em-body">' + body + '</div>'
+            + '<div class="em-footer">'
+            + '<button class="btn btn-primary" onclick="parseDeductionImportPreview()">🔍 解析预览</button>'
+            + '<button class="btn btn-outline" onclick="closeDeductionImportModal()">取消</button>'
+            + '</div>';
     }
 
     /**

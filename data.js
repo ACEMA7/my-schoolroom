@@ -1820,4 +1820,6 @@ window.roundScore1 = roundScore1;
 window.formatScoreText = formatScoreText;
 window.getDefaultNotificationTemplate = getDefaultNotificationTemplate;
 window.dedupeStudentsByClassAndName = dedupeStudentsByClassAndName;
-window.copyItemsListForDiagnosis = copyItemsListForDiagnosis;
+// 注意：copyItemsListForDiagnosis 定义在 app.js（晚于 data.js 加载），
+// 不能在此处做 window 导出（会抛 ReferenceError）；app.js 为 classic script，
+// 其顶层 function 声明天然是全局函数，ui.js 内联 onclick 可直接调用，无需导出。
