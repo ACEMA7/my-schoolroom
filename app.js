@@ -1231,9 +1231,14 @@
         if(!confirm('确认删除选中的 '+checkedBoxes.length+' 名学生？此操作不可撤销！')) return;
         var idsToDelete=[];
         for(var i=0;i<checkedBoxes.length;i++) idsToDelete.push(parseInt(checkedBoxes[i].getAttribute('data-student-id')));
+        // 【关键修复】先对每条被删记录打 V3 墓碑，云端才会同步删除这些记录。
+        // 缺这一步会导致"本地删了，但云端活行仍在，下次拉取时又被填回本地"的 bug。
+        idsToDelete.forEach(function(id){
+            v3MarkDeleted('student', id);
+        });
         DB.students=DB.students.filter(function(s){return idsToDelete.indexOf(s.id)===-1;});
         saveDB();
-        toast('成功删除 '+idsToDelete.length+' 名学生');
+        toast('成功删除 '+idsToDelete.length+' 名学生（已上传删除标记，其他设备同步后将一起删除）');
         renderStudentsView(document.getElementById('contentArea'));
     }
     /**
