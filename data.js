@@ -375,6 +375,84 @@
     }
 
     /**
+     * 计算宿舍/楼层汇总净分（用于树导航徽章、宿舍页统计卡、统计报表排行等）。
+     * 规则：
+     *   - 计入：宿舍集体记录（studentId === null）+ 个人直接记录（autoDerived 不为 true）
+     *   - 排除：集体加分派生的个人记录（autoDerived === true），避免"一次集体加分被算成
+     *     多人加分之和 + 集体本身"的重复累加问题。
+     *   - 与 getStudentNetScore（个人净分）区别：个人净分包含所有个人记录（含派生），
+     *     而宿舍汇总分排除派生记录。
+     * @param {Array} records - 某宿舍/某楼层的全部记录
+     * @returns {number} 净分（保留 1 位小数）
+     */
+    function getDormSummaryNetScore(records) {
+        if (!records) return 0;
+        var summaryRecords = records.filter(function(r){ return r && r.autoDerived !== true; });
+        return getNetScore(summaryRecords);
+    }
+
+    /**
+     * 【历史数据迁移】识别旧版加分模式下"集体加分派生的个人记录"，并补上 autoDerived: true。
+     *
+     * 背景：旧版 submitDeductionImpl 在加分模式下，为宿舍每个学生各生成一条个人加分记录，
+     * 但当时没有 autoDerived 标记。新版需要这些记录被识别为"派生"，不计入宿舍汇总分。
+     *
+     * 保守判断规则（同时满足全部条件才标记）：
+     *   1) recordMode === 'bonus'（加分记录）
+     *   2) studentId != null（个人记录）
+     *   3) 该宿舍同一天存在一条"宿舍集体加分记录"（studentId === null && recordMode === 'bonus'）
+     *   4) 该个人记录的 createdAt 与集体加分记录的 createdAt 相差 ≤ 5000 毫秒（同一操作派生）
+     *   5) 该个人记录尚未被标记过 autoDerived
+     *
+     * 宁可漏判（个别旧记录仍会被算入宿舍汇总）也绝不误判（不会把老师手动给某学生加的分误标）。
+     * 幂等：重复执行不会重复标记。
+     * @returns {number} 本次新标记的记录数
+     */
+    function migrateDerivedDeductionRecords() {
+        if (!DB || !Array.isArray(DB.deductionRecords)) return 0;
+        var allRecords = DB.deductionRecords;
+        var marked = 0;
+        // 先收集所有"集体加分记录"作为基准（studentId === null && recordMode === 'bonus'）
+        var collectiveBonusByKey = {}; // key = dormitoryId + '|' + recordDate → [record, ...]
+        allRecords.forEach(function(r){
+            if (!r) return;
+            if (r.studentId !== null && r.studentId !== undefined) return;
+            if (r.recordMode !== 'bonus') return;
+            if (!r.dormitoryId || !r.recordDate) return;
+            var key = String(r.dormitoryId) + '|' + String(r.recordDate);
+            if (!collectiveBonusByKey[key]) collectiveBonusByKey[key] = [];
+            collectiveBonusByKey[key].push(r);
+        });
+        // 遍历所有记录，识别派生个人记录
+        allRecords.forEach(function(r){
+            if (!r) return;
+            if (r.autoDerived === true) return; // 已标记过，跳过
+            if (r.recordMode !== 'bonus') return; // 只处理加分
+            if (r.studentId === null || r.studentId === undefined) return; // 只处理个人记录
+            if (!r.dormitoryId || !r.recordDate || !r.createdAt) return;
+            var key = String(r.dormitoryId) + '|' + String(r.recordDate);
+            var collectiveList = collectiveBonusByKey[key];
+            if (!collectiveList || collectiveList.length === 0) return; // 该宿舍当天没有集体加分
+            // 检查是否有集体加分的 createdAt 与本记录相差 ≤ 5000 毫秒
+            var isDerived = collectiveList.some(function(c){
+                if (!c.createdAt) return false;
+                return Math.abs(r.createdAt - c.createdAt) <= 5000;
+            });
+            if (isDerived) {
+                r.autoDerived = true;
+                r.lastModified = Date.now();
+                v3MarkDirty('deduction_record', r.id); // 打脏标记，让云端和其他设备同步到新字段
+                marked++;
+            }
+        });
+        if (marked > 0) {
+            console.log('[派生迁移] 已标记 ' + marked + ' 条历史派生记录（autoDerived=true）');
+            saveDBToLocal();
+        }
+        return marked;
+    }
+
+    /**
      * 计算指定学生的个人累计净扣分（扣分总和 - 加分总和，保留 1 位小数）。
      * 仅统计个人记录（r.studentId 严格等于 studentId），宿舍集体记录（studentId=null）
      * 不计入任何学生的个人净分。
@@ -1836,6 +1914,8 @@ window.formatScoreText = formatScoreText;
 window.getDefaultNotificationTemplate = getDefaultNotificationTemplate;
 window.dedupeStudentsByClassAndName = dedupeStudentsByClassAndName;
 window.getDormCollectiveNetScore = getDormCollectiveNetScore;
+window.getDormSummaryNetScore = getDormSummaryNetScore;
+window.migrateDerivedDeductionRecords = migrateDerivedDeductionRecords;
 // 注意：copyItemsListForDiagnosis 定义在 app.js（晚于 data.js 加载），
 // 不能在此处做 window 导出（会抛 ReferenceError）；app.js 为 classic script，
 // 其顶层 function 声明天然是全局函数，ui.js 内联 onclick 可直接调用，无需导出。

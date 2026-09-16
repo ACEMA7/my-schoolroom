@@ -1142,7 +1142,10 @@
             dormStudents.forEach(function(s){
                 var perHyScore = hygieneScore > 0 ? 1 : 0;
                 var perDisScore = disciplineScore > 0 ? 1 : 0;
-                var stuRecord={id:generateRecordId(),createdAt:Date.now(),dormitoryId:addFormState.dormitoryId,studentId:s.id,hygieneItemIds:hygieneItemIds,hygieneScore:perHyScore,disciplineItemIds:disciplineItemIds,disciplineScore:perDisScore,recordDate:addFormState.recordDate,remark:addFormState.remark||'',recordMode:mode};
+                // 【关键】给派生的个人加分记录打上 autoDerived: true，
+                // 使其不计入宿舍汇总分（避免"一次集体加分被算成多人加分之和"），
+                // 但仍计入个人净分（学生个人账上确实加了分）。
+                var stuRecord={id:generateRecordId(),createdAt:Date.now(),dormitoryId:addFormState.dormitoryId,studentId:s.id,hygieneItemIds:hygieneItemIds,hygieneScore:perHyScore,disciplineItemIds:disciplineItemIds,disciplineScore:perDisScore,recordDate:addFormState.recordDate,remark:addFormState.remark||'',recordMode:mode,autoDerived:true};
                 DB.deductionRecords.push(stuRecord);
                 v3MarkDirty('deduction_record', stuRecord.id);
             });
