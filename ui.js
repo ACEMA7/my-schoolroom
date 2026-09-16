@@ -362,12 +362,12 @@
                 rooms=rooms.filter(function(r){ return dormSet[r.id]; });
                 if(rooms.length===0) return;
             }
-            var floorNet=getNetScore(filterRecordsByClass(getRecordsByFloor(f.id)));
+            var floorNet=getDormCollectiveNetScore(filterRecordsByClass(getRecordsByFloor(f.id)));
             var floorNetCls = floorNet > 0 ? 'badge-danger' : (floorNet < 0 ? 'badge-bonus' : 'badge-primary');
             var isOpen = (f.id === selectedFloorId);
             html+='<div class="tree-floor"><div class="tree-floor-header" onclick="toggleFloor('+f.id+',\''+p+'\')"><span id="'+p+'arrow-'+f.id+'">'+(isOpen?'▼':'▶')+'</span>📁 '+f.name+' <span class="badge-tag '+floorNetCls+'">'+formatScoreText(floorNet,'net')+'分</span></div><div class="tree-rooms'+(isOpen?' open':'')+'" id="'+p+'rooms-'+f.id+'">';
             rooms.forEach(function(r){
-                var net=getNetScore(filterRecordsByClass(getRecordsByDormitory(r.id)));
+                var net=getDormCollectiveNetScore(filterRecordsByClass(getRecordsByDormitory(r.id)));
                 var netCls;
                 if(net > 10) netCls='badge-danger';
                 else if(net > 3) netCls='badge-warning';
@@ -628,8 +628,10 @@
         // 班级账号：仅显示本班学生的记录及本班宿舍的集体记录
         if(classMode) records=filterRecordsByClass(records);
         var total=getTotalScore(records);
-        // 【修复】净分 = 扣分总和 - 加分总和，用于分数徽章与统计卡片展示
-        var netTotal=getNetScore(records);
+        // 【修复】宿舍层面汇总分：只算宿舍集体记录（studentId===null），
+        // 避免"集体加分触发每人+1"被重复累加进宿舍分，导致宿舍分虚高。
+        // 个人加分只体现在"个人净分"列。
+        var netTotal=getDormCollectiveNetScore(records);
         var netBadgeCls = netTotal > 0 ? 'badge-danger' : (netTotal < 0 ? 'badge-bonus' : 'badge-primary');
         var netScoreCls = netTotal > 0 ? 'score-deduct' : (netTotal < 0 ? 'score-bonus' : 'score-zero');
         var netStatCardCls = netTotal > 0 ? 'danger' : '';
@@ -1339,36 +1341,41 @@
     function renderStatsView(container){
         var allRecords = DB.deductionRecords;
         var total = getTotalScore(allRecords);
-        // 楼层排名：扣分从高到低，同分按楼层原顺序（稳定排序）
-        var floorStats = DB.floors.map(function(f){ var r=getRecordsByFloor(f.id); return {id:f.id,name:f.name,score:getTotalScore(r),count:r.length}; }).sort(function(a,b){return b.score-a.score;});
+        // 楼层排名：净分（扣分 − 加分）从高到低，同分按楼层原顺序（稳定排序）
+        // 【修复】只算宿舍集体记录（studentId===null），与宿舍页、树导航口径一致。
+        var floorStats = DB.floors.map(function(f){ var r=getRecordsByFloor(f.id); return {id:f.id,name:f.name,score:getDormCollectiveNetScore(r),count:r.length}; }).sort(function(a,b){return b.score-a.score;});
         // 全校宿舍排行：扣分从高到低，同分按宿舍号升序（含 0 分宿舍，排名连续）；已删除的宿舍号不参与排行
         var dormStatsAll = [];
         DB.dormitories.forEach(function(d){
             if(isDormitoryDeleted(d.roomNumber)) return;
             var r = getRecordsByDormitory(d.id);
-            var score = getTotalScore(r);
+            // 【修复】宿舍排行榜只算宿舍集体记录（studentId===null），
+            // 与宿舍页徽章、树导航徽章口径一致，避免个人加分重复累加。
+            var score = getDormCollectiveNetScore(r);
             dormStatsAll.push({ roomNumber: d.roomNumber, name: d.roomNumber + ' (' + getFloorById(d.floorId).name + ')', className: getDormitoryClassName(d.id), score: score, count: r.length });
         });
         dormStatsAll.sort(function(a,b){ if(a.score!==b.score) return b.score-a.score; return a.roomNumber.localeCompare(b.roomNumber,'zh-Hans-CN',{numeric:true}); });
         statsCache.dormAll = dormStatsAll;
-        // 楼层条形图（两端共用）
-        var floorBarsHtml = floorStats.map(function(f,i){ var max=floorStats[0].score||1; var pct=max>0?(f.score/max*100):0; var colors=['#4f6ef7','#7c5cfc','#a855f7','#ec4899','#f43f5e','#f97316','#eab308','#22c55e']; return '<div style="display:flex;align-items:center;gap:10px;margin-bottom:8px"><span style="font-weight:700;width:30px">#'+(i+1)+'</span><span style="width:50px">'+f.name+'</span><div style="flex:1;height:22px;background:#f0f0f0;border-radius:11px;overflow:hidden;"><div style="height:100%;width:'+pct+'%;background:'+colors[i%colors.length]+';border-radius:11px;display:flex;align-items:center;justify-content:flex-end;padding-right:8px;"><span style="color:#fff;font-size:0.7857rem;font-weight:700">'+formatScoreText(f.score,'deduct')+'分</span></div></div><span style="min-width:40px;font-size:0.8571rem;color:#6b7280;">'+f.count+'条</span></div>'; }).join('');
+        // 楼层条形图（两端共用）：净分口径（正=净扣/负=净加），负值或 0 不显示色条，
+        // 分值统一放在色条右侧固定宽度区域，保证加分（+x）也可见且不带错号
+        var floorBarsHtml = floorStats.map(function(f,i){ var max=Math.abs(floorStats[0].score)||1; var pct=max>0?(Math.max(0,f.score)/max*100):0; var colors=['#4f6ef7','#7c5cfc','#a855f7','#ec4899','#f43f5e','#f97316','#eab308','#22c55e']; var scoreColor=f.score>0?'#dc2626':(f.score<0?'#16a34a':'#6b7280'); return '<div style="display:flex;align-items:center;gap:10px;margin-bottom:8px"><span style="font-weight:700;width:30px">#'+(i+1)+'</span><span style="width:50px">'+f.name+'</span><div style="flex:1;height:22px;background:#f0f0f0;border-radius:11px;overflow:hidden;"><div style="height:100%;width:'+pct+'%;background:'+colors[i%colors.length]+';border-radius:11px;"></div></div><span style="min-width:46px;text-align:right;font-size:0.8571rem;font-weight:700;color:'+scoreColor+';">'+formatScoreText(f.score,'net')+'分</span><span style="min-width:40px;font-size:0.8571rem;color:#6b7280;">'+f.count+'条</span></div>'; }).join('');
         // 全校宿舍排行榜：默认 TOP20，可展开全部（含 0 分）
         // PC 端表格行（供分片渲染逐条调用）
         function dormRankRowHtml(d, i){
-            return '<tr><td data-label="排名">'+(i+1)+'</td><td data-label="宿舍"><b>'+d.name+'</b></td><td data-label="班级">'+(d.className||'-')+'</td><td data-label="扣分" class="score-deduct">'+formatScoreText(d.score,'deduct')+'</td><td data-label="记录数">'+d.count+'</td></tr>';
+            var netCls = d.score > 0 ? 'score-deduct' : (d.score < 0 ? 'score-bonus' : 'score-zero');
+            return '<tr><td data-label="排名">'+(i+1)+'</td><td data-label="宿舍"><b>'+d.name+'</b></td><td data-label="班级">'+(d.className||'-')+'</td><td data-label="净分" class="'+netCls+'">'+formatScoreText(d.score,'net')+'</td><td data-label="记录数">'+d.count+'</td></tr>';
         }
         // 移动端卡片行（复用 dorm-row-mobile / rank-item 样式，供分片渲染逐条调用）
         function dormRankCardHtml(item, idx){
             var rank = idx+1;
             var topCls = rank<=3 ? ' top' : '';
             var scoreHas = item.score>0 ? ' has' : '';
-            var scoreCls = item.score>0 ? 'score-deduct' : 'score-zero';
+            var scoreCls = item.score>0 ? 'score-deduct' : (item.score<0 ? 'score-bonus' : 'score-zero');
             return '<div class="dorm-row-mobile">'
                 + '<div class="rank-item rank-idx-1'+topCls+'"><span class="rank-label">排名</span><span class="rank-value">#'+rank+'</span></div>'
                 + '<div class="rank-item rank-idx-2"><span class="rank-label">宿舍</span><span class="rank-value">'+item.roomNumber+'</span></div>'
                 + '<div class="rank-item rank-idx-3"><span class="rank-label">班级</span><span class="rank-value">'+(item.className||'—')+'</span></div>'
-                + '<div class="rank-item rank-idx-4"><span class="rank-label">扣分</span><span class="rank-value '+scoreCls+'">'+formatScoreText(item.score,'deduct')+'分</span></div>'
+                + '<div class="rank-item rank-idx-4"><span class="rank-label">净分</span><span class="rank-value '+scoreCls+'">'+formatScoreText(item.score,'net')+'分</span></div>'
                 + '<div class="rank-item rank-idx-5"><span class="rank-label">记录数</span><span class="rank-value">'+item.count+'条</span></div>'
                 + '</div>';
         }
@@ -1380,7 +1387,7 @@
             if(window.innerWidth<=768){
                 return '<div style="padding:2px 0"><div id="statsDormCards"></div></div>'+btn;
             }
-            return '<div style="overflow-x:auto"><table><thead><tr><th>排名</th><th>宿舍</th><th>班级</th><th>扣分</th><th>记录数</th></tr></thead><tbody id="statsDormTbody"></tbody></table></div>'+btn;
+            return '<div style="overflow-x:auto"><table><thead><tr><th>排名</th><th>宿舍</th><th>班级</th><th>净分</th><th>记录数</th></tr></thead><tbody id="statsDormTbody"></tbody></table></div>'+btn;
         }
         // 排行榜数据分片填充（初次渲染 / 展开收起切换后调用）
         function fillStatsDormList(){
@@ -1392,16 +1399,17 @@
         }
         statsCache.dormSectionHtml = dormSectionHtml;
         statsCache.fillDormList = fillStatsDormList;
-        // 楼层扣分情况：单楼层全部宿舍（含 0 分），扣分从低到高、同分按宿舍号升序；芯片切换楼层
+        // 楼层净分情况：单楼层全部宿舍（含 0 分），净分从低到高、同分按宿舍号升序；芯片切换楼层
         if(!statsFloorPickId || !getFloorById(statsFloorPickId)) statsFloorPickId = DB.floors[0] ? DB.floors[0].id : null;
         // 当前选中楼层的排行数据
         function getFloorDetailList(){
             var roomsInFloor = getDormitoriesByFloor(statsFloorPickId);
             var dormList = roomsInFloor.map(function(d){
                 var r = getRecordsByDormitory(d.id);
-                return { roomNumber: d.roomNumber, className: getDormitoryClassName(d.id), score: getTotalScore(r), count: r.length };
+                // 【修复】楼层扣分情况：只算宿舍集体记录，与宿舍页、树导航口径一致。
+                return { roomNumber: d.roomNumber, className: getDormitoryClassName(d.id), score: getDormCollectiveNetScore(r), count: r.length };
             });
-            // 扣分从低到高排序（扣分少在前），同分按宿舍号升序
+            // 净分从低到高排序（净加分多/净扣分少在前），同分按宿舍号升序
             dormList.sort(function(a,b){ if(a.score !== b.score) return a.score - b.score; return a.roomNumber.localeCompare(b.roomNumber,'zh-Hans-CN',{numeric:true}); });
             return dormList;
         }
@@ -1410,12 +1418,12 @@
             var rank = idx+1;
             var topCls = rank<=3 ? ' top' : '';
             var scoreHas = item.score>0 ? ' has' : '';
-            var scoreCls = item.score>0 ? 'score-deduct' : 'score-zero';
+            var scoreCls = item.score>0 ? 'score-deduct' : (item.score<0 ? 'score-bonus' : 'score-zero');
             return '<div class="dorm-row-mobile">'
                 + '<div class="rank-item rank-idx-1'+topCls+'"><span class="rank-label">排名</span><span class="rank-value">#'+rank+'</span></div>'
                 + '<div class="rank-item rank-idx-2"><span class="rank-label">宿舍</span><span class="rank-value">'+item.roomNumber+'</span></div>'
                 + '<div class="rank-item rank-idx-3"><span class="rank-label">班级</span><span class="rank-value">'+(item.className||'—')+'</span></div>'
-                + '<div class="rank-item rank-idx-4"><span class="rank-label">扣分</span><span class="rank-value '+scoreCls+'">'+formatScoreText(item.score,'deduct')+'分</span></div>'
+                + '<div class="rank-item rank-idx-4"><span class="rank-label">净分</span><span class="rank-value '+scoreCls+'">'+formatScoreText(item.score,'net')+'分</span></div>'
                 + '<div class="rank-item rank-idx-5"><span class="rank-label">记录数</span><span class="rank-value">'+item.count+'条</span></div>'
                 + '</div>';
         }
@@ -1441,13 +1449,14 @@
             var roomsInFloor = getDormitoriesByFloor(f.id);
             var dormList = roomsInFloor.map(function(d){
                 var r = getRecordsByDormitory(d.id);
-                var score = getTotalScore(r);
+                // 【修复】各楼层详情卡：只算宿舍集体记录，与宿舍页、树导航口径一致。
+                var score = getDormCollectiveNetScore(r);
                 return { roomNumber: d.roomNumber, className: getDormitoryClassName(d.id), score: score, count: r.length };
             });
             dormList.sort(function(a,b){ if(a.score !== b.score) return a.score - b.score; return a.roomNumber.localeCompare(b.roomNumber,'zh-Hans-CN',{numeric:true}); });
             var tbId = 'statsFloorLowTbody-'+f.id;
             floorLowFillJobs.push({ tbId: tbId, list: dormList });
-            floorDormLowTables += '<div class="card" style="margin-bottom:16px;"><div class="card-header">📉 '+f.name+' · 扣分少的宿舍排名</div><div style="overflow-x:auto;"><table><thead><tr><th>排名</th><th>宿舍</th><th>班级</th><th>扣分</th><th>记录数</th></tr></thead><tbody id="'+tbId+'"></tbody></table></div></div>';
+            floorDormLowTables += '<div class="card" style="margin-bottom:16px;"><div class="card-header">📉 '+f.name+' · 净分低的宿舍排名</div><div style="overflow-x:auto;"><table><thead><tr><th>排名</th><th>宿舍</th><th>班级</th><th>净分</th><th>记录数</th></tr></thead><tbody id="'+tbId+'"></tbody></table></div></div>';
         });
         // 折叠块骨架（开合状态跨重渲染保持）；局部刷新区（排行榜/楼层详情）仅替换 wrap 内部，不影响折叠状态
         function foldBlock(id, title, bodyHtml){
@@ -1515,13 +1524,13 @@
         var mobileDetailBody = '<div id="statsFloorDetailWrap">'+floorDetailHtml()+'</div>';
         var pcDetailBody = '<div style="padding:14px">'+floorDormLowTables+'</div>';
         container.innerHTML = '<div class="content-header"><h2>📊 统计报表</h2></div>'
-            + '<div class="stat-cards"><div class="stat-card"><div class="number">'+allRecords.length+'</div><div class="label">总扣分记录</div></div><div class="stat-card warning"><div class="number">'+formatScoreText(total,'deduct')+'</div><div class="label">总扣分</div></div><div class="stat-card danger"><div class="number">'+dormStatsAll.filter(function(d){return d.score>0;}).length+'</div><div class="label">有扣分宿舍</div></div></div>'
-            + foldBlock('fold-stats-floor','🏆 楼层扣分排名','<div style="padding:18px">'+floorBarsHtml+'</div>')
+            + '<div class="stat-cards"><div class="stat-card"><div class="number">'+allRecords.length+'</div><div class="label">总扣分记录</div></div><div class="stat-card warning"><div class="number">'+formatScoreText(total,'deduct')+'</div><div class="label">总扣分</div></div><div class="stat-card danger"><div class="number">'+dormStatsAll.filter(function(d){return d.score>0;}).length+'</div><div class="label">有净扣分宿舍</div></div></div>'
+            + foldBlock('fold-stats-floor','🏆 楼层净分排名','<div style="padding:18px">'+floorBarsHtml+'</div>')
             + foldBlock('fold-stats-top', topTitle, topBody)
             + foldBlock('fold-stats-net','📊 净分排行榜 <span class="fold-sub">净分=扣分-加分 · 按楼层查看</span>', netBody)
             + (window.innerWidth<=768
-                ? foldBlock('fold-stats-detail','📉 楼层扣分情况', mobileDetailBody)
-                : foldBlock('fold-stats-detail','📉 各楼层扣分详情', pcDetailBody));
+                ? foldBlock('fold-stats-detail','📉 楼层净分情况', mobileDetailBody)
+                : foldBlock('fold-stats-detail','📉 各楼层净分详情', pcDetailBody));
         // 列表分片填充：排行榜、净分榜、楼层详情、各楼层详情卡（折叠状态不受影响，隐藏容器内照样填充）
         fillStatsDormList();
         fillNetList();
@@ -1530,7 +1539,8 @@
         floorLowFillJobs.forEach(function(job){
             var tb=document.getElementById(job.tbId);
             if(tb) renderListInChunks(tb, job.list, function(item, idx){
-                return '<tr><td data-label="排名">'+(idx+1)+'</td><td data-label="宿舍">'+item.roomNumber+'</td><td data-label="班级">'+item.className+'</td><td data-label="扣分" class="score-deduct">'+formatScoreText(item.score,'deduct')+'</td><td data-label="记录数">'+item.count+'</td></tr>';
+                var netCls = item.score > 0 ? 'score-deduct' : (item.score < 0 ? 'score-bonus' : 'score-zero');
+                return '<tr><td data-label="排名">'+(idx+1)+'</td><td data-label="宿舍">'+item.roomNumber+'</td><td data-label="班级">'+item.className+'</td><td data-label="净分" class="'+netCls+'">'+formatScoreText(item.score,'net')+'</td><td data-label="记录数">'+item.count+'</td></tr>';
             }, 50, null, {emptyHtml:floorLowEmpty});
         });
     }

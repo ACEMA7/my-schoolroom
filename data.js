@@ -360,6 +360,21 @@
     }
 
     /**
+     * 计算一组记录中，仅"宿舍集体记录"（studentId === null）的净分。
+     * 用途：宿舍徽章、楼层徽章、宿舍统计卡、统计报表排名等"宿舍/楼层层面"的分数显示。
+     * 目的：把个人加减分（如"宿舍集体加分触发每人 +1"）排除在宿舍总分数之外，
+     *       使宿舍层面的分数只反映"集体加减分"。
+     * 说明：个人记录（studentId != null）不参与本函数计算，只体现到 getStudentNetScore。
+     * @param {Array} records - 某宿舍/某楼层的全部记录
+     * @returns {number} 净分（扣分总和 − 加分总和，保留 1 位小数）
+     */
+    function getDormCollectiveNetScore(records) {
+        if (!records) return 0;
+        var collective = records.filter(function(r){ return r.studentId === null || r.studentId === undefined; });
+        return getNetScore(collective);
+    }
+
+    /**
      * 计算指定学生的个人累计净扣分（扣分总和 - 加分总和，保留 1 位小数）。
      * 仅统计个人记录（r.studentId 严格等于 studentId），宿舍集体记录（studentId=null）
      * 不计入任何学生的个人净分。
@@ -1820,6 +1835,7 @@ window.roundScore1 = roundScore1;
 window.formatScoreText = formatScoreText;
 window.getDefaultNotificationTemplate = getDefaultNotificationTemplate;
 window.dedupeStudentsByClassAndName = dedupeStudentsByClassAndName;
+window.getDormCollectiveNetScore = getDormCollectiveNetScore;
 // 注意：copyItemsListForDiagnosis 定义在 app.js（晚于 data.js 加载），
 // 不能在此处做 window 导出（会抛 ReferenceError）；app.js 为 classic script，
 // 其顶层 function 声明天然是全局函数，ui.js 内联 onclick 可直接调用，无需导出。
