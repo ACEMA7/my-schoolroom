@@ -873,6 +873,20 @@
         var r=null;
         for(var i=0;i<DB.deductionRecords.length;i++){if(String(DB.deductionRecords[i].id)===String(editRecordId)){r=DB.deductionRecords[i];break;}}
         if(!r){toast('记录不存在','error');closeEditModal();return;}
+        // 【新增】读取"扣分对象"下拉框：空串=宿舍集体，非空=学生 ID
+        var targetEl = document.getElementById('emTargetStudent');
+        if(!targetEl){toast('扣分对象字段缺失，请刷新页面','error');return;}
+        var targetVal = String(targetEl.value || '').trim();
+        // 【新】校验：非空时必须是有效数字型学生 ID，且必须属于该宿舍（防跨宿舍通过控制台篡改）
+        var newStudentId = null;
+        if(targetVal !== ''){
+            var parsed = parseInt(targetVal, 10);
+            if(isNaN(parsed)){toast('扣分对象无效','error');return;}
+            var stu = getStudentById(parsed);
+            if(!stu){toast('所选学生不存在','error');return;}
+            if(stu.dormitoryId !== r.dormitoryId){toast('所选学生不属于本宿舍','error');return;}
+            newStudentId = parsed;
+        }
         var date=document.getElementById('emDate').value;
         if(!date){toast('请选择扣分日期','error');return;}
         function collectItems(prefix,customScore){
@@ -898,6 +912,12 @@
         var dis=collectItems('em-dis',1);
         if(dis===null){toast('请输入自定义纪律项目名称','error');return;}
         if(hy.ids.length===0&&dis.ids.length===0){toast('请至少勾选一个扣分项目','error');return;}
+        // 【新增】应用"扣分对象"变更（newStudentId：null=宿舍集体，否则=学生 ID）
+        var oldStudentId = (r.studentId === null || r.studentId === undefined) ? null : r.studentId;
+        if(oldStudentId !== newStudentId){
+            r.studentId = newStudentId;
+            // 若原来不是派生记录，改成派生/非派生不涉及；保留原 autoDerived 字段不动
+        }
         r.recordDate=date;
         r.remark=document.getElementById('emRemark').value.trim();
         r.hygieneItemIds=hy.ids;
@@ -913,14 +933,21 @@
         // V3 按行存储：修改扣分记录 → 脏标记
         v3MarkDirty('deduction_record', r.id);
         saveDB();
-        // 扣分预警：修改可能抬高净分跨过阈值。个人记录检查本人，集体记录检查同宿舍全体
+        // 扣分预警：修改可能抬高净分跨过阈值。个人记录检查本人，集体记录检查同宿舍全体。
+        // 【新增】若本次修改变更了 studentId，同时检查"原对象"与"新对象"，
+        // 确保双方净分变化都能被正确评估（避免改走后原学生账上净分还降着但没更新通知）。
         try {
-            if(r.studentId != null){
-                checkAndNotifyStudentWarnings([r.studentId]);
-            } else if(r.dormitoryId != null){
-                var editedDormStuIds = getStudentsByDormitory(r.dormitoryId).map(function(s){ return s.id; });
-                checkAndNotifyStudentWarnings(editedDormStuIds);
+            var idsToCheck = {};
+            if(newStudentId != null) idsToCheck[String(newStudentId)] = true;
+            if(oldStudentId != null && String(oldStudentId) !== String(newStudentId)) idsToCheck[String(oldStudentId)] = true;
+            if(newStudentId == null && r.dormitoryId != null){
+                getStudentsByDormitory(r.dormitoryId).forEach(function(s){ idsToCheck[String(s.id)] = true; });
             }
+            if(oldStudentId != null && newStudentId == null && r.dormitoryId != null){
+                getStudentsByDormitory(r.dormitoryId).forEach(function(s){ idsToCheck[String(s.id)] = true; });
+            }
+            var checkIds = Object.keys(idsToCheck).map(function(k){ return parseInt(k, 10); }).filter(function(x){ return !isNaN(x); });
+            if(checkIds.length > 0) checkAndNotifyStudentWarnings(checkIds);
         } catch(e) { handleError(e, '修改记录预警触发', { silent: true }); }
         closeEditModal();
         toast('修改已保存');

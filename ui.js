@@ -3952,6 +3952,27 @@
         var r=null;
         for(var i=0;i<DB.deductionRecords.length;i++){if(String(DB.deductionRecords[i].id)===String(id)){r=DB.deductionRecords[i];break;}}
         if(!r) return '';
+        // 【新增】构建"扣分对象"下拉框选项：仅本宿舍学生 + 宿舍集体，按床号升序
+        var dormStudents = getStudentsByDormitory(r.dormitoryId);
+        dormStudents = dormStudents.slice().sort(function(a,b){
+            var ba = (a.bedNumber !== null && a.bedNumber !== undefined && String(a.bedNumber).trim() !== '') ? parseInt(a.bedNumber,10) : 999;
+            var bb = (b.bedNumber !== null && b.bedNumber !== undefined && String(b.bedNumber).trim() !== '') ? parseInt(b.bedNumber,10) : 999;
+            if(ba !== bb) return ba - bb;
+            return String(a.name||'').localeCompare(String(b.name||''),'zh-Hans-CN');
+        });
+        var currentStudentId = (r.studentId === null || r.studentId === undefined) ? '' : String(r.studentId);
+        var targetOpts = '<option value=""'+(currentStudentId===''?' selected':'')+'>🏠 宿舍集体</option>';
+        dormStudents.forEach(function(s){
+            var sid = String(s.id);
+            targetOpts += '<option value="'+sid+'"'+(sid===currentStudentId?' selected':'')+'>'+escapeHtmlAttr(formatStudentBedName(s))+'</option>';
+        });
+        // 兜底：若当前 studentId 不在该宿舍学生列表中（学生已迁出/被删），补一个提示项
+        if(currentStudentId !== '' && !dormStudents.some(function(s){ return String(s.id) === currentStudentId; })){
+            var orphan = getStudentById(r.studentId);
+            if(orphan){
+                targetOpts = '<option value="'+currentStudentId+'" selected>'+escapeHtmlAttr(formatStudentBedName(orphan))+'（已迁出本宿舍）</option>' + targetOpts;
+            }
+        }
         function buildChecks(items,recordIds,prefix,customLabel,customScoreText){
             var html=items.map(function(i){
                 var checked=(recordIds||[]).indexOf(i.id)!==-1?' checked':'';
@@ -3967,6 +3988,7 @@
         var disChecks=buildChecks(DB.deductionItems.discipline||[],r.disciplineItemIds,'em-dis','自定义','1分');
         return '<div class="em-header"><span>✏️ 修改扣分记录</span><button class="em-close" aria-label="关闭" onclick="closeEditModal()">✕</button></div>'
             +'<div class="em-body">'
+            +'<div class="form-group"><label>扣分对象 *</label><select id="emTargetStudent">'+targetOpts+'</select><div style="font-size:0.7857rem;color:var(--gray-500);margin-top:4px">💡 若选错学生，在此修改归属；仅可选择本宿舍学生。</div></div>'
             +'<div class="form-group"><label>扣分日期 *</label><input type="text" class="date-picker" id="emDate" value="'+escapeHtmlAttr(r.recordDate)+'"></div>'
             +'<div class="form-group"><label>备注</label><input type="text" id="emRemark" placeholder="可填写具体原因..." value="'+escapeHtmlAttr(r.remark)+'"></div>'
             +'<div class="form-group"><label>🧹 卫生加扣分（可多选）</label><div class="checkbox-group">'+hyChecks+'</div><div style="margin-top:5px">卫生扣分合计：<b id="emHyScore">0</b> 分</div></div>'
