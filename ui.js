@@ -727,7 +727,9 @@
                 : '<td data-label="选择" style="width:0;padding:0;border:none"></td>';
             return '<tr>'+checkHtml+actionHtml
                 + '<td data-label="日期">'+r.recordDate+'</td>'
-                + '<td data-label="对象">'+modeTag+(student ? escapeHtmlAttr(formatStudentBedName(student)) : '宿舍集体')+'</td>'
+                + '<td data-label="对象">'+modeTag+(student ? escapeHtmlAttr(formatStudentBedName(student)) : '宿舍集体')
+                + ((isAdmin() && isRecordDormMismatch(r)) ? ' <span style="color:#ff3b30;font-weight:700;font-size:0.7857rem" title="该学生当前宿舍与记录宿舍不一致，请核实">⚠️ 宿舍不符</span>' : '')
+                + '</td>'
                 + '<td data-label="卫生项目">'+(hyNames||'-')+'</td>'
                 + '<td data-label="卫生分值" class="'+(isBonusRec?'score-bonus':'score-deduct')+'">'+formatScoreText(r.hygieneScore||0, kind)+'</td>'
                 + '<td data-label="纪律项目">'+(disNames||'-')+'</td>'
@@ -2711,6 +2713,14 @@
             + '<p style="margin:0 0 10px;color:var(--text-light);font-size:0.9rem">支持粘贴文本或 Excel 批量导入请假（absence）、退宿（leave）、停宿（stop）记录；自动按"班级+姓名"匹配学生，重复记录自动跳过，导入前可预览确认。</p>'
             + '<button class="btn btn-primary" onclick="openLeaveImportModal()">📥 批量导入请假/退宿/停宿记录</button>'
             + '</div></div>';
+        // 异常记录扫描卡片（仅管理员可见）：扫描学生当前宿舍与记录宿舍不一致的扣分记录
+        if(isAdmin()){
+            html += '<div class="card"><div class="card-header">🔍 异常记录扫描</div><div class="card-body">'
+                + '<p style="margin:0 0 10px;color:var(--text-light);font-size:0.9rem">扫描"学生当前宿舍与记录宿舍不一致"的扣分记录，用于排查历史数据错误。扫描只读，不修改数据。</p>'
+                + '<button class="btn btn-primary" onclick="runDeductionMismatchScan()">🔍 开始扫描</button>'
+                + '<div id="mismatchScanResult" style="margin-top:14px"></div>'
+                + '</div></div>';
+        }
         // 批量导入扣分/加分记录（仅管理员在主控设备可用：写业务记录且影响全量统计）
         if(isAdmin() && IS_MASTER_DEVICE){
             html += '<div class="card"><div class="card-header">📥 批量导入扣分/加分记录</div><div class="card-body">'
@@ -3312,10 +3322,9 @@
             if (studentName && (!student || student.name !== studentName)) return false;
             return true;
         });
-        // 过滤掉"集体加分派生的个人记录"（autoDerived: true）：
-        // 一次集体加分只应在预览中呈现 1 行（宿舍集体那条）；
-        // 派生个人记录的加分效果已体现到"个人净分"里，不应在预览列表中重复铺开。
-        records = records.filter(function(r){ return r.autoDerived !== true; });
+        // 隐藏"原始宿舍集体记录"（studentId 为 null），只显示个人直接记录 + 派生个人记录：
+        // 查某个学生时结果条数与个人净分完全一致；查全部时也只见派生记录不见集体记录。
+        records = records.filter(function(r){ return r.studentId != null; });
 
         records.sort(function(a, b) {
             var dateCompare = a.recordDate.localeCompare(b.recordDate);
@@ -3356,19 +3365,24 @@
                 + '<td data-label="宿舍号">' + getDormDisplayNameById(r.dormitoryId) + '</td>'
                 + '<td data-label="床号">' + bedNumber + '</td>'
                 + '<td data-label="班级">' + classNameVal + '</td>'
-                + '<td data-label="学生">' + studentNameVal + '</td>'
+                + '<td data-label="学生">' + studentNameVal
+                + ((isAdmin() && isRecordDormMismatch(r)) ? ' <span style="color:#ff3b30;font-weight:700;font-size:0.7857rem" title="该学生当前宿舍与记录宿舍不一致，请核实">⚠️ 宿舍不符</span>' : '')
+                + '</td>'
                 + '<td data-label="卫生项目">' + (hyNames || '-') + '</td>'
                 + '<td data-label="卫生分值" class="' + scoreCls + '">' + formatScoreText(r.hygieneScore || 0, kind) + '</td>'
                 + '<td data-label="纪律项目">' + (disNames || '-') + '</td>'
                 + '<td data-label="纪律分值" class="' + scoreCls + '">' + formatScoreText(r.disciplineScore || 0, kind) + '</td>'
                 + '<td data-label="备注">' + escapeHtmlAttr(r.remark || '-') + '</td>'
+                + (isAdmin()
+                    ? '<td data-label="操作"><button class="btn btn-primary btn-xs" onclick="editRecord(\'' + r.id + '\')">修改</button> <button class="btn btn-danger btn-xs" onclick="deleteRecordAndRefreshQuery(\'' + r.id + '\')">删除</button></td>'
+                    : '<td data-label="操作" style="display:none"></td>')
                 + '</tr>';
         }
 
         resultArea.innerHTML = '<div class="card">'
             + '<div class="card-header">查询结果（' + records.length + '条记录）</div>'
             + '<div style="overflow-x:auto;"><table class="mobile-h-table">'
-            + '<thead><tr><th>日期</th><th>宿舍号</th><th>床号</th><th>班级</th><th>学生</th><th>卫生项目</th><th>卫生分值</th><th>纪律项目</th><th>纪律分值</th><th>备注</th></tr></thead>'
+            + '<thead><tr><th>日期</th><th>宿舍号</th><th>床号</th><th>班级</th><th>学生</th><th>卫生项目</th><th>卫生分值</th><th>纪律项目</th><th>纪律分值</th><th>备注</th>' + (isAdmin() ? '<th>操作</th>' : '<th style="display:none"></th>') + '</tr></thead>'
             + '<tbody id="queryDeductionTbody"></tbody>'
             + '</table></div></div>';
         renderListInChunks(document.getElementById('queryDeductionTbody'), records, queryDeductionRowHtml, 50);

@@ -775,6 +775,136 @@
         renderTree();
     }
 
+    /**
+     * 删除扣分记录（数据管理页查询结果专用）。
+     * 在现有 deleteRecord 基础上包一层：删除成功后自动重新执行当前查询条件的筛选，
+     * 刷新底部的查询结果表，保证列表实时反映删除结果。
+     * 仅管理员可用（按钮本身仅管理员可见，此处再做一次权限校验兜底）。
+     * @param {string|number} id - 扣分记录 ID
+     */
+    function deleteRecordAndRefreshQuery(id){
+        if(!isAdmin()){ toast('无权限操作','error'); return; }
+        // deleteRecord 内部已包含 confirm、级联删除、墓碑标记、saveDB
+        deleteRecord(id);
+        // 删除完成后重新执行当前筛选查询，刷新查询结果表
+        // 通过 queryFilteredData 复用当前 DOM 上未变的筛选下拉值，不丢失筛选状态
+        try {
+            if(typeof queryFilteredData === 'function') queryFilteredData();
+        } catch(e) {
+            handleError(e, '刷新查询结果', { silent: true });
+        }
+    }
+
+    /**
+     * 扫描"学生当前宿舍 ≠ 记录宿舍"的异常扣分记录，并渲染结果表。
+     * 仅管理员可用。扫描不修改任何数据。
+     */
+    function runDeductionMismatchScan(){
+        if(!isAdmin()){ toast('无权限','error'); return; }
+        var list = (DB.deductionRecords || []).filter(function(r){
+            return isRecordDormMismatch(r);
+        });
+        var box = document.getElementById('mismatchScanResult');
+        if(!box) return;
+        if(list.length === 0){
+            box.innerHTML = '<div class="empty-state" style="padding:18px">未发现异常记录，数据健康 ✅</div>';
+            return;
+        }
+        var rows = list.map(function(r){
+            var stu = getStudentById(r.studentId);
+            var stuDorm = stu && stu.dormitoryId ? getDormitoryById(stu.dormitoryId) : null;
+            var recDorm = getDormitoryById(r.dormitoryId);
+            return '<tr>'
+                + '<td data-label="选择"><input type="checkbox" class="mismatch-check" data-record-id="'+escapeHtmlAttr(r.id)+'"></td>'
+                + '<td data-label="日期">'+escapeHtmlAttr(r.recordDate||'-')+'</td>'
+                + '<td data-label="学生">'+escapeHtmlAttr(stu?stu.name:'-')+'</td>'
+                + '<td data-label="班级">'+escapeHtmlAttr(stu?stu.className:'-')+'</td>'
+                + '<td data-label="学生当前宿舍">'+escapeHtmlAttr(stuDorm?stuDorm.roomNumber:'-')+'</td>'
+                + '<td data-label="记录宿舍" style="color:#ff3b30;font-weight:700">'+escapeHtmlAttr(recDorm?recDorm.roomNumber:'-')+'</td>'
+                + '<td data-label="操作"><button class="btn btn-primary btn-xs" onclick="fixMismatchRecord(\''+escapeHtmlAttr(r.id)+'\')">修正</button> <button class="btn btn-danger btn-xs" onclick="deleteMismatchRecord(\''+escapeHtmlAttr(r.id)+'\')">删除</button></td>'
+                + '</tr>';
+        }).join('');
+        box.innerHTML = '<div style="margin-bottom:10px;color:#ff3b30;font-weight:700">共发现 '+list.length+' 条异常记录</div>'
+            + '<div style="display:flex;gap:10px;margin-bottom:10px;flex-wrap:wrap">'
+            + '<label style="display:inline-flex;align-items:center;gap:4px;font-weight:400;cursor:pointer"><input type="checkbox" id="mismatchSelectAll" onchange="toggleAllMismatch(this.checked)"> 全选</label>'
+            + '<button class="btn btn-primary btn-sm" onclick="batchFixMismatch()">🔧 批量修正（改为学生当前宿舍）</button>'
+            + '<button class="btn btn-danger btn-sm" onclick="batchDeleteMismatch()">🗑️ 批量删除</button>'
+            + '</div>'
+            + '<div style="overflow-x:auto"><table class="mobile-h-table"><thead><tr><th style="width:30px"></th><th>日期</th><th>学生</th><th>班级</th><th>学生当前宿舍</th><th>记录宿舍</th><th>操作</th></tr></thead><tbody>'+rows+'</tbody></table></div>';
+    }
+
+    /** 全选/取消全选异常记录勾选框 */
+    function toggleAllMismatch(checked){
+        var boxes = document.querySelectorAll('.mismatch-check');
+        for(var i=0;i<boxes.length;i++) boxes[i].checked = checked;
+    }
+
+    /**
+     * 修正单条异常记录：把记录的 dormitoryId 改为学生当前的 dormitoryId。
+     * 只改记录，不改学生数据。
+     */
+    function fixMismatchRecord(id){
+        if(!isAdmin()){ toast('无权限','error'); return; }
+        var r = DB.deductionRecords.find(function(x){ return String(x.id) === String(id); });
+        if(!r){ toast('记录不存在','error'); return; }
+        var stu = getStudentById(r.studentId);
+        if(!stu || !stu.dormitoryId){ toast('学生当前无宿舍，无法修正','error'); return; }
+        r.dormitoryId = stu.dormitoryId;
+        r.lastModified = Date.now();
+        v3MarkDirty('deduction_record', r.id);
+        saveDB();
+        toast('已修正为 '+((getDormitoryById(stu.dormitoryId)||{}).roomNumber||'学生当前宿舍'));
+        runDeductionMismatchScan();
+    }
+
+    /** 删除单条异常记录（含二次确认） */
+    function deleteMismatchRecord(id){
+        if(!isAdmin()){ toast('无权限','error'); return; }
+        if(!confirm('确认删除这条异常记录？此操作不可撤销！')) return;
+        deleteRecord(id);  // 复用现有删除逻辑（内部含级联、墓碑、saveDB）
+        runDeductionMismatchScan();
+    }
+
+    /** 批量修正勾选的异常记录 */
+    function batchFixMismatch(){
+        if(!isAdmin()){ toast('无权限','error'); return; }
+        var boxes = document.querySelectorAll('.mismatch-check:checked');
+        if(boxes.length === 0){ toast('请先勾选要修正的记录','error'); return; }
+        if(!confirm('确认修正选中的 '+boxes.length+' 条记录？\n（记录宿舍将改为该学生当前的宿舍）')) return;
+        var count = 0;
+        for(var i=0;i<boxes.length;i++){
+            var id = boxes[i].getAttribute('data-record-id');
+            var r = DB.deductionRecords.find(function(x){ return String(x.id) === String(id); });
+            if(!r) continue;
+            var stu = getStudentById(r.studentId);
+            if(!stu || !stu.dormitoryId) continue;
+            r.dormitoryId = stu.dormitoryId;
+            r.lastModified = Date.now();
+            v3MarkDirty('deduction_record', r.id);
+            count++;
+        }
+        if(count > 0){ saveDB(); }
+        toast('已修正 '+count+' 条记录');
+        runDeductionMismatchScan();
+    }
+
+    /** 批量删除勾选的异常记录 */
+    function batchDeleteMismatch(){
+        if(!isAdmin()){ toast('无权限','error'); return; }
+        var boxes = document.querySelectorAll('.mismatch-check:checked');
+        if(boxes.length === 0){ toast('请先勾选要删除的记录','error'); return; }
+        if(!confirm('确认删除选中的 '+boxes.length+' 条异常记录？此操作不可撤销！')) return;
+        var ids = [];
+        for(var i=0;i<boxes.length;i++){ ids.push(boxes[i].getAttribute('data-record-id')); }
+        ids.forEach(function(id){ v3MarkDeleted('deduction_record', id); });
+        DB.deductionRecords = DB.deductionRecords.filter(function(r){
+            return ids.indexOf(String(r.id)) === -1;
+        });
+        saveDB();
+        toast('已删除 '+ids.length+' 条记录');
+        runDeductionMismatchScan();
+    }
+
     // ==================== 学生迁出 / 调宿（仅管理员） ====================
     var transferStudentId = null;
     /**
@@ -1221,6 +1351,9 @@
             // 卫生加分：每个学生个人 +1 分；纪律加分：每个学生个人 +1 分
             var dormStudents = getStudentsByDormitory(addFormState.dormitoryId);
             dormStudents.forEach(function(s){
+                // 二次校验：学生当前必须确实住在本宿舍（防止宿舍名单瞬时错位）
+                var currentStu = getStudentById(s.id);
+                if(!currentStu || String(currentStu.dormitoryId) !== String(addFormState.dormitoryId)) return;
                 var perHyScore = hygieneScore > 0 ? 1 : 0;
                 var perDisScore = disciplineScore > 0 ? 1 : 0;
                 // 【关键】给派生的个人加分记录打上 autoDerived: true，
@@ -1241,6 +1374,9 @@
             if (!isBonus && (addFormState.studentId === null || addFormState.studentId === undefined)) {
                 var dormStudents = getStudentsByDormitory(addFormState.dormitoryId);
                 dormStudents.forEach(function(s){
+                    // 二次校验：学生当前必须确实住在本宿舍（防止宿舍名单瞬时错位）
+                    var currentStu = getStudentById(s.id);
+                    if(!currentStu || String(currentStu.dormitoryId) !== String(addFormState.dormitoryId)) return;
                     var perHyScore = hygieneScore > 0 ? 1 : 0;
                     var perDisScore = disciplineScore > 0 ? 1 : 0;
                     var stuRecord = {

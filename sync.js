@@ -1308,6 +1308,7 @@
         // 【历史数据迁移】识别旧版"集体加分派生的个人记录"，补上 autoDerived: true。
         // 幂等：已标记过的记录不会重复处理。迁移后标脏，云端会自动同步新字段。
         try { migrateDerivedDeductionRecords(); } catch(e) { console.warn('[派生迁移] 执行失败：', e); }
+        try { migrateMissingDerivedRecords(); } catch(e) { console.warn('[派生补齐迁移] 执行失败：', e); }
         // 基础数据自愈：修复本地被意外清空的楼层/宿舍（无论是否启用云端同步都要执行）
         if(repairBasicData()) saveDBToLocal();
         if (SUPABASE_CONFIG.enabled && SUPABASE_CONFIG.url.indexOf('YOUR_') === -1) {

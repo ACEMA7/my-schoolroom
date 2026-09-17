@@ -478,6 +478,81 @@
     }
 
     /**
+     * 迁移：为历史"宿舍集体扣分/加分记录"补齐缺失的派生个人记录。
+     *
+     * 背景：早期版本的集体扣分/加分没有为每个学生派生个人记录，
+     * 导致个人净分算不到这些记录，数据管理页查询也对不上。
+     *
+     * 迁移规则（严格遵循，避免误伤）：
+     *   1) 只处理 studentId === null 的宿舍集体记录；
+     *   2) 只对"当前在住学生"补派生（系统未存历史住宿快照，无法回溯当时在住学生）；
+     *   3) 幂等：已存在匹配的派生记录时跳过；
+     *   4) 派生记录的 createdAt 与集体记录一致（保证 findDerivedRecords 的
+     *      5000ms 时间容差能识别，级联删除时能一并清除）；
+     *   5) 分值按现有规则折算：集体有分则派生侧记 1 分，否则 0 分。
+     *
+     * @returns {number} 本次新补的派生记录数
+     */
+    function migrateMissingDerivedRecords() {
+        if (!DB || !Array.isArray(DB.deductionRecords)) return 0;
+        var created = 0;
+        // 先收集所有集体记录（studentId 为 null 且非派生）
+        var collectiveRecords = DB.deductionRecords.filter(function(r){
+            return r && r.studentId == null && r.autoDerived !== true;
+        });
+        if (collectiveRecords.length === 0) return 0;
+        collectiveRecords.forEach(function(parent){
+            if (!parent.dormitoryId || !parent.recordDate) return;
+            var parentTime = parent.createdAt || 0;
+            // 取该宿舍当前在住学生
+            var students = getStudentsByDormitory(parent.dormitoryId);
+            if (!students || students.length === 0) return;
+            students.forEach(function(stu){
+                // 二次校验：学生当前必须确实住在本宿舍（防止历史迁移误派生）
+                var currentStu = getStudentById(stu.id);
+                if(!currentStu || String(currentStu.dormitoryId) !== String(parent.dormitoryId)) return;
+                // 幂等检查：是否已存在匹配的派生记录
+                var exists = DB.deductionRecords.some(function(r){
+                    if (!r || r.autoDerived !== true) return false;
+                    if (String(r.studentId) !== String(stu.id)) return false;
+                    if (String(r.dormitoryId) !== String(parent.dormitoryId)) return false;
+                    if (r.recordDate !== parent.recordDate) return false;
+                    if ((r.recordMode || 'deduct') !== (parent.recordMode || 'deduct')) return false;
+                    if (parentTime > 0 && Math.abs((r.createdAt || 0) - parentTime) > 5000) return false;
+                    return true;
+                });
+                if (exists) return; // 已存在，跳过
+                // 创建派生记录
+                var perHyScore = (parent.hygieneScore || 0) > 0 ? 1 : 0;
+                var perDisScore = (parent.disciplineScore || 0) > 0 ? 1 : 0;
+                var newRec = {
+                    id: generateRecordId(),
+                    createdAt: parentTime || Date.now(),
+                    lastModified: Date.now(),
+                    dormitoryId: parent.dormitoryId,
+                    studentId: stu.id,
+                    hygieneItemIds: (parent.hygieneItemIds || []).slice(),
+                    hygieneScore: perHyScore,
+                    disciplineItemIds: (parent.disciplineItemIds || []).slice(),
+                    disciplineScore: perDisScore,
+                    recordDate: parent.recordDate,
+                    remark: parent.remark || '',
+                    recordMode: parent.recordMode || 'deduct',
+                    autoDerived: true
+                };
+                DB.deductionRecords.push(newRec);
+                v3MarkDirty('deduction_record', newRec.id);
+                created++;
+            });
+        });
+        if (created > 0) {
+            console.log('[派生迁移·补齐] 为历史集体记录补建 ' + created + ' 条派生个人记录');
+            saveDBToLocal();
+        }
+        return created;
+    }
+
+    /**
      * 计算指定学生的个人累计净分（新口径·底层老规矩）。
      * 折算规则：每条个人记录里，卫生侧只要有分就折算 1，纪律侧只要有分就折算 1；
      *           两侧都有的记录折算 2。
@@ -659,6 +734,25 @@
         if (!student) return '';
         var bed = (student.bedNumber !== null && student.bedNumber !== undefined && String(student.bedNumber).trim() !== '') ? String(student.bedNumber).trim() : '未知';
         return bed + '号·' + (student.name || '');
+    }
+
+    /**
+     * 判断一条扣分记录是否存在"学生当前宿舍与记录宿舍不一致"的错误。
+     * 用于显示层的红色警告标记，提醒管理员排查。
+     * 判定规则（任一不满足即返回 false）：
+     *   1) 记录必须有 studentId（个人记录；集体记录不判定）；
+     *   2) 记录必须有 dormitoryId；
+     *   3) studentId 能查到学生对象；
+     *   4) 学生当前有 dormitoryId；
+     *   5) String(student.dormitoryId) !== String(record.dormitoryId) 时返回 true。
+     * @param {object} record - 扣分记录对象
+     * @returns {boolean} true=存在不一致（需标红警告）
+     */
+    function isRecordDormMismatch(record){
+        if(!record || record.studentId == null || record.dormitoryId == null) return false;
+        var stu = getStudentById(record.studentId);
+        if(!stu || stu.dormitoryId == null) return false;
+        return String(stu.dormitoryId) !== String(record.dormitoryId);
     }
 
     function getClassNameForRecord(record) {
