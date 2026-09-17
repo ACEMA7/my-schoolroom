@@ -261,10 +261,13 @@
     }
 
     /**
-     * 统一分值文本格式化：扣分显示负数（-4），加分显示正数（+4），
-     * 净分按"实际效果符号"显示（净扣 → -3；净加 → +3；0 → 0）。
-     * 仅用于展示与导出，不改变任何底层数值（底层仍存正数）。
-     * @param {number} value - 分值（底层正数语义）
+     * 统一分值文本格式化（新口径·符号版本 2）：
+     * 底层已是「扣分负数、加分正数」，显示层不再取反，直接按底层符号呈现：
+     *   - deduct：底层负数，直接显示（如 -2）
+     *   - bonus：底层正数，显示 +N（如 +4）
+     *   - net：底层正数=净加、负数=净扣，直接按符号显示（净扣 -3 / 净加 +3 / 0 → 0）
+     * 仅用于展示与导出，不改变任何底层数值。
+     * @param {number} value - 分值（底层已带符号）
      * @param {string} kind - 'deduct' | 'bonus' | 'net'
      * @returns {string} 带符号的文本，如 '-4' / '+4' / '0'
      */
@@ -272,14 +275,15 @@
         var v = roundScore1(Number(value) || 0);
         if(v === 0) return '0';
         if(kind === 'bonus'){
+            // 加分：底层正数，显示 +N
             return '+' + Math.abs(v);
         }
         if(kind === 'net'){
-            // 底层：正数=净扣、负数=净加；显示时取反号，突出"实际加分/扣分"
-            return (v > 0 ? '-' : '+') + Math.abs(v);
+            // 净分：底层正数=净加、负数=净扣，直接按符号显示
+            return v > 0 ? ('+' + v) : String(v);
         }
-        // deduct（默认）：正数扣分 → 显示负数
-        return '-' + Math.abs(v);
+        // deduct（默认）：底层负数，直接显示（如 -2）
+        return String(v);
     }
 
     /**
@@ -376,12 +380,15 @@
     }
 
     /**
-     * 计算净分 = 扣分 - 加分（保留 1 位小数）。
+     * 计算净分（新口径·符号版本 2）= 扣分 + 加分。
+     * 底层扣分记录为负数、加分记录为正数，直接相加即为净分；
+     * 返回值：负数=净扣、正数=净加、0=持平。
      * @param {Array} records
      * @returns {number}
      */
     function getNetScore(records) {
-        return roundScore1(getTotalDeductScore(records) - getTotalBonusScore(records));
+        // 新口径：扣分为负、加分为正，净分 = 扣分 + 加分
+        return roundScore1(getTotalDeductScore(records) + getTotalBonusScore(records));
     }
 
     /**
@@ -523,8 +530,11 @@
                 });
                 if (exists) return; // 已存在，跳过
                 // 创建派生记录
-                var perHyScore = (parent.hygieneScore || 0) > 0 ? 1 : 0;
-                var perDisScore = (parent.disciplineScore || 0) > 0 ? 1 : 0;
+                // 新口径（符号版本 2）：按「非零」判定有无分值，并按 recordMode 赋符号：
+                // 扣分派生 -1、加分派生 +1（旧口径按 >0 判定，扣分翻转后会漏判）
+                var parentIsBonus = (parent.recordMode === 'bonus');
+                var perHyScore = (parent.hygieneScore || 0) !== 0 ? (parentIsBonus ? 1 : -1) : 0;
+                var perDisScore = (parent.disciplineScore || 0) !== 0 ? (parentIsBonus ? 1 : -1) : 0;
                 var newRec = {
                     id: generateRecordId(),
                     createdAt: parentTime || Date.now(),
@@ -553,41 +563,34 @@
     }
 
     /**
-     * 计算指定学生的个人累计净分（新口径·底层老规矩）。
-     * 折算规则：每条个人记录里，卫生侧只要有分就折算 1，纪律侧只要有分就折算 1；
-     *           两侧都有的记录折算 2。
-     * 符号口径（与系统老规矩一致）：
-     *   - 扣分记录：底层累加【正数】（如被扣 1 → 底层 +1 → 显示 -1）
-     *   - 加分记录：底层累加【负数】（如被加 1 → 底层 -1 → 显示 +1）
-     * 返回值：正数 = 净扣分，负数 = 净加分，0 = 净分为 0。
+     * 计算指定学生的个人累计净分（新口径·符号版本 2）。
+     * 底层统一口径：扣分记录分值为负数、加分记录分值为正数，
+     * 直接累加每条个人记录的卫生分 + 纪律分即为个人净分，显示层不再取反。
+     * 返回值：负数 = 净扣分，正数 = 净加分，0 = 净分为 0。
      * 只统计个人记录（r.studentId 严格等于 studentId），宿舍集体记录（studentId=null）不在此函数计算。
      * @param {number|string} studentId - 学生 ID
-     * @returns {number} 个人净分（整数，底层老口径）
+     * @returns {number} 个人净分（新口径）
      */
     function getStudentNetScore(studentId) {
         if (!DB || !Array.isArray(DB.deductionRecords) || studentId == null) return 0;
         var total = 0;
         DB.deductionRecords.forEach(function(r) {
             if (!r || String(r.studentId) !== String(studentId)) return;
-            var isBonus = (r.recordMode === 'bonus');
-            // 【关键修复】符号反转为系统老口径：
-            // 加分记录 → 累减（底层负数，显示正数）
-            // 扣分记录 → 累加（底层正数，显示负数）
-            var sign = isBonus ? -1 : 1;
-            if ((r.hygieneScore || 0) > 0) total += sign;
-            if ((r.disciplineScore || 0) > 0) total += sign;
+            // 底层已是新口径：扣分负数、加分正数，直接累加即为净分
+            total += (r.hygieneScore || 0);
+            total += (r.disciplineScore || 0);
         });
         return roundScore1(total);
     }
 
     /**
-     * 计算某宿舍的累计净分（新口径·底层老规矩）。
+     * 计算某宿舍的累计净分（新口径·符号版本 2）。
      * 算法：该宿舍所有在住学生的个人净分之和。
-     * 符号口径：与 getStudentNetScore 一致（正数=净扣、负数=净加、0=净分为 0）。
-     *   底层正数 → 显示负号（扣分，红色）；底层负数 → 显示正号（加分，绿色）。
+     * 符号口径：与 getStudentNetScore 一致（负数=净扣、正数=净加、0=净分为 0）。
+     *   负数 → 扣分（红色）；正数 → 加分（绿色）。
      * @param {number} dormitoryId - 宿舍 ID
      * @param {string} [classNameFilter] - 可选，仅统计指定班级的学生（班级账号用）
-     * @returns {number} 累计净分（底层老口径）
+     * @returns {number} 累计净分（新口径）
      */
     function getDormCumulativeNetScore(dormitoryId, classNameFilter) {
         if (!DB || dormitoryId == null) return 0;
@@ -601,13 +604,13 @@
     }
 
     /**
-     * 计算某楼层的累计净分（新口径·底层老规矩）。
+     * 计算某楼层的累计净分（新口径·符号版本 2）。
      * 算法：该楼层所有宿舍在住学生的个人净分之和。
-     * 符号口径：与 getStudentNetScore 一致（正数=净扣、负数=净加、0=净分为 0）。
-     *   底层正数 → 显示负号（扣分，红色）；底层负数 → 显示正号（加分，绿色）。
+     * 符号口径：与 getStudentNetScore 一致（负数=净扣、正数=净加、0=净分为 0）。
+     *   负数 → 扣分（红色）；正数 → 加分（绿色）。
      * @param {number} floorId - 楼层 ID
      * @param {string} [classNameFilter] - 可选，仅统计指定班级的学生（班级账号用）
-     * @returns {number} 累计净分（底层老口径）
+     * @returns {number} 累计净分（新口径）
      */
     function getFloorCumulativeNetScore(floorId, classNameFilter) {
         if (!DB || floorId == null) return 0;
@@ -1212,19 +1215,20 @@
         // 假数据 → 误以为真实数据 → 主控设备标脏上传污染云端"的严重事故，故彻底移除。
         var students = [];
         var stuId = 1;
+        // 新口径（符号版本 2）：扣分项目默认分为【负数】，加分项目默认分为【正数】
         var deductionItems = {
             hygiene: [
-                { id: 101, name: '地面脏乱', defaultScore: 2 },
-                { id: 102, name: '物品摆放不齐', defaultScore: 2 },
-                { id: 103, name: '未叠被子', defaultScore: 1 },
-                { id: 104, name: '垃圾未倒', defaultScore: 2 }
+                { id: 101, name: '地面脏乱', defaultScore: -2 },
+                { id: 102, name: '物品摆放不齐', defaultScore: -2 },
+                { id: 103, name: '未叠被子', defaultScore: -1 },
+                { id: 104, name: '垃圾未倒', defaultScore: -2 }
             ],
             discipline: [
-                { id: 201, name: '多人大声讲话', defaultScore: 1 },
-                { id: 202, name: '离开宿舍', defaultScore: 1 },
-                { id: 203, name: '无请假信息', defaultScore: 1 },
-                { id: 204, name: '打铃后在宿舍走动', defaultScore: 1 },
-                { id: 205, name: '在阳台上洗漱', defaultScore: 1 }
+                { id: 201, name: '多人大声讲话', defaultScore: -1 },
+                { id: 202, name: '离开宿舍', defaultScore: -1 },
+                { id: 203, name: '无请假信息', defaultScore: -1 },
+                { id: 204, name: '打铃后在宿舍走动', defaultScore: -1 },
+                { id: 205, name: '在阳台上洗漱', defaultScore: -1 }
             ],
             hygieneBonus: [
                 { id: 301, name: '卫生优秀', defaultScore: 0.2 }
@@ -1269,7 +1273,7 @@
         var notifications = [];
         var notificationTemplates = DEFAULT_NOTIFICATION_TEMPLATES.map(function(t){ return Object.assign({}, t); });
         var floorChangeRequests = [];
-        DB = { floors, dormitories, dormitoryList, students, deductionItems, deductionRecords: records, leaveRecords: leaveRecords, absenceRecords: absenceRecords, inspectionConfirmations: inspectionConfirmations, anomalyReports: anomalyReports, dailyInspectionSummaries: dailyInspectionSummaries, notifications: notifications, notificationTemplates: notificationTemplates, floorChangeRequests: floorChangeRequests, users, masterBindHash: '', nextIds: { floor:9, dormitory: dormId, student: stuId, item:300, record: recId, leave:1, absence:1, user: nextUserId, confirmation:1, anomaly:1, summary:1 } };
+        DB = { scoreSignVersion: SCORE_SIGN_VERSION, floors, dormitories, dormitoryList, students, deductionItems, deductionRecords: records, leaveRecords: leaveRecords, absenceRecords: absenceRecords, inspectionConfirmations: inspectionConfirmations, anomalyReports: anomalyReports, dailyInspectionSummaries: dailyInspectionSummaries, notifications: notifications, notificationTemplates: notificationTemplates, floorChangeRequests: floorChangeRequests, users, masterBindHash: '', nextIds: { floor:9, dormitory: dormId, student: stuId, item:300, record: recId, leave:1, absence:1, user: nextUserId, confirmation:1, anomaly:1, summary:1 } };
         saveDBToLocal();
         });
     }
@@ -1284,6 +1288,9 @@
      */
     function initEmptyDB() {
         DB = {
+            // 空壳本身不含分数数据，版本号直接取最新；随后以云端整体重建为准
+            // （hardResetFromCloud 通过符号健康检查后会再次收敛该字段）。
+            scoreSignVersion: SCORE_SIGN_VERSION,
             floors: [],
             dormitories: [],
             dormitoryList: [],
@@ -1431,6 +1438,9 @@
         if(typeof DB.lastSyncTime!=='number') DB.lastSyncTime=0;
         // 数据版本号（epoch）：管理员"重置云端数据"时递增；本机为 0 表示从未同步过
         if(typeof DB.syncEpoch!=='number') DB.syncEpoch=0;
+        // 分数符号版本号：缺失字段的旧库一律视为版本 1（旧口径：扣分正、加分正），
+        // 由主控设备 initializeData 检测后调用 migrateScoreSign() 翻转至 SCORE_SIGN_VERSION
+        if(typeof DB.scoreSignVersion !== 'number') DB.scoreSignVersion = 1;
         // V3 按行存储：按类型分组的脏标记和删除标记
         if(!DB.dirtyByType) DB.dirtyByType = {};
         if(!DB.deletedByType) DB.deletedByType = {};
@@ -2089,7 +2099,7 @@
     }
     /**
      * 确保纪律扣分项"无请假信息"存在（异常上报"无假条"自动扣分用）。
-     * 缺失时以 nextIds.item 创建（默认扣 1 分）并标脏上传；已存在直接返回。
+     * 缺失时以 nextIds.item 创建（新口径默认分 -1，即扣 1 分）并标脏上传；已存在直接返回。
      * @returns {{id:number,name:string,defaultScore:number}} 扣分项目
      */
     function ensureNoNoteDeductionItem(){
@@ -2099,7 +2109,8 @@
         if(!Array.isArray(DB.deductionItems.discipline)) DB.deductionItems.discipline = [];
         var item = DB.deductionItems.discipline.find(function(i){ return i.name === '无请假信息'; });
         if(item) return item;
-        item = { id: DB.nextIds.item++, name: '无请假信息', defaultScore: 1 };
+        // 新口径（符号版本 2）：扣分项目默认分为负数
+        item = { id: DB.nextIds.item++, name: '无请假信息', defaultScore: -1 };
         DB.deductionItems.discipline.push(item);
         v3MarkDirty('deduction_item', item.id);
         return item;
@@ -2167,6 +2178,99 @@
         }) || null;
     }
 
+    /**
+     * 【底层分数符号迁移·符号版本 1 → 2】
+     * 将存量数据从旧口径（扣分正、加分正，显示层取反）翻转为新口径
+     * （扣分负、加分正，净分 = 扣分 + 加分，显示层不取反）。
+     *
+     * 仅主控设备在 initializeData 中调用；幂等（DB.scoreSignVersion 已为
+     * SCORE_SIGN_VERSION 时直接跳过）。
+     *
+     * 动作：
+     *   0) 迁移前整库自动备份到 localStorage（dormitory_system_backup_before_sign）；
+     *   1) 全部扣分记录按 recordMode 翻转分值（扣分取负、加分取正）并逐条标脏；
+     *   2) 扣分项目默认分取负、加分项目默认分取正并标脏；
+     *   3) 同步翻转"待核查记录"隔离区（localStorage）中的同形记录，避免旧符号
+     *      孤儿记录在迁移后被人工确认进正式表；
+     *   4) 写入 DB.scoreSignVersion = SCORE_SIGN_VERSION，递增 syncEpoch
+     *      （其他设备检测到 epoch 变化会整体重建，旧符号数据不回灌）；
+     *   5) 全量标脏 + 落本地，确保新符号数据由主控设备全量重传云端。
+     *
+     * @returns {number} 实际迁移的扣分记录条数（0 表示无需迁移）
+     */
+    function migrateScoreSign() {
+        if (!DB) return 0;
+        // 幂等：已是新版本则跳过
+        if (DB.scoreSignVersion === SCORE_SIGN_VERSION) return 0;
+        // 0) 迁移前自动备份（灾难恢复用，键名固定，技术人员可据此恢复）
+        try {
+            localStorage.setItem('dormitory_system_backup_before_sign', JSON.stringify(DB));
+            console.log('[分数迁移] 迁移前已自动备份（dormitory_system_backup_before_sign）');
+        } catch(e) {}
+        var migrated = 0;
+        // 1) 迁移扣分记录：扣分取负、加分取正（两侧分值分别处理，0 保持 0）
+        (DB.deductionRecords || []).forEach(function(r){
+            if(!r) return;
+            var isBonus = (r.recordMode === 'bonus');
+            if(isBonus){
+                r.hygieneScore = Math.abs(r.hygieneScore || 0);
+                r.disciplineScore = Math.abs(r.disciplineScore || 0);
+            } else {
+                r.hygieneScore = -(Math.abs(r.hygieneScore || 0));
+                r.disciplineScore = -(Math.abs(r.disciplineScore || 0));
+            }
+            r.lastModified = Date.now();
+            v3MarkDirty('deduction_record', r.id);
+            migrated++;
+        });
+        // 2) 迁移扣分项目默认分：卫生/纪律扣分项取负；加分项取正
+        ['hygiene','discipline'].forEach(function(sub){
+            ((DB.deductionItems && DB.deductionItems[sub]) || []).forEach(function(it){
+                if(!it) return;
+                it.defaultScore = -(Math.abs(it.defaultScore || 0));
+                v3MarkDirty('deduction_item', it.id);
+            });
+        });
+        ['hygieneBonus','disciplineBonus'].forEach(function(sub){
+            ((DB.deductionItems && DB.deductionItems[sub]) || []).forEach(function(it){
+                if(!it) return;
+                it.defaultScore = Math.abs(it.defaultScore || 0);
+                v3MarkDirty('deduction_item', it.id);
+            });
+        });
+        // 3) 待核查隔离区记录同口径翻转（这些记录尚未入正式表，不参与上面的遍历）
+        try {
+            var PENDING_KEY = 'dorm_pending_review_records';
+            var pendingRaw = localStorage.getItem(PENDING_KEY);
+            if(pendingRaw){
+                var pendingArr = JSON.parse(pendingRaw);
+                if(Array.isArray(pendingArr) && pendingArr.length > 0){
+                    pendingArr.forEach(function(r){
+                        if(!r) return;
+                        var pIsBonus = (r.recordMode === 'bonus');
+                        if(pIsBonus){
+                            r.hygieneScore = Math.abs(r.hygieneScore || 0);
+                            r.disciplineScore = Math.abs(r.disciplineScore || 0);
+                        } else {
+                            r.hygieneScore = -(Math.abs(r.hygieneScore || 0));
+                            r.disciplineScore = -(Math.abs(r.disciplineScore || 0));
+                        }
+                    });
+                    localStorage.setItem(PENDING_KEY, JSON.stringify(pendingArr));
+                }
+            }
+        } catch(e) {}
+        // 4) 写入符号版本号 + 递增 epoch（触发其他设备整体重建）
+        DB.scoreSignVersion = SCORE_SIGN_VERSION;
+        DB.syncEpoch = Date.now();
+        v3MarkDirty('meta', 'main');
+        // 5) 全量标脏，确保新符号数据全量上传
+        v3MarkAllLocalDirty();
+        saveDBToLocal();
+        console.log('[分数迁移] 已迁移 ' + migrated + ' 条记录至新符号口径（scoreSignVersion=' + SCORE_SIGN_VERSION + '）');
+        return migrated;
+    }
+
 
 // ---- shared globals explicitly mounted on window ----
 // 仅挂载函数引用（固定引用，便于外部脚本/控制台调用）。
@@ -2187,6 +2291,7 @@ window.getStudentNetScore = getStudentNetScore;
 window.getDormCumulativeNetScore = getDormCumulativeNetScore;
 window.getFloorCumulativeNetScore = getFloorCumulativeNetScore;
 window.migrateDerivedDeductionRecords = migrateDerivedDeductionRecords;
+window.migrateScoreSign = migrateScoreSign;
 window.findDerivedRecords = findDerivedRecords;
 window.formatStudentBedName = formatStudentBedName;
 // 注意：copyItemsListForDiagnosis 定义在 app.js（晚于 data.js 加载），

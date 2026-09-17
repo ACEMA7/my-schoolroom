@@ -136,6 +136,13 @@
             Object.keys(dirtySet).forEach(function(rid){
                 var rec = v3GetRecordById(meta.type, rid);
                 if(!rec) return; // 记录不存在了（可能已被删除），交给 deleted 处理
+                // 【第 6 道防污染闸门·符号版本校验】扣分记录若显式携带旧符号版本标记，
+                // 一律跳过不上传并清除脏标记，防止旧符号数据混入云端（防御性校验；
+                // 主迁移路径下记录不带该字段，真正的整体一致性由 syncEpoch 重建保证）。
+                if(meta.type === 'deduction_record' && rec.scoreSignVersion !== undefined && rec.scoreSignVersion !== SCORE_SIGN_VERSION){
+                    delete DB.dirtyByType[meta.type][rid];
+                    return;
+                }
                 // 【终极过滤】业务记录：createdAt/lastModified 早于上次同步时间 = 历史遗留废弃数据，
                 // 直接跳过不上传，并清除其脏标记，杜绝废弃数据污染云端。
                 if(isMutable){
@@ -415,6 +422,33 @@
                     return false;
                 }
 
+                // 【第 6 道防污染闸门·步骤20·符号一致性校验】
+                // 新口径（符号版本 2）：扣分记录分值必须为负/零、加分记录必须为正/零。
+                // 云端若出现符号相反的记录（典型：迁移中途的旧符号快照），阻断整体覆盖，
+                // 避免旧符号数据直接重建进本地（本地旧数据安全保留，下次同步再试）。
+                var cloudDeductionRecords = (grouped['deduction_record'] || []).filter(function(r){ return !r.deleted; });
+                var signAnomaly = cloudDeductionRecords.some(function(r){
+                    var d = r.data || {};
+                    var isBonus = (d.recordMode === 'bonus');
+                    if(isBonus && ((d.hygieneScore||0) < 0 || (d.disciplineScore||0) < 0)) return true;
+                    if(!isBonus && ((d.hygieneScore||0) > 0 || (d.disciplineScore||0) > 0)) return true;
+                    return false;
+                });
+                // 同步检查扣分项目：hygiene/discipline 默认分必须 ≤0，两类加分必须 ≥0
+                var itemSignAnomaly = (grouped['deduction_item'] || []).some(function(r){
+                    if(r.deleted || !r.data) return false;
+                    var st = r.data._subType;
+                    var sc = r.data.defaultScore || 0;
+                    if(st === 'hygiene' || st === 'discipline') return sc > 0;
+                    if(st === 'hygieneBonus' || st === 'disciplineBonus') return sc < 0;
+                    return false;
+                });
+                if(signAnomaly || itemSignAnomaly){
+                    toast('警告：云端扣分记录符号异常，已阻断覆盖，本地数据安全保留！', 'error');
+                    console.warn('[V3] 符号一致性校验失败（记录异常=' + signAnomaly + '，项目异常=' + itemSignAnomaly + '），已阻断整体重建');
+                    return false;
+                }
+
                 var resetCount = 0;
                 // meta：dormitoryList + nextIds + masterBindHash
                 var mLive = grouped['meta'] ? grouped['meta'].find(function(r){ return !r.deleted; }) : null;
@@ -434,15 +468,25 @@
                     DB[tMeta.dbPath[0]] = liveRows;
                     resetCount += liveRows.length;
                 });
-                // deduction_item：按 _subType 归回 hygiene / discipline
-                DB.deductionItems = { hygiene: [], discipline: [] };
+                // deduction_item：按 _subType 归回 hygiene / discipline / hygieneBonus / disciplineBonus
+                // 【符号版本 2】四类子数组必须全部重建（旧实现只建两类会丢失加分项）；
+                // 无 _subType 时按 id 范围、再按"分值绝对值"兜底推断（负分若直接 <=0.5
+                // 比较会把纪律扣分项全部误判为卫生项）。
+                DB.deductionItems = { hygiene: [], discipline: [], hygieneBonus: [], disciplineBonus: [] };
                 (grouped['deduction_item'] || []).forEach(function(r){
                     if(r.deleted) return;
-                    var st = (r.data && r.data._subType) || ((r.data && r.data.defaultScore <= 0.5) ? 'hygiene' : 'discipline');
+                    var d = r.data || {};
+                    var st = d._subType;
+                    if(!st){
+                        var ridNum = parseInt(d.id, 10);
+                        if(!isNaN(ridNum) && ridNum >= 301 && ridNum <= 400) st = 'hygieneBonus';
+                        else if(!isNaN(ridNum) && ridNum >= 401 && ridNum <= 500) st = 'disciplineBonus';
+                        else st = Math.abs(d.defaultScore) <= 0.5 ? 'hygiene' : 'discipline';
+                    }
                     var clean = {};
-                    Object.keys(r.data || {}).forEach(function(k){ if(k !== '_subType') clean[k] = r.data[k]; });
+                    Object.keys(d).forEach(function(k){ if(k !== '_subType') clean[k] = d[k]; });
                     normalizeCloudIds('deduction_item', clean);
-                    if(st === 'discipline') DB.deductionItems.discipline.push(clean);
+                    if(DB.deductionItems[st]) DB.deductionItems[st].push(clean);
                     else DB.deductionItems.hygiene.push(clean);
                 });
                 // 重建后与云端完全一致：清空全部脏/删标记，写入新 epoch
@@ -451,7 +495,10 @@
                     DB.deletedByType[m.type] = {};
                 });
                 DB.syncEpoch = epoch;
-                console.log('[V3] 重建明细：共 '+resetCount+' 条数组记录 + '+DB.deductionItems.hygiene.length+' 卫生项 + '+DB.deductionItems.discipline.length+' 纪律项');
+                // 通过符号健康检查的云端快照必为新符号口径：本机收敛到 SCORE_SIGN_VERSION，
+                // 使非主控设备经 epoch 整体重建后自动完成"符号升级"，不再被强制刷新循环拦截。
+                DB.scoreSignVersion = SCORE_SIGN_VERSION;
+                console.log('[V3] 重建明细：共 '+resetCount+' 条数组记录 + '+DB.deductionItems.hygiene.length+' 卫生扣项 + '+DB.deductionItems.discipline.length+' 纪律扣项 + '+DB.deductionItems.hygieneBonus.length+' 卫生加项 + '+DB.deductionItems.disciplineBonus.length+' 纪律加项；scoreSignVersion=' + DB.scoreSignVersion);
                 return true;
             }
             // meta 类型（单行：dormitoryList + nextIds）
@@ -507,7 +554,9 @@
                 // 推断一条云端记录的归属 sub 类型：
                 //   1) 优先取显式 _subType（v3GetRecordsByType 上传时附带，最可靠）；
                 //   2) 缺失时按 id 范围兜底（301-400 → hygieneBonus，401-500 → disciplineBonus）；
-                //   3) 再缺失时按分值兜底（<= 0.5 → hygiene，否则 discipline，旧规则）。
+                //   3) 再缺失时按"分值绝对值"兜底（<= 0.5 → hygiene，否则 discipline）。
+                //      【符号版本 2】必须取绝对值：新口径下纪律扣分为 -1，若直接比较会把
+                //      -2/-1 全部误判为卫生项（-2、-1 均 <= 0.5）。
                 function inferSubType(data){
                     if(!data) return null;
                     if(data._subType) return data._subType;
@@ -516,7 +565,7 @@
                         if(id >= 301 && id <= 400) return 'hygieneBonus';
                         if(id >= 401 && id <= 500) return 'disciplineBonus';
                     }
-                    return data.defaultScore <= 0.5 ? 'hygiene' : 'discipline';
+                    return Math.abs(data.defaultScore) <= 0.5 ? 'hygiene' : 'discipline';
                 }
                 // 【核心修复】四类子数组都参与合并；遍历本地项时必须校验"云端行的 sub 类型与当前 sub 一致"，
                 // 避免把错位寄生到本地 hygiene 的加分项（如 id=301 卫生优秀、id=401 表现良好）当成正常项保留。
@@ -594,6 +643,20 @@
                 var before = v3Snapshot(type);
                 var dirtySet = (DB.dirtyByType && DB.dirtyByType[type]) || {};
                 var deletedSet = (DB.deletedByType && DB.deletedByType[type]) || {};
+                // 【第 6 道防污染闸门·步骤19】云端若存在显式携带旧符号版本标记的扣分记录，
+                // 而本机已是新符号版本：以本机为准全量标脏重传（防御性检测；
+                // 主路径下记录不带该字段，整体一致性由 syncEpoch 变化触发整体重建兜底）。
+                if(type === 'deduction_record' && DB.scoreSignVersion === SCORE_SIGN_VERSION){
+                    var hasOldSign = Object.keys(split.live).some(function(rid){
+                        var c = split.live[rid].data;
+                        return c && c.scoreSignVersion !== undefined && c.scoreSignVersion !== SCORE_SIGN_VERSION;
+                    });
+                    if(hasOldSign){
+                        console.warn('[V3] 检测到云端旧符号记录，本机为新符号版本：全量标脏，以本机重传');
+                        v3MarkAllLocalDirty();
+                        saveDBToLocal();
+                    }
+                }
                 var arr = DB[meta.dbPath[0]] || [];
                 var localMap = {};
                 arr.forEach(function(r){ if(r && r.id != null) localMap[String(r.id)] = r; });
@@ -1333,6 +1396,20 @@
         // 幂等：已标记过的记录不会重复处理。迁移后标脏，云端会自动同步新字段。
         try { migrateDerivedDeductionRecords(); } catch(e) { console.warn('[派生迁移] 执行失败：', e); }
         try { migrateMissingDerivedRecords(); } catch(e) { console.warn('[派生补齐迁移] 执行失败：', e); }
+        // 【分数符号迁移·步骤21·主控闸门】
+        // 旧符号版本（扣分正/加分正）→ 新符号版本（扣分负/加分正）。
+        // 仅主控设备执行（函数幂等）；放在云端流程之前，使"离线单机主控"也能完成迁移。
+        // 迁移会递增 syncEpoch 并全量标脏；下方同步链路保证"先全量上传新 epoch，再拉取"，
+        // 其他设备经 epoch 整体重建 + hardReset 符号健康检查完成收敛。
+        var signMigrated = false;
+        try {
+            if(IS_MASTER_DEVICE && DB.scoreSignVersion !== SCORE_SIGN_VERSION){
+                console.log('[分数迁移] 检测到旧符号版本（' + DB.scoreSignVersion + '），主控设备开始迁移...');
+                var signMigratedCount = migrateScoreSign();
+                signMigrated = true;
+                console.log('[分数迁移] 完成，迁移记录 ' + signMigratedCount + ' 条，syncEpoch=' + DB.syncEpoch);
+            }
+        } catch(e) { console.error('[分数迁移] 执行失败：', e); }
         // 基础数据自愈：修复本地被意外清空的楼层/宿舍（无论是否启用云端同步都要执行）
         if(repairBasicData()) saveDBToLocal();
         if (SUPABASE_CONFIG.enabled && SUPABASE_CONFIG.url.indexOf('YOUR_') === -1) {
@@ -1383,8 +1460,40 @@
                     console.log('[V3] 表结构未升级，使用 V2 同步（请手动执行 ALTER TABLE SQL）');
                     return null;
                 }).then(function(){
+                    // 【步骤21·先推后拉】主控刚完成符号迁移时，必须先把新符号全量数据
+                    // （含新 meta epoch）上传云端，再执行拉取：
+                    //   1) 让其他设备的 epoch 整体重建能读到已就绪的新符号快照（否则
+                    //      hardResetFromCloud 的符号健康检查会安全阻断，需等下一轮）；
+                    //   2) 使本机 localEpoch 与 cloudEpoch 对齐，避免误触"以云端覆盖本地"
+                    //      的反向确认框。不能在此 return 短路——下方云端优先策略、
+                    //      密码迁移、checkSavedLogin 等初始化步骤必须继续执行。
+                    if(signMigrated){
+                        return syncToCloudV3().then(function(upOk){
+                            if(!upOk) console.warn('[分数迁移] 全量上传未成功，将随正常同步流程继续重试');
+                            return loadFromCloud();
+                        });
+                    }
                     return loadFromCloud();
                 }).then(function(pullResult) {
+                    // 【步骤21·非主控兜底闸门】拉取（含 epoch 整体重建）后本机仍是旧符号
+                    // 版本：说明主控尚未完成迁移上传或云端快照处于切换中途。强制刷新重试，
+                    // 由 hardReset 健康检查保证本地旧数据不被污染；带次数上限防死循环，
+                    // 超过上限则放行并提示（避免设备彻底卡死无法使用）。
+                    if(!IS_MASTER_DEVICE && typeof DB.scoreSignVersion === 'number' && DB.scoreSignVersion !== SCORE_SIGN_VERSION){
+                        var sgnRc = 0;
+                        try { sgnRc = parseInt(sessionStorage.getItem('_verReloadCount') || '0', 10); } catch(e){}
+                        if(sgnRc < 3){
+                            toast('系统正在升级分数口径，即将刷新页面…', 'error');
+                            try {
+                                sessionStorage.setItem('_verReloadAt', String(Date.now()));
+                                sessionStorage.setItem('_verReloadCount', String(sgnRc + 1));
+                            } catch(e){}
+                            setTimeout(function(){ window.location.reload(true); }, 1200);
+                            return;
+                        }
+                        console.warn('[分数迁移] 非主控设备多次刷新后仍为旧符号版本，已放行（请让主控设备联网完成同步后重试）');
+                        toast('分数口径升级同步未完成，请联系主控设备联网同步后再刷新', 'error');
+                    }
                     // 基础数据自愈：无论云端拉取成功与否，先修复本地被意外清空的楼层/宿舍
                     // （修复产生的脏记录由下方 syncToCloud 自动补种上传）
                     if(repairBasicData()) saveDBToLocal();

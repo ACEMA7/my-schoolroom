@@ -85,6 +85,12 @@
     // 表结构版本：2 = 旧版整库压缩，3 = 新版按行存储
     var V3_SCHEMA_VERSION = 3;
 
+    // 分数符号版本号：1 = 旧口径（扣分正数、加分正数，显示层取反）；
+    //                 2 = 新口径（扣分负数、加分正数，净分 = 扣分 + 加分，显示层不取反）
+    // 主控设备启动时检测旧版本并执行 migrateScoreSign() 全量翻转，
+    // 同时递增 syncEpoch 触发其他设备整体重建，防止新旧符号数据混存。
+    var SCORE_SIGN_VERSION = 2;
+
 
 // ---- shared globals explicitly mounted on window ----
 // 仅挂载对象/数组类型的配置引用（SUPABASE_CONFIG 及 V3_*_TYPES），
@@ -95,3 +101,4 @@ window.SUPABASE_CONFIG = SUPABASE_CONFIG;
 window.V3_RECORD_TYPES = V3_RECORD_TYPES;
 window.V3_BASIC_TYPES = V3_BASIC_TYPES;
 window.V3_MUTABLE_TYPES = V3_MUTABLE_TYPES;
+window.SCORE_SIGN_VERSION = SCORE_SIGN_VERSION;

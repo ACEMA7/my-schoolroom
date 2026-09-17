@@ -557,15 +557,17 @@
                 if(rooms.length===0) return;
             }
             var floorNet=getFloorCumulativeNetScore(f.id, classMode ? currentUser.className : '');
-            var floorNetCls = floorNet > 0 ? 'badge-danger' : (floorNet < 0 ? 'badge-bonus' : 'badge-primary');
+            // 新口径（符号版本 2）：净分为负=净扣（红）、为正=净加（绿）
+            var floorNetCls = floorNet < 0 ? 'badge-danger' : (floorNet > 0 ? 'badge-bonus' : 'badge-primary');
             var isOpen = (f.id === selectedFloorId);
             html+='<div class="tree-floor"><div class="tree-floor-header" onclick="toggleFloor('+f.id+',\''+p+'\')"><span id="'+p+'arrow-'+f.id+'">'+(isOpen?'▼':'▶')+'</span>📁 '+f.name+' <span class="badge-tag '+floorNetCls+'">'+formatScoreText(floorNet,'net')+'分</span></div><div class="tree-rooms'+(isOpen?' open':'')+'" id="'+p+'rooms-'+f.id+'">';
             rooms.forEach(function(r){
                 var net=getDormCumulativeNetScore(r.id, classMode ? currentUser.className : '');
                 var netCls;
-                if(net > 10) netCls='badge-danger';
-                else if(net > 3) netCls='badge-warning';
-                else if(net < 0) netCls='badge-bonus';
+                // 新口径（符号版本 2）：净扣越多越负（<-10 红、<-3 黄），净加为正（绿）
+                if(net < -10) netCls='badge-danger';
+                else if(net < -3) netCls='badge-warning';
+                else if(net > 0) netCls='badge-bonus';
                 else netCls='badge-primary';
                 var isActive = (r.id === selectedDormitoryId);
                 html+='<div class="tree-room'+(isActive?' active':'')+'" id="'+p+'tree-room-'+r.id+'" onclick="selectDormitory('+r.id+')">🚪 '+r.roomNumber+' <span class="badge-tag '+netCls+'">'+formatScoreText(net,'net')+'分</span></div>';
@@ -701,8 +703,9 @@
         var totalDorms = 0;
         floorIds.forEach(function(fid){ totalDorms += floorMap[fid].sortedRoomIds.length; });
         var totalNet = getDormSummaryNetScore(todayRecords);
-        var netCls = totalNet > 0 ? 'score-deduct' : (totalNet < 0 ? 'score-bonus' : 'score-zero');
-        var netCardCls = totalNet > 0 ? 'danger' : '';
+        // 新口径（符号版本 2）：净分为负=净扣（红）、为正=净加（绿）
+        var netCls = totalNet < 0 ? 'score-deduct' : (totalNet > 0 ? 'score-bonus' : 'score-zero');
+        var netCardCls = totalNet < 0 ? 'danger' : '';
 
         // 6) 单行记录 HTML（供分片渲染逐条调用）
         function todayRecordRowHtml(r){
@@ -864,9 +867,10 @@
         // 宿舍累计净分（新口径）：该宿舍所有在住学生的"个人净分（折算后）"之和；
         // 班级账号仅统计本班学生。records 变量仍用于成员个人分明细等展示，不可删除。
         var netTotal=getDormCumulativeNetScore(dorm.id, classMode ? currentUser.className : '');
-        var netBadgeCls = netTotal > 0 ? 'badge-danger' : (netTotal < 0 ? 'badge-bonus' : 'badge-primary');
-        var netScoreCls = netTotal > 0 ? 'score-deduct' : (netTotal < 0 ? 'score-bonus' : 'score-zero');
-        var netStatCardCls = netTotal > 0 ? 'danger' : '';
+        // 新口径（符号版本 2）：累计净分为负=净扣（红）、为正=净加（绿）
+        var netBadgeCls = netTotal < 0 ? 'badge-danger' : (netTotal > 0 ? 'badge-bonus' : 'badge-primary');
+        var netScoreCls = netTotal < 0 ? 'score-deduct' : (netTotal > 0 ? 'score-bonus' : 'score-zero');
+        var netStatCardCls = netTotal < 0 ? 'danger' : '';
         // 汇总当前宿舍各状态人数（与成员列表状态标签同一套优先级逻辑，每次渲染实时计算）
         var statusOrder=['在住','请假中','停宿中','退宿申请中','已退宿']; // 按需求移除"停宿申请中"统计项
         var statusColorMap={'在住':'#34c759','请假中':'#4f6ef7','停宿中':'#a855f7','退宿申请中':'#ff9500','停宿申请中':'#ff9500','已退宿':'#ff3b30'};
@@ -879,7 +883,8 @@
             // 个人净分（新口径）：卫生/纪律每侧有分折算 ±1，与"累计净分"卡同一口径，
             // 全体在住成员个人净分之和即宿舍累计净分（不再用登记原始分 0.2/1 直接相加）。
             var ss=getStudentNetScore(s.id);
-            var ssCls = ss>0 ? 'score-deduct' : (ss<0 ? 'score-bonus' : 'score-zero');
+            // 新口径（符号版本 2）：个人净分为负=净扣（红）、为正=净加（绿）
+            var ssCls = ss<0 ? 'score-deduct' : (ss>0 ? 'score-bonus' : 'score-zero');
             var st=getStudentStatus(s.id);
             var ops = '';
             if(isAdmin()){
@@ -892,7 +897,8 @@
             // 个人净分（新口径）：卫生/纪律每侧有分折算 ±1，与"累计净分"卡同一口径，
             // 全体在住成员个人净分之和即宿舍累计净分（不再用登记原始分 0.2/1 直接相加）。
             var ss=getStudentNetScore(s.id);
-            var ssCls = ss>0 ? 'score-deduct' : (ss<0 ? 'score-bonus' : 'score-zero');
+            // 新口径（符号版本 2）：个人净分为负=净扣（红）、为正=净加（绿）
+            var ssCls = ss<0 ? 'score-deduct' : (ss>0 ? 'score-bonus' : 'score-zero');
             var st=getStudentStatus(s.id);
             var dotColor=statusColorMap[st.label]||'#9ca3af';
             var memOps = '';
@@ -938,7 +944,8 @@
         var statusCard='<div class="card"><div class="card-header">📊 宿舍信息统计</div><div class="card-body">'
             +'<div style="display:flex;flex-wrap:wrap;gap:8px 18px;padding:10px 14px;background:var(--gray-50);border-radius:6px">'+statusRowHtml+'</div>'
             +'</div></div>';
-        var netMobileColor = netTotal > 0 ? '#ff3b30' : (netTotal < 0 ? '#34c759' : '#1f2937');
+        // 新口径（符号版本 2）：净分为负显示红色（净扣），为正显示绿色（净加）
+        var netMobileColor = netTotal < 0 ? '#ff3b30' : (netTotal > 0 ? '#34c759' : '#1f2937');
         var statThreeMobile='<div class="stat-cards-mobile"><div class="stat-item"><div class="number">'+students.length+'</div><div class="label">👥 宿舍人数</div></div><div class="stat-item"><div class="number" style="color:#f59e0b">'+records.length+'</div><div class="label">📋 登记数</div></div><div class="stat-item"><div class="number" style="color:'+netMobileColor+'">'+formatScoreText(netTotal,'net')+'</div><div class="label">📊 累计净分</div></div></div>';
         // 页头仅保留标题（登记扣分入口统一收敛到功能首页/侧边栏/底部导航，住宿信息页只读）
         var memberOpsTh = isAdmin() ? '<th>操作</th>' : '';
@@ -971,19 +978,26 @@
     //      因调用方 renderAddView 在 ui.js，为降低跨文件依赖，统一迁移至此）----
     /**
      * 按某类复选框（卫生/纪律 × 扣分/加分）的当前勾选计算合计（唯一计算入口）。
-     * 预设项取 defaultScore，自定义项卫生 0.2/纪律 1；统一 roundScore1 消除浮点尾差。
+     * 新口径（符号版本 2）：预设项 defaultScore 已带符号（扣分负、加分正），直接累加；
+     * 自定义项卫生 0.2/纪律 1，按模式赋符号（扣分取负）；统一 roundScore1 消除浮点尾差。
+     * 返回带符号的合计：扣分模式为负数、加分模式为正数（addFormState 与显示层同口径）。
      * @param {string} cls - 复选框 class：hy-item-checkbox / dis-item-checkbox / hy-bonus-checkbox / dis-bonus-checkbox
      * @param {string} base - 'hy' 或 'dis'
      * @param {boolean} isBonus - 是否加分模式
-     * @returns {number} 合计分值（1 位小数）
+     * @returns {number} 合计分值（1 位小数，扣分负/加分正）
      */
     function calcCheckboxTotal(cls, base, isBonus){
         var total=0;
         var checked=document.querySelectorAll('.'+cls+':checked');
         for(var j=0;j<checked.length;j++){
-            if(checked[j].value==='custom') total+=(base==='hy'?0.2:1);
+            if(checked[j].value==='custom'){
+                // 自定义项：加分取正、扣分取负
+                var customMag = (base==='hy'?0.2:1);
+                total += isBonus ? customMag : -customMag;
+            }
             else {
                 // 复选框 value 恒为字符串，parseInt 归一化；getItemById 内部用 String 比较兼容两种 id
+                // defaultScore 已按新口径带符号（扣分负、加分正），直接累加
                 var item = isBonus ? getBonusItemById(parseInt(checked[j].value, 10)) : getItemById(parseInt(checked[j].value, 10));
                 if(item) total+=(parseFloat(item.defaultScore)||0);
             }

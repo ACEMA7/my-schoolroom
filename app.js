@@ -363,6 +363,23 @@
                         if(!ev.data || ev.data.type !== 'APP_VERSION') return;
                         var localVersion = ev.data.version || '';
                         if(localVersion && localVersion === netVersion){
+                            // 【符号版本闸门·防线 C】SW 已更新但本地 DB 仍是旧分数符号版本
+                            // （典型场景：用户长期挂起的旧页面未随 SW 更新重建本地库）：
+                            // 强制刷新一次，让 initializeData 执行迁移/从云端重建；
+                            // 复用 _verReloadCount/_verReloadAt 防死循环机制。
+                            // DB 未就绪（登录前）时跳过——登录后 initializeData 另有同口径闸门。
+                            try {
+                                if(typeof DB !== 'undefined' && DB && typeof DB.scoreSignVersion === 'number' && DB.scoreSignVersion !== SCORE_SIGN_VERSION){
+                                    console.warn('[版本守卫] 本地分数符号版本落后（' + DB.scoreSignVersion + ' → ' + SCORE_SIGN_VERSION + '），强制刷新');
+                                    showForceUpgradeOverlay();
+                                    sessionStorage.setItem('_verReloadAt', String(Date.now()));
+                                    var sgnCnt = parseInt(sessionStorage.getItem('_verReloadCount') || '0', 10);
+                                    sessionStorage.setItem('_verReloadCount', String(sgnCnt + 1));
+                                    setTimeout(function(){ window.location.reload(true); }, 1200);
+                                    finish(false);
+                                    return;
+                                }
+                            } catch(sgnErr){}
                             _verCheckLastPass = Date.now();
                             // 首次通过时记录服务器版本锚点，供后续对比
                             if(!_pageLoadedNetVersion) _pageLoadedNetVersion = netVersion;
@@ -1563,16 +1580,18 @@
         }
         updateEditScores();
     }
-    // 依据勾选项目实时重算合计（预设取 defaultScore，卫生自定义0.2/纪律自定义1；统一消除浮点尾差）
+    // 依据勾选项目实时重算合计（新口径：预设取 defaultScore 的绝对值，自定义卫生0.2/纪律1，
+    // 统一消除浮点尾差后取负——编辑弹窗仅用于扣分记录，合计显示为 -N）
     function updateEditScores(){
         function sum(prefix,customScore){
             var total=0;
             var checked=document.querySelectorAll('.'+prefix+'-item:checked');
             for(var i=0;i<checked.length;i++){
                 if(checked[i].value==='custom') total+=customScore;
-                else{var it=getItemById(parseInt(checked[i].value));if(it) total+=(parseFloat(it.defaultScore)||0);}
+                else{var it=getItemById(parseInt(checked[i].value));if(it) total+=Math.abs(parseFloat(it.defaultScore)||0);}
             }
-            return roundScore1(total);
+            // 扣分合计：新口径底层为负数
+            return roundScore1(-total);
         }
         var hy=sum('em-hy',0.2), dis=sum('em-dis',1);
         var hyEl=document.getElementById('emHyScore'); if(hyEl) hyEl.textContent=formatScoreText(hy,'deduct');
@@ -1625,10 +1644,12 @@
                     var v=parseInt(checked[i].value);
                     ids.push(v);
                     var it=getItemById(v);
-                    if(it) score+=(parseFloat(it.defaultScore)||0);
+                    // 新口径扣分项 defaultScore 为负：合计阶段按绝对值累加，
+                    // 最终统一由 recordMode 决定符号（见下方赋值处）
+                    if(it) score+=Math.abs(parseFloat(it.defaultScore)||0);
                 }
             }
-            return {ids:ids,score:roundScore1(score)}; // 入库前消除浮点尾差
+            return {ids:ids,score:roundScore1(score)}; // 入库前消除浮点尾差（此处为非负量值）
         }
         var hy=collectItems('em-hy',0.2);
         if(hy===null){toast('请输入自定义卫生项目名称','error');return;}
@@ -1644,9 +1665,11 @@
         r.recordDate=date;
         r.remark=document.getElementById('emRemark').value.trim();
         r.hygieneItemIds=hy.ids;
-        r.hygieneScore=hy.score;
         r.disciplineItemIds=dis.ids;
-        r.disciplineScore=dis.score;
+        // 【符号版本 2】按记录模式统一赋底层符号：扣分为负、加分为正
+        var isBonusRec = (r.recordMode === 'bonus');
+        r.hygieneScore = isBonusRec ? Math.abs(hy.score) : -Math.abs(hy.score);
+        r.disciplineScore = isBonusRec ? Math.abs(dis.score) : -Math.abs(dis.score);
         // 修改记录重传：登记脏记录并移出已同步集合，随 saveDB 的增量上传以本地版本覆盖云端
         var k=String(r.id);
         if(DB.dirtyRecordIds.indexOf(k)===-1) DB.dirtyRecordIds.push(k);
@@ -1696,8 +1719,9 @@
     function syncAddFormInputs(){
         var d=document.getElementById('addDate'); if(d&&d.value) addFormState.recordDate=d.value;
         var r=document.getElementById('addRemark'); if(r) addFormState.remark=r.value;
-        var hs=document.getElementById('hyScore'); if(hs) addFormState.hygieneScore=roundScore1(Math.abs(parseFloat(String(hs.value).replace(/[^\d.\-]/g,''))||0));
-        var dsc=document.getElementById('disScore'); if(dsc) addFormState.disciplineScore=roundScore1(Math.abs(parseFloat(String(dsc.value).replace(/[^\d.\-]/g,''))||0));
+        // 新口径（符号版本 2）：扣分字段在状态层带负号、加分字段保持正号
+        var hs=document.getElementById('hyScore'); if(hs) addFormState.hygieneScore=roundScore1(-Math.abs(parseFloat(String(hs.value).replace(/[^\d.\-]/g,''))||0));
+        var dsc=document.getElementById('disScore'); if(dsc) addFormState.disciplineScore=roundScore1(-Math.abs(parseFloat(String(dsc.value).replace(/[^\d.\-]/g,''))||0));
         var hbs=document.getElementById('hyBonusScore'); if(hbs) addFormState.hygieneBonusScore=roundScore1(Math.abs(parseFloat(String(hbs.value).replace(/[^\d.\-]/g,''))||0));
         var dbsc=document.getElementById('disBonusScore'); if(dbsc) addFormState.disciplineBonusScore=roundScore1(Math.abs(parseFloat(String(dbsc.value).replace(/[^\d.\-]/g,''))||0));
         // 仅同步当前 DOM 中实际存在的复选框组：扣分/加分模式的复选框不同时出现，
@@ -1843,12 +1867,14 @@
         else if(type==='date'){addFormState.recordDate=document.getElementById('addDate').value;}
         else if(type==='hygieneScore'){
             var hv=Math.abs(parseFloat(String(document.getElementById('hyScore').value).replace(/[^\d.\-]/g,''))||0);
-            addFormState.hygieneScore=roundScore1(hv);
+            // 新口径：扣分状态带负号（输入框显示 -N），提交时无需再翻转
+            addFormState.hygieneScore=roundScore1(-hv);
             document.getElementById('hyScore').value=formatScoreText(addFormState.hygieneScore,'deduct');
         }
         else if(type==='disciplineScore'){
             var dv=Math.abs(parseFloat(String(document.getElementById('disScore').value).replace(/[^\d.\-]/g,''))||0);
-            addFormState.disciplineScore=roundScore1(dv);
+            // 新口径：扣分状态带负号（输入框显示 -N）
+            addFormState.disciplineScore=roundScore1(-dv);
             document.getElementById('disScore').value=formatScoreText(addFormState.disciplineScore,'deduct');
         }
         else if(type==='hygieneBonusScore'){
@@ -1946,6 +1972,10 @@
             }
             disciplineScore=roundScore1(Math.abs(parseFloat(String(disScoreEl.value).replace(/[^\d.\-]/g,''))||0));
         }
+        // 【符号版本 2·唯一赋符号点】输入层统一按绝对值归一，入库时按模式赋底层符号：
+        //   扣分记录 → 负数；加分记录 → 正数；0 不受影响
+        hygieneScore = isBonus ? Math.abs(hygieneScore) : -Math.abs(hygieneScore);
+        disciplineScore = isBonus ? Math.abs(disciplineScore) : -Math.abs(disciplineScore);
         if(hygieneItemIds.length===0 && disciplineItemIds.length===0){toast('请至少选择一个项目','error');return;}
         var mode = isBonus ? 'bonus' : 'deduct';
         // 加分模式：生成宿舍集体记录 + 每个学生各一条个人记录
@@ -1961,8 +1991,9 @@
                 // 二次校验：学生当前必须确实住在本宿舍（防止宿舍名单瞬时错位）
                 var currentStu = getStudentById(s.id);
                 if(!currentStu || String(currentStu.dormitoryId) !== String(addFormState.dormitoryId)) return;
-                var perHyScore = hygieneScore > 0 ? 1 : 0;
-                var perDisScore = disciplineScore > 0 ? 1 : 0;
+                // 新口径：按非零判定有无分值，加分派生 +1、扣分派生 -1
+                var perHyScore = hygieneScore !== 0 ? (isBonus ? 1 : -1) : 0;
+                var perDisScore = disciplineScore !== 0 ? (isBonus ? 1 : -1) : 0;
                 // 【关键】给派生的个人加分记录打上 autoDerived: true，
                 // 使其不计入宿舍汇总分（避免"一次集体加分被算成多人加分之和"），
                 // 但仍计入个人净分（学生个人账上确实加了分）。
@@ -2001,8 +2032,9 @@
                     // 二次校验：学生当前必须确实住在本宿舍（防止宿舍名单瞬时错位）
                     var currentStu = getStudentById(s.id);
                     if(!currentStu || String(currentStu.dormitoryId) !== String(addFormState.dormitoryId)) return;
-                    var perHyScore = hygieneScore > 0 ? 1 : 0;
-                    var perDisScore = disciplineScore > 0 ? 1 : 0;
+                    // 新口径：扣分派生个人记录为 -1（卫生/纪律侧非零即扣）
+                    var perHyScore = hygieneScore !== 0 ? -1 : 0;
+                    var perDisScore = disciplineScore !== 0 ? -1 : 0;
                     var stuRecord = {
                         id: generateRecordId(),
                         createdAt: Date.now(),
@@ -2432,7 +2464,8 @@
         if(!name||!score||score<=0){toast('请输入有效信息','error');return;}
         if(!DB.deductionItems.hygiene) DB.deductionItems.hygiene=[];
         var newItemId = generateRecordId();
-        DB.deductionItems.hygiene.push({id:newItemId,name:name,defaultScore:score});
+        // 符号版本 2：扣分项目默认分存负数（输入框仍填正数分值）
+        DB.deductionItems.hygiene.push({id:newItemId,name:name,defaultScore:-Math.abs(score)});
         v3MarkDirty('deduction_item', newItemId);
         saveDB(); toast('✅ 卫生项目添加成功！'); renderItemsView(document.getElementById('contentArea'));
     }
@@ -2445,7 +2478,8 @@
         if(!name||!score||score<=0){toast('请输入有效信息','error');return;}
         if(!DB.deductionItems.discipline) DB.deductionItems.discipline=[];
         var newItemId2 = generateRecordId();
-        DB.deductionItems.discipline.push({id:newItemId2,name:name,defaultScore:score});
+        // 符号版本 2：扣分项目默认分存负数（输入框仍填正数分值）
+        DB.deductionItems.discipline.push({id:newItemId2,name:name,defaultScore:-Math.abs(score)});
         v3MarkDirty('deduction_item', newItemId2);
         saveDB(); toast('✅ 纪律项目添加成功！'); renderItemsView(document.getElementById('contentArea'));
     }
@@ -2463,7 +2497,8 @@
             if(!name||isNaN(score)||score<=0) continue;
             if(!DB.deductionItems.hygiene) DB.deductionItems.hygiene=[];
             var impItemId = generateRecordId();
-            DB.deductionItems.hygiene.push({id:impItemId,name:name,defaultScore:score});
+            // 符号版本 2：扣分项目默认分存负数
+            DB.deductionItems.hygiene.push({id:impItemId,name:name,defaultScore:-Math.abs(score)});
             v3MarkDirty('deduction_item', impItemId);
             imported++;
         }
@@ -2482,7 +2517,8 @@
             if(!name||isNaN(score)||score<=0) continue;
             if(!DB.deductionItems.discipline) DB.deductionItems.discipline=[];
             var impItemId2 = generateRecordId();
-            DB.deductionItems.discipline.push({id:impItemId2,name:name,defaultScore:score});
+            // 符号版本 2：扣分项目默认分存负数
+            DB.deductionItems.discipline.push({id:impItemId2,name:name,defaultScore:-Math.abs(score)});
             v3MarkDirty('deduction_item', impItemId2);
             imported++;
         }
@@ -3612,8 +3648,10 @@
                 dormitoryId: dormitoryId,
                 studentId: stu ? stu.id : null,
                 hygieneItemIds: [], hygieneScore: 0,
-                disciplineItemIds: [item.id], disciplineScore: item.defaultScore || 1,
+                // 符号版本 2：扣分记录必须为负数，且显式标记 recordMode（健康检查依赖该字段）
+                disciplineItemIds: [item.id], disciplineScore: -Math.abs(item.defaultScore || 1),
                 recordDate: today,
+                recordMode: 'deduct',
                 remark: '巡查核实·无假条'+(note?'：'+note:'')
             };
             DB.deductionRecords.push(dedRec);
@@ -3742,9 +3780,9 @@
     /**
      * 对一批学生执行扣分预警检查（入参自动去重）。
      *
-     * 规则：
-     *   - 净分 = 个人扣分 - 个人加分（getStudentNetScore，不含宿舍集体记录）；
-     *   - 净分跨过 threshold（threshold <= netScore）且该阈值不在学生
+     * 规则（新口径·符号版本 2：净分负数=净扣、正数=净加）：
+     *   - 净分 = 个人扣分 + 个人加分（getStudentNetScore，不含宿舍集体记录）；
+     *   - 净扣分跨过 threshold（netScore <= -threshold）且该阈值不在学生
      *     notifiedThresholds 中时，给班主任发 warn_X 模板通知；
      *   - notifiedThresholds 只增不减：净分下降不撤销、下降后再次跨过同一阈值不重复通知；
      *   - 无班主任（getClassAdminUserId 返回 null）或模板被禁用时静默跳过；
@@ -3774,7 +3812,8 @@
                 var notified = Array.isArray(student.notifiedThresholds) ? student.notifiedThresholds : [];
                 var studentChanged = false;
                 NOTIF_WARNING_THRESHOLDS.forEach(function(threshold){
-                    if(threshold > netScore) return;                 // 尚未跨过该阈值
+                    // 新口径：净扣分体现为负的净分，净扣分未达到 threshold（即 netScore > -threshold）则跳过
+                    if(netScore > -threshold) return;                // 尚未跨过该阈值
                     if(notified.indexOf(threshold) > -1) return;     // 已通知过（含下降后再上升），不重复
                     var template = getNotificationTemplateById('warn_' + threshold);
                     if(!template || template.enabled === false) return; // 模板缺失/禁用则跳过
@@ -3786,7 +3825,8 @@
                     var vars = {
                         studentName: student.name,
                         className: student.className,
-                        score: formatScoreText(netScore, 'net'),
+                        // 通知文案 {score} 表达"已扣多少分"，显示净扣分的正数数量
+                        score: Math.abs(netScore),
                         threshold: threshold,
                         dormRoom: dormRoom,
                         bedNumber: student.bedNumber != null ? String(student.bedNumber) : ''
@@ -5223,7 +5263,8 @@
      * 列格式：日期、宿舍号、班级、姓名、类型(卫生/纪律/加分)、项目、分值、备注。
      *   - 首行日期无法识别时按表头跳过（与请假导入一致）；
      *   - 姓名为"宿舍集体/集体"时生成宿舍集体记录（studentId=null），否则按"班级+姓名"匹配学生；
-     *   - 分值省略时：卫生 0.2、纪律 1、加分 1；填写时取绝对值（扣分统一按正数存储）；
+     *   - 分值省略时：卫生 0.2、纪律 1、加分 1；填写时先取绝对值再按模式赋符号
+     *     （符号版本 2：扣分存负数、加分存正数）；
      *   - 【侧别规则】扣分：卫生→卫生侧、纪律→纪律侧；加分：含"纪律"→纪律加分侧，
      *     其余（卫生加分/仅写"加分"）→卫生加分侧。每条记录只落单侧——
      *     getTotalBonusScore = 卫生分+纪律分，加分落两侧会导致加分翻倍、今日明细重复显示。
@@ -5270,6 +5311,8 @@
                 score = Math.abs(score);
             }
             score = roundScore1(score);
+            // 【符号版本 2】统一按模式赋底层符号：扣分取负、加分保持正
+            if(!isBonus) score = -score;
             // 单侧归属（见函数头说明）：加分默认卫生侧，含"纪律"才走纪律侧
             var useHygieneSide = isBonus ? !isDiscipline : isHygiene;
             var useDisciplineSide = isBonus ? isDiscipline : (!isHygiene && isDiscipline);
