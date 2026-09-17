@@ -906,7 +906,7 @@
         }
     }
     // 重试状态：指数退避 5s→10s→20s→40s→60s（封顶），最多 5 次
-    var _retryState={attempt:0, timer:null, running:false};
+    var _retryState={attempt:0, timer:null, running:false, pendingRerun:false, rerunCount:0};
     // 断网 toast 防重复标志：仅在“在线→离线”跳变后的首次同步尝试时提示一次，
     // online 事件中复位。页面加载时本就离线则初值为 true（开页离线的提示由 app.js 负责）。
     var _offlineToastShown=(typeof navigator!=='undefined' && navigator.onLine===false);
@@ -929,12 +929,20 @@
                 toast('当前版本过旧，已阻断同步，请刷新页面', 'error');
                 return false;
             }
+            // ★ 新增：外部触发（用户操作/手动同步/online）时复位续传计数；
+            //   续传是直接调用 doSyncWithRetryInner()，不经过这里，所以不会被复位。
+            _retryState.rerunCount = 0;
             return doSyncWithRetryInner();
         });
     }
     /** syncWithRetry 的原有逻辑（版本守卫通过后执行）：防重入 + 指数退避重试 */
     function doSyncWithRetryInner(){
-        if(_retryState.running) return Promise.resolve(false); // 防重入
+        if(_retryState.running){
+            // 已有同步在跑：不新增上传通道，只登记"跑完当前这次需要续传"的意图，
+            // 让当前同步结束后自动重跑一遍完整的标准流程（版本守卫 → 先拉 → 后推）。
+            _retryState.pendingRerun = true;
+            return Promise.resolve(false);
+        }
         _retryState.running=true;
         _retryState.attempt=0;
         clearRetryTimer();
@@ -988,6 +996,22 @@
                     updateSyncStatus('synced');
                     _retryState.attempt=0;
                     _retryState.running=false;
+                    // ★ 新增：仅当本次同步完整成功（拉取+上传都成功）后，才检查是否需要续传。
+                    //   续传 = 重新调用 doSyncWithRetryInner() 走一遍完整的标准流程，
+                    //   会重新执行 checkLatestVersion / loadFromCloud / syncToCloud，
+                    //   5 道防污染防线全部原样生效，不存在绕过。
+                    if(_retryState.pendingRerun && _retryState.rerunCount < 10){
+                        _retryState.pendingRerun = false;
+                        _retryState.rerunCount++;
+                        console.log('[同步续传] 检测到同步期间有新脏数据，第 ' + _retryState.rerunCount + ' 次续传');
+                        // 用 setTimeout(0) 让当前 Promise 链先完整结束，避免同步递归
+                        setTimeout(function(){ doSyncWithRetryInner(); }, 0);
+                    }else if(_retryState.pendingRerun && _retryState.rerunCount >= 10){
+                        // 硬上限保护：避免极端情况下无限续传
+                        _retryState.pendingRerun = false;
+                        console.warn('[同步续传] 已达单次会话续传上限（10 次），停止续传，剩余脏数据等待下次触发');
+                        updateSyncStatus('unsynced');
+                    }
                     return true;
                 }
                 // 失败：指数退避重试
