@@ -362,7 +362,7 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
         /* 色块展开由 open 类驱动（固定大上限），避免 JS 测量 scrollHeight 写内联高度在
            微信 X5/WKWebView 或卡顿场景下过渡不完成、内容被 overflow:hidden 裁剪 */
         .acc-block.open .acc-body{max-height:920px;overflow-y:auto;-webkit-overflow-scrolling:touch}
-        /* 通用折叠卡片（记录列表/统计报表区域共用）：标题行点击开合，箭头旋转指示 */
+        /* 通用折叠卡片（记录列表等区域共用）：标题行点击开合，箭头旋转指示 */
         .fold-block{background:#fff;border:1px solid var(--gray-200);border-radius:10px;margin-bottom:12px;overflow:hidden}
         .fold-header{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:12px 14px;cursor:pointer;user-select:none;font-weight:600;font-size:1rem;color:var(--gray-800)}
         .fold-header:active{background:var(--gray-50)}
@@ -405,13 +405,9 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
         .dorm-chip.active{background:var(--primary);color:#fff;border-color:var(--primary)}
         .custom-item-input{margin-left:8px;padding:4px 8px;border:1px dashed #ccc;border-radius:4px;display:inline-block}
 
-        /* 净分排行榜楼层芯片：PC 端一行铺满 8 个楼层（移动端媒体查询内改为每行 4 个）；
-           .chip 基础样式提升为全局（原仅移动端定义），供统计页 PC/移动共用 */
         .chip{border:1.5px solid var(--gray-200);border-radius:10px;background:#fff;text-align:center;cursor:pointer;user-select:none;color:var(--gray-700)}
         .chip:active{transform:scale(.95)}
         .chip.active{border-color:var(--primary);background:#eef2ff;color:var(--primary);font-weight:700}
-        .net-floor-chips{display:flex;flex-wrap:wrap;gap:8px;padding:4px 0 6px}
-        .net-floor-chips .chip{flex:1 1 0;min-width:0;padding:9px 2px;font-size:0.9286rem}
 
         /* 楼层调整：楼层选择芯片，两行四个（PC/移动共用） */
         .floor-change-chips{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
@@ -664,22 +660,6 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
             }
             .chip-dorms::-webkit-scrollbar{display:none}
             .chip-dorms .chip{flex:0 0 auto;padding:9px 14px;font-size:0.9286rem}
-            /* 统计报表楼层芯片：每行4个固定网格（复用 chip-floors 的成熟 wrap 模式），共8个标签两行全部可见 */
-            .chip-floors-scroll{display:flex;flex-wrap:wrap;gap:8px;padding:4px 0 6px}
-            .chip-floors-scroll .chip{flex:0 0 calc(25% - 6px);padding:11px 2px;font-size:1rem;text-align:center}
-            /* 净分排行榜楼层芯片：移动端每行 4 个（PC 端一行铺满，样式在全局区） */
-            .net-floor-chips .chip{flex:0 0 calc(25% - 6px);padding:11px 2px;font-size:1rem}
-            /* 楼层扣分情况：每个宿舍一张卡片，内部5列垂直堆叠（标签在上、值在下） */
-            .dorm-row-mobile{display:flex;align-items:stretch;gap:0;padding:12px 6px;background:#f8f9fc;border-radius:10px;margin-bottom:8px;border:1px solid #e5e7eb}
-            .dorm-row-mobile .rank-item{flex:1;min-width:0;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:2px 4px;border-right:1px dashed #e5e7eb}
-            .dorm-row-mobile .rank-item:last-child{border-right:none}
-            .dorm-row-mobile .rank-label{font-size:0.7143rem;color:#9ca3af;margin-bottom:3px;white-space:nowrap}
-            .dorm-row-mobile .rank-value{font-size:1.0714rem;font-weight:700;color:#1f2937;text-align:center;line-height:1.2;white-space:nowrap}
-            .dorm-row-mobile .rank-value.has{color:#ff3b30}
-            .dorm-row-mobile .rank-item.rank-idx-1 .rank-value{color:#4f6ef7}
-            .dorm-row-mobile .rank-item.rank-idx-1.top .rank-value{color:#f59e0b}
-            .dorm-row-mobile .rank-item.rank-idx-4 .rank-value{color:#4f6ef7}
-            .dorm-row-mobile .rank-item.rank-idx-4 .rank-value.has{color:#ff3b30}
             .chip-targets{display:flex;flex-wrap:wrap;gap:8px}
             .chip-targets .chip{flex:0 0 calc(33.333% - 6px);padding:11px 2px;font-size:0.9286rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 
@@ -830,10 +810,10 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
 
             /* 防溢出：字体放大后长文本自动换行 */
             body{overflow-wrap:break-word;word-break:break-word}
-            .card-body,.card-header,.stat-card,.stat-item,.mem-row,.dorm-row-mobile,
+            .card-body,.card-header,.stat-card,.stat-item,.mem-row,
             .form-group,.table-wrap,.tree-room,.tree-floor-header,.chip,
             .toast-item,.content-area{overflow-wrap:break-word;word-break:break-word}
-            .mem-sub,.dorm-row-mobile .rank-item .rank-value,.dorm-row-mobile .d-class{min-width:0}
+            .mem-sub{min-width:0}
 
             /* 异常上报按钮卡片：移动端强调浅红底，覆盖.stat-cards-mobile .stat-item的默认底色 */
             .stat-cards-mobile.inspection-stat-cards .stat-item-action,
@@ -864,7 +844,6 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
             .card,
             .card-body,
             .card-header,
-            .dorm-row-mobile,
             .mem-row,
             .acc-block,
             .fold-block{
@@ -942,7 +921,6 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
                     <div class="nav-item active" data-view="hierarchy" id="navHierarchy" onclick="switchView('hierarchy')">🌳 住宿信息</div>
                     <div class="nav-item" data-view="today" id="navToday" onclick="switchView('today')">📅 今日明细</div>
                     <div class="nav-item" data-view="add" id="navAdd" onclick="switchView('add')">📝 扣分登记</div>
-                    <div class="nav-item" data-view="stats" id="navStats" onclick="switchView('stats')">📊 统计报表</div>
                     <div class="nav-item" data-view="inspection" id="navInspection" style="display:none" onclick="switchView('inspection')">👀 巡查核实</div>
                     <div class="nav-item" data-view="floorchange" id="navFloorChange" style="display:none" onclick="switchView('floorchange')">🔄 楼层调整</div>
                     <div class="nav-item" data-view="students" id="navStudents" style="display:none" onclick="switchView('students')">👥 学生名单管理</div>

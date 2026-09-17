@@ -141,7 +141,7 @@
         }
 
         // 先隐藏所有菜单
-        var menuIds = ['navHierarchy', 'navToday', 'navAdd', 'navStats', 'navInspection', 'navFloorChange', 'navStudents', 'navItems', 'navLeaveManage', 'navExport', 'navNotifications', 'navChangePwd'];
+        var menuIds = ['navHierarchy', 'navToday', 'navAdd', 'navInspection', 'navFloorChange', 'navStudents', 'navItems', 'navLeaveManage', 'navExport', 'navNotifications', 'navChangePwd'];
         menuIds.forEach(function(id) {
             var el = document.getElementById(id);
             if (el) el.style.display = 'none';
@@ -149,7 +149,7 @@
 
         if (admin) {
             // 管理员显示全部菜单（含仅 ADMIN 可见的"通知管理"）
-            ['navHierarchy','navToday','navAdd','navStats','navInspection','navStudents','navItems','navLeaveManage','navExport','navNotifications'].forEach(function(id){
+            ['navHierarchy','navToday','navAdd','navInspection','navStudents','navItems','navLeaveManage','navExport','navNotifications'].forEach(function(id){
                 document.getElementById(id).style.display = 'flex';
             });
         } else if (classAdmin) {
@@ -160,13 +160,12 @@
             document.getElementById('navExport').style.display = 'flex';
             document.getElementById('navChangePwd').style.display = 'flex';
         } else {
-            // 普通生活老师（staff）：住宿信息 + 扣分登记 + 统计报表 + 巡查核实 + 学生管理
-            // 移动端（<=768px）额外隐藏"统计报表"和"学生管理"，侧边栏/底栏更聚焦日常操作；桌面端保持不变
+            // 普通生活老师（staff）：住宿信息 + 扣分登记 + 巡查核实 + 学生管理
+            // 移动端（<=768px）额外隐藏"学生管理"，侧边栏/底栏更聚焦日常操作；桌面端保持不变
             var staffMobile = window.innerWidth <= 768;
             document.getElementById('navHierarchy').style.display = 'flex';
             document.getElementById('navToday').style.display = 'flex';
             document.getElementById('navAdd').style.display = 'flex';
-            document.getElementById('navStats').style.display = staffMobile ? 'none' : 'flex';
             document.getElementById('navInspection').style.display = 'flex';
             document.getElementById('navFloorChange').style.display = 'flex';
             document.getElementById('navChangePwd').style.display = 'flex';
@@ -603,7 +602,7 @@
     }
     /**
      * 切换到指定视图：压入移动端历史栈、高亮导航、重绘内容区并回到顶部。
-     * @param {string} view - 视图名：home/hierarchy/add/stats/students/items/
+     * @param {string} view - 视图名：home/hierarchy/today/add/inspection/students/items/
      *   leavemanage/export
      */
     function switchView(view){
@@ -645,7 +644,6 @@
         else if(currentView==='hierarchy') renderHierarchyView(c);
         else if(currentView==='today') renderTodayView(c);
         else if(currentView==='add') renderAddView(c);
-        else if(currentView==='stats') renderStatsView(c);
         else if(currentView==='inspection') renderInspectionView(c);
         else if(currentView==='floorchange') renderFloorChangeView(c);
         else if(currentView==='students') renderStudentsView(c);
@@ -691,7 +689,7 @@
                 // 桌面端无色块首页，切回住宿信息
                 if (currentView === 'home') currentView = 'hierarchy';
             }
-            // 端型切换后按当前屏宽重算侧边栏菜单与底栏（移动端生活老师隐藏统计报表/学生管理）
+            // 端型切换后按当前屏宽重算侧边栏菜单与底栏（移动端生活老师隐藏学生管理）
             if (currentUser) updateHeaderForUser(currentUser);
             // 端型切换后重新应用/清除字体缩放（PC 切移动启用，移动切 PC 恢复默认）
             if (currentUser) loadFontScaleForStaff();
@@ -3030,7 +3028,7 @@
     var foldState={};
     /**
      * 通用折叠块展开/收起（foldState 跨重绘保持状态）。
-     * @param {string} id - 折叠块 id（如 'stats-top'）
+     * @param {string} id - 折叠块 id（如 'notif-fold-send'）
      */
     function toggleFold(id){
         var el=document.getElementById(id);
@@ -6097,7 +6095,7 @@
 // ---- shared globals explicitly mounted on window ----
 // 本文件所有挂载项均为可变状态（currentUser/currentView/selectedFloorId/
 // selectedDormitoryId/viewHistory/studentSearch/addFormState/editRecordId/
-// transferStudentId/foldState/statsCache/statsDormExpandAll/statsFloorPickId/
+// transferStudentId/foldState/
 // lastMobileState）。classic script 顶层 var 声明天然成为全局变量（亦自动
 // 成为 window 属性），代码中均以变量名直接访问，无需经 window 中转，
 // 故不再在此处显式挂载，避免挂载初始值/过时引用的误导。
