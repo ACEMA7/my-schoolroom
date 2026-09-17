@@ -1790,7 +1790,7 @@
         var score=parseFloat(document.getElementById('newHyItemScore').value);
         if(!name||!score||score<=0){toast('请输入有效信息','error');return;}
         if(!DB.deductionItems.hygiene) DB.deductionItems.hygiene=[];
-        var newItemId = DB.nextIds.item++;
+        var newItemId = generateRecordId();
         DB.deductionItems.hygiene.push({id:newItemId,name:name,defaultScore:score});
         v3MarkDirty('deduction_item', newItemId);
         saveDB(); toast('✅ 卫生项目添加成功！'); renderItemsView(document.getElementById('contentArea'));
@@ -1803,7 +1803,7 @@
         var score=parseFloat(document.getElementById('newDisItemScore').value);
         if(!name||!score||score<=0){toast('请输入有效信息','error');return;}
         if(!DB.deductionItems.discipline) DB.deductionItems.discipline=[];
-        var newItemId2 = DB.nextIds.item++;
+        var newItemId2 = generateRecordId();
         DB.deductionItems.discipline.push({id:newItemId2,name:name,defaultScore:score});
         v3MarkDirty('deduction_item', newItemId2);
         saveDB(); toast('✅ 纪律项目添加成功！'); renderItemsView(document.getElementById('contentArea'));
@@ -1821,7 +1821,7 @@
             var name=parts[0].trim(); var score=parseFloat(parts[1]);
             if(!name||isNaN(score)||score<=0) continue;
             if(!DB.deductionItems.hygiene) DB.deductionItems.hygiene=[];
-            var impItemId = DB.nextIds.item++;
+            var impItemId = generateRecordId();
             DB.deductionItems.hygiene.push({id:impItemId,name:name,defaultScore:score});
             v3MarkDirty('deduction_item', impItemId);
             imported++;
@@ -1840,7 +1840,7 @@
             var name=parts[0].trim(); var score=parseFloat(parts[1]);
             if(!name||isNaN(score)||score<=0) continue;
             if(!DB.deductionItems.discipline) DB.deductionItems.discipline=[];
-            var impItemId2 = DB.nextIds.item++;
+            var impItemId2 = generateRecordId();
             DB.deductionItems.discipline.push({id:impItemId2,name:name,defaultScore:score});
             v3MarkDirty('deduction_item', impItemId2);
             imported++;
@@ -1855,7 +1855,7 @@
         var score=parseFloat(document.getElementById('newHyBonusItemScore').value);
         if(!name||!score||score<=0){toast('请输入有效信息','error');return;}
         if(!DB.deductionItems.hygieneBonus) DB.deductionItems.hygieneBonus=[];
-        var id = DB.nextIds.item++;
+        var id = generateRecordId();
         DB.deductionItems.hygieneBonus.push({id:id,name:name,defaultScore:score});
         v3MarkDirty('deduction_item', id);
         saveDB(); toast('✅ 卫生加分项目添加成功！'); renderItemsView(document.getElementById('contentArea'));
@@ -1880,7 +1880,7 @@
             var name=parts[0].trim(); var score=parseFloat(parts[1]);
             if(!name||isNaN(score)||score<=0) continue;
             if(!DB.deductionItems.hygieneBonus) DB.deductionItems.hygieneBonus=[];
-            var id = DB.nextIds.item++;
+            var id = generateRecordId();
             DB.deductionItems.hygieneBonus.push({id:id,name:name,defaultScore:score});
             v3MarkDirty('deduction_item', id);
             imported++;
@@ -1894,7 +1894,7 @@
         var score=parseFloat(document.getElementById('newDisBonusItemScore').value);
         if(!name||!score||score<=0){toast('请输入有效信息','error');return;}
         if(!DB.deductionItems.disciplineBonus) DB.deductionItems.disciplineBonus=[];
-        var id = DB.nextIds.item++;
+        var id = generateRecordId();
         DB.deductionItems.disciplineBonus.push({id:id,name:name,defaultScore:score});
         v3MarkDirty('deduction_item', id);
         saveDB(); toast('✅ 纪律加分项目添加成功！'); renderItemsView(document.getElementById('contentArea'));
@@ -1919,7 +1919,7 @@
             var name=parts[0].trim(); var score=parseFloat(parts[1]);
             if(!name||isNaN(score)||score<=0) continue;
             if(!DB.deductionItems.disciplineBonus) DB.deductionItems.disciplineBonus=[];
-            var id = DB.nextIds.item++;
+            var id = generateRecordId();
             DB.deductionItems.disciplineBonus.push({id:id,name:name,defaultScore:score});
             v3MarkDirty('deduction_item', id);
             imported++;
