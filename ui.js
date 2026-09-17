@@ -880,8 +880,9 @@
             return '<span style="display:inline-flex;align-items:center;gap:6px;font-size:0.9286rem;font-weight:600;color:var(--gray-700)"><span style="width:10px;height:10px;border-radius:50%;background:'+statusColorMap[k]+';flex-shrink:0"></span>'+k+': '+statusCounts[k]+'人</span>';
         }).join('');
         var studentHtml=students.map(function(s){
-            // 个人净分（新口径）：卫生/纪律每侧有分折算 ±1，与"累计净分"卡同一口径，
-            // 全体在住成员个人净分之和即宿舍累计净分（不再用登记原始分 0.2/1 直接相加）。
+            // 个人净分（符号版本 2）：直接累加该学生名下记录的底层分值（扣分负、加分正，
+            // 集体记录派生的个人记录每侧为 ±1，直接登记的个人记录为实际分值），
+            // 显示层不做任何取反；全体在住成员个人净分之和即宿舍累计净分。
             var ss=getStudentNetScore(s.id);
             // 新口径（符号版本 2）：个人净分为负=净扣（红）、为正=净加（绿）
             var ssCls = ss<0 ? 'score-deduct' : (ss>0 ? 'score-bonus' : 'score-zero');
@@ -892,10 +893,10 @@
             }
             return '<tr><td data-label="姓名"><b>'+s.name+'</b></td><td data-label="班级">'+(s.className||'-')+'</td><td data-label="床号">'+(s.bedNumber||'-')+'</td><td data-label="状态"><span class="status-tag '+st.cls+'">'+st.label+'</span></td><td data-label="个人净分" class="'+ssCls+'">'+formatScoreText(ss,'net')+'</td>'+ops+'</tr>';
         }).join('')||'<tr><td colspan="5" style="text-align:center;color:#aaa">该宿舍暂无成员</td></tr>';
-        // 移动端成员单行紧凑列表：姓名 + 彩色圆点状态（圆点与文字同色）+ 班级·床号，右侧个人净分（折算口径，0分绿色/净扣红色/净加绿色）
+        // 移动端成员单行紧凑列表：姓名 + 彩色圆点状态（圆点与文字同色）+ 班级·床号，右侧个人净分（底层同口径直接显示，0分灰色/净扣红色/净加绿色）
         var memberCardHtml=students.map(function(s){
-            // 个人净分（新口径）：卫生/纪律每侧有分折算 ±1，与"累计净分"卡同一口径，
-            // 全体在住成员个人净分之和即宿舍累计净分（不再用登记原始分 0.2/1 直接相加）。
+            // 个人净分（符号版本 2）：直接累加底层带符号分值，显示层不取反，
+            // 全体在住成员个人净分之和即宿舍累计净分。
             var ss=getStudentNetScore(s.id);
             // 新口径（符号版本 2）：个人净分为负=净扣（红）、为正=净加（绿）
             var ssCls = ss<0 ? 'score-deduct' : (ss>0 ? 'score-bonus' : 'score-zero');
