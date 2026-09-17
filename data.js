@@ -1184,16 +1184,11 @@
         dormitories.push({ id: dormId++, floorId: floor3.id, roomNumber: '322', capacity: 8 });
         dormitories.push({ id: dormId++, floorId: floor3.id, roomNumber: '323', capacity: 8 });
 
-        var surnames = ['张','李','王','赵','钱','孙','周','吴','郑','冯','陈','褚','卫','蒋','沈','韩','杨','朱','秦','尤'];
-        var given = ['伟','芳','娜','敏','静','丽','强','磊','军','洋','勇','艳','杰','娟','涛','明','超','霞','平','刚'];
-        function genName() { return surnames[Math.floor(Math.random()*surnames.length)] + given[Math.floor(Math.random()*given.length)]; }
+        // 新库不生成任何示例学生：本地数据为空时，用户登录后应从云端拉取真实数据；
+        // 云端也为空时页面显示空列表，由管理员维护。示例数据曾导致"本地缓存被清 → 显示
+        // 假数据 → 误以为真实数据 → 主控设备标脏上传污染云端"的严重事故，故彻底移除。
         var students = [];
         var stuId = 1;
-        dormitories.forEach(function(d) {
-            var classNames = ['高一1班','高一2班','高一3班','高二1班','高二2班','高三1班','三1','三2','三3'];
-            var cls = classNames[Math.floor(Math.random()*classNames.length)];
-            for (var i = 0; i < 4; i++) students.push({ id: stuId++, dormitoryId: d.id, name: genName(), className: cls, bedNumber: String(i+1) });
-        });
         var deductionItems = {
             hygiene: [
                 { id: 101, name: '地面脏乱', defaultScore: 2 },
@@ -1233,23 +1228,9 @@
             });
         }
 
+        // 新库不生成任何示例扣分记录：理由同上（与示例学生一并移除）。
         var records = [];
         var recId = 1;
-        var today = new Date();
-        for (var i = 0; i < 50; i++) {
-            var dorm = dormitories[Math.floor(Math.random()*dormitories.length)];
-            var ds = students.filter(function(s){ return s.dormitoryId===dorm.id; });
-            var sid = Math.random()>0.4 ? ds[Math.floor(Math.random()*ds.length)].id : null;
-            var hyItem = deductionItems.hygiene[Math.floor(Math.random()*deductionItems.hygiene.length)];
-            var disItem = deductionItems.discipline[Math.floor(Math.random()*deductionItems.discipline.length)];
-            var rd = new Date(today); rd.setDate(rd.getDate()-Math.floor(Math.random()*30));
-            records.push({
-                id: recId++, dormitoryId: dorm.id, studentId: sid,
-                hygieneItemIds: [hyItem.id], hygieneScore: hyItem.defaultScore,
-                disciplineItemIds: [disItem.id], disciplineScore: disItem.defaultScore,
-                recordDate: formatLocalDate(rd), remark: ''
-            });
-        }
         var leaveRecords = [];
         var absenceRecords = [];
         // dormitoryList：系统生效的所有宿舍号（字符串数组），作为宿舍号选择/显示的唯一数据源
