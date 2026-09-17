@@ -658,6 +658,7 @@
         var todayRecords = (DB.deductionRecords || []).filter(function(r){
             if (r.recordDate !== today) return false;
             if (r.autoDerived === true) return false;
+            if (r.pendingReview === true) return false; // 待核查记录完全隐藏
             return true;
         });
         // 2) 班级账号过滤：仅本班学生 / 本班宿舍
@@ -859,6 +860,7 @@
         // 班级账号：成员仅显示本班学生（合住宿舍中其他班级学生不显示）
         if(classMode) students=students.filter(function(s){ return s.className===currentUser.className; });
         var records=getRecordsByDormitory(dorm.id);
+        records = records.filter(function(r){ return r.pendingReview !== true; }); // 待核查记录完全隐藏
         // 班级账号：仅显示本班学生的记录及本班宿舍的集体记录
         if(classMode) records=filterRecordsByClass(records);
         var total=getTotalScore(records);
@@ -1136,13 +1138,14 @@
                 // 加分模式：只显示宿舍集体
                 var dorm=getDormitoryById(addFormState.dormitoryId);
                 var dormLabel = dorm ? dorm.roomNumber : '';
-                targetChips='<div class="chip active">🏠 '+dormLabel+'宿舍集体</div>';
+                targetChips='<div class="chip active" data-student-id="">🏠 '+dormLabel+'宿舍集体</div>';
             }else{
                 // 【修改】扣分对象芯片显示"床号·姓名"（无床号显示"未知·姓名"），
                 // 便于生活老师按床号快速定位学生。宿舍集体保持原样。
-                targetChips='<div class="chip'+(addFormState.studentId===null?' active':'')+'" onclick="mobilePickTarget(this,null)">🏠 宿舍集体</div>'
+                // data-student-id 供 syncAddFormInputs 重渲染前回读当前选中对象（空串=宿舍集体）。
+                targetChips='<div class="chip'+(addFormState.studentId===null?' active':'')+'" data-student-id="" onclick="mobilePickTarget(this,null)">🏠 宿舍集体</div>'
                     +students.map(function(s){
-                        return '<div class="chip'+(addFormState.studentId===s.id?' active':'')+'" onclick="mobilePickTarget(this,'+s.id+')">'+formatStudentBedName(s)+'</div>';
+                        return '<div class="chip'+(addFormState.studentId===s.id?' active':'')+'" data-student-id="'+s.id+'" onclick="mobilePickTarget(this,'+s.id+')">'+formatStudentBedName(s)+'</div>';
                     }).join('');
             }
             container.innerHTML='<div class="content-header"><h2>📝 '+(isBonus?'加分':'扣分')+'登记</h2></div><div class="card"><div class="card-header">'+modeSwitchHtml+'</div><div class="card-body">'
@@ -1557,7 +1560,7 @@
      * @param {HTMLElement} container - contentArea 容器
      */
     function renderStatsView(container){
-        var allRecords = DB.deductionRecords;
+        var allRecords = (DB.deductionRecords || []).filter(function(r){ return r.pendingReview !== true; }); // 待核查记录完全隐藏
         var total = getTotalScore(allRecords);
         // 楼层排名：净分（扣分 − 加分）从高到低，同分按楼层原顺序（稳定排序）
         // 【新口径】楼层累计净分 = 该楼层所有在住学生的个人净分（折算后）之和。
@@ -2716,9 +2719,19 @@
         // 异常记录扫描卡片（仅管理员可见）：扫描学生当前宿舍与记录宿舍不一致的扣分记录
         if(isAdmin()){
             html += '<div class="card"><div class="card-header">🔍 异常记录扫描</div><div class="card-body">'
-                + '<p style="margin:0 0 10px;color:var(--text-light);font-size:0.9rem">扫描"学生当前宿舍与记录宿舍不一致"的扣分记录，用于排查历史数据错误。扫描只读，不修改数据。</p>'
+                + '<p style="margin:0 0 10px;color:var(--text-light);font-size:0.9rem">扫描"学生当前宿舍与记录宿舍不一致"的异常记录，覆盖扣分记录、请假记录、停宿记录、退宿记录，用于排查历史数据错误。扫描只读，不修改数据。</p>'
                 + '<button class="btn btn-primary" onclick="runDeductionMismatchScan()">🔍 开始扫描</button>'
                 + '<div id="mismatchScanResult" style="margin-top:14px"></div>'
+                + '</div></div>';
+        }
+        // 待核查记录卡片（仅管理员可见）：列出被防污染闸门隔离、暂缓上传云端的
+        // 扣分/加分记录（孤儿派生记录）。这些记录不进入正式记录表，业务页面完全
+        // 不可见；仅在此处由管理员核对后"确认上传"或"删除"。
+        if(isAdmin()){
+            html += '<div class="card"><div class="card-header">🔎 待核查记录</div><div class="card-body">'
+                + '<p style="margin:0 0 10px;color:var(--text-light);font-size:0.9rem">列出系统检测到可疑、已暂缓上传云端的扣分/加分记录。请核对每条的"宿舍/学生/项目/分值"，确认无误后点"确认上传"，或直接删除。</p>'
+                + '<button class="btn btn-primary" onclick="runPendingReviewScan()">🔎 刷新待核查列表</button>'
+                + '<div id="pendingReviewResult" style="margin-top:14px"></div>'
                 + '</div></div>';
         }
         // 批量导入扣分/加分记录（仅管理员在主控设备可用：写业务记录且影响全量统计）
@@ -3153,13 +3166,36 @@
         var f=getExportFilterValues();
         if(!f.startDate || !f.endDate){toast('请选择日期范围','error');return;}
         if(f.startDate > f.endDate){toast('开始日期不能晚于结束日期','error');return;}
+        renderQueryResultArea(f);
+    }
 
+    /**
+     * 用指定筛选条件渲染「查询结果区」（供 queryFilteredData 与局部刷新复用）。
+     * 每个分支均支持管理员复选框列 + 批量操作工具栏（批量删除全类型，批量修改仅扣分）。
+     * @param {object} f - getExportFilterValues 返回的筛选条件对象
+     */
+    function renderQueryResultArea(f){
         var resultArea = document.getElementById('queryResultArea');
         if (!resultArea) return;
+        var isAdminUser = isAdmin();
+
+        // 批量操作工具栏（仅管理员）
+        function buildBatchToolbar(dataType){
+            if(!isAdminUser) return '';
+            var showBatchEdit = (dataType === 'deduction');
+            return '<div style="display:flex;align-items:center;gap:12px;padding:10px 14px;background:#fff;border:1px solid var(--gray-200);border-radius:8px;margin:10px 14px;flex-wrap:wrap">'
+                + '<label style="display:inline-flex;align-items:center;gap:6px;font-weight:400;cursor:pointer"><input type="checkbox" id="querySelectAllTop" onchange="toggleAllQueryRows(this.checked)"> 全选</label>'
+                + '<button class="btn btn-danger btn-sm" onclick="batchDeleteQueryRows()">🗑️ 批量删除</button>'
+                + (showBatchEdit ? '<button class="btn btn-primary btn-sm" onclick="batchEditQueryRows()" id="batchEditQueryBtn">✏️ 批量修改</button>' : '')
+                + '<span id="querySelectedCount" style="color:var(--gray-500);font-size:0.9286rem">未选中</span>'
+                + '</div>';
+        }
+        function checkTh(){ return isAdminUser ? '<th style="width:30px"><input type="checkbox" id="querySelectAll" onchange="toggleAllQueryRows(this.checked)"></th>' : ''; }
+        function checkCell(id){ return isAdminUser ? '<td data-label="选择"><input type="checkbox" class="query-row-checkbox" data-row-key="'+escapeHtmlAttr(String(id))+'" onchange="updateQuerySelectedCount()"></td>' : ''; }
 
         // ===== 楼层调整记录 =====
         if(f.dataType === 'floor_change'){
-            if(!isAdmin()){ toast('无权限','error'); return; }
+            if(!isAdminUser){ toast('无权限','error'); return; }
             var list = getFloorChangeRequests().filter(function(r){
                 var d = formatLocalDate(new Date(r.createdAt||0));
                 return d && d >= f.startDate && d <= f.endDate;
@@ -3190,6 +3226,7 @@
                     if(!isNaN(rd.getTime())) revDateStr = formatLocalDate(rd);
                 }
                 return '<tr>'
+                    + checkCell(r.id)
                     + '<td data-label="提交时间">'+dateStr+'</td>'
                     + '<td data-label="发起人">'+escapeHtmlAttr(r.staffName||'')+'（'+escapeHtmlAttr(r.staffUsername||'')+'）</td>'
                     + '<td data-label="楼栋">'+escapeHtmlAttr(r.buildingName||'-')+'</td>'
@@ -3203,8 +3240,9 @@
             }
             resultArea.innerHTML = '<div class="card">'
                 + '<div class="card-header">查询结果（楼层调整记录 '+list.length+' 条）</div>'
+                + buildBatchToolbar(f.dataType)
                 + '<div style="overflow-x:auto;"><table class="mobile-h-table">'
-                + '<thead><tr><th>提交时间</th><th>发起人</th><th>楼栋</th><th>调整前</th><th>调整后</th><th>原因</th><th>状态</th><th>审核人</th><th>驳回原因</th></tr></thead>'
+                + '<thead><tr>'+checkTh()+'<th>提交时间</th><th>发起人</th><th>楼栋</th><th>调整前</th><th>调整后</th><th>原因</th><th>状态</th><th>审核人</th><th>驳回原因</th></tr></thead>'
                 + '<tbody id="queryFloorChangeTbody"></tbody>'
                 + '</table></div></div>';
             renderListInChunks(document.getElementById('queryFloorChangeTbody'), list, fcRowHtml, 50);
@@ -3213,7 +3251,7 @@
 
         // ===== 巡查核实总结 =====
         if(f.dataType==='inspection_summary'){
-            if(!isAdmin()){toast('无权限','error');return;}
+            if(!isAdminUser){toast('无权限','error');return;}
             var summaries=(DB.dailyInspectionSummaries||[]).filter(function(s){
                 return s.summaryDate && s.summaryDate>=f.startDate && s.summaryDate<=f.endDate;
             }).sort(function(a,b){ return a.summaryDate<b.summaryDate?-1:(a.summaryDate>b.summaryDate?1:0); });
@@ -3226,9 +3264,10 @@
                 return nums.length?nums.join('、')+'楼':'-';
             }
             function summaryRowHtml(s){
-                var rowId='sumrow_'+s.id;
                 var detailId='sumdetail_'+s.id;
+                var checkTd = isAdminUser ? '<td data-label="选择" onclick="event.stopPropagation()"><input type="checkbox" class="query-row-checkbox" data-row-key="'+escapeHtmlAttr(String(s.id))+'" onclick="event.stopPropagation()" onchange="updateQuerySelectedCount()"></td>' : '';
                 return '<tr class="sum-row" data-sid="'+s.id+'" onclick="toggleSummaryDetail(\''+s.id+'\')" style="cursor:pointer">'
+                    + checkTd
                     +'<td data-label="日期">'+s.summaryDate+'</td>'
                     +'<td data-label="楼栋">'+escapeHtmlAttr(s.buildingName||'-')+'</td>'
                     +'<td data-label="楼层">'+floorText(s)+'</td>'
@@ -3240,13 +3279,14 @@
                     +'<td data-label="无假条">'+s.anomalyCount+'</td>'
                     +'<td data-label="实到人数">'+s.actualCount+'</td>'
                     +'</tr>'
-                    +'<tr id="'+detailId+'" style="display:none"><td colspan="10" style="background:var(--gray-50);padding:12px">'+buildSummaryDetailHtml(s)+'</td></tr>';
+                    +'<tr id="'+detailId+'" style="display:none"><td colspan="'+(isAdminUser?11:10)+'" style="background:var(--gray-50);padding:12px">'+buildSummaryDetailHtml(s)+'</td></tr>';
             }
             resultArea.innerHTML='<div class="card">'
                 +'<div class="card-header">查询结果（巡查核实总结 '+summaries.length+' 条）<span style="font-weight:400;font-size:0.8571rem;color:var(--gray-500);margin-left:8px">点击行展开学生详情</span></div>'
-                +(isAdmin()?'<div style="padding:10px 14px;border-bottom:1px solid var(--gray-100)"><button class="btn btn-primary" onclick="exportInspectionSummariesRange()">📥 导出 Excel（每天一个 Sheet）</button></div>':'')
+                +(isAdminUser?'<div style="padding:10px 14px;border-bottom:1px solid var(--gray-100)"><button class="btn btn-primary" onclick="exportInspectionSummariesRange()">📥 导出 Excel（每天一个 Sheet）</button></div>':'')
+                + buildBatchToolbar(f.dataType)
                 +'<div style="overflow-x:auto;"><table class="mobile-h-table">'
-                +'<thead><tr><th>日期</th><th>楼栋</th><th>楼层</th><th>值班老师</th><th>入宿人数</th><th>当天请假</th><th>退宿中</th><th>家长接走</th><th>无假条</th><th>实到人数</th></tr></thead>'
+                +'<thead><tr>'+checkTh()+'<th>日期</th><th>楼栋</th><th>楼层</th><th>值班老师</th><th>入宿人数</th><th>当天请假</th><th>退宿中</th><th>家长接走</th><th>无假条</th><th>实到人数</th></tr></thead>'
                 +'<tbody id="querySummaryTbody"></tbody>'
                 +'</table></div></div>';
             renderListInChunks(document.getElementById('querySummaryTbody'), summaries, summaryRowHtml, 50);
@@ -3263,7 +3303,9 @@
                 return;
             }
             function queryLeaveRowHtml(r){
-                return '<tr><td data-label="'+dateLabel+'">'+r.date+'</td>'
+                return '<tr>'
+                    + checkCell(r.id)
+                    + '<td data-label="'+dateLabel+'">'+r.date+'</td>'
                     + '<td data-label="宿舍号">'+getDormSnapshotDisplay(r.dormitory)+'</td>'
                     + '<td data-label="床号">'+r.bed+'</td>'
                     + '<td data-label="班级">'+r.className+'</td>'
@@ -3272,8 +3314,9 @@
             }
             resultArea.innerHTML='<div class="card">'
                 + '<div class="card-header">查询结果（'+typeLabel+'记录 '+leaveRecords.length+' 条）</div>'
+                + buildBatchToolbar(f.dataType)
                 + '<div style="overflow-x:auto;"><table class="mobile-h-table">'
-                + '<thead><tr><th>'+dateLabel+'</th><th>宿舍号</th><th>床号</th><th>班级</th><th>姓名</th><th>原因</th></tr></thead>'
+                + '<thead><tr>'+checkTh()+'<th>'+dateLabel+'</th><th>宿舍号</th><th>床号</th><th>班级</th><th>姓名</th><th>原因</th></tr></thead>'
                 + '<tbody id="queryLeaveTbody"></tbody>'
                 + '</table></div></div>';
             renderListInChunks(document.getElementById('queryLeaveTbody'), leaveRecords, queryLeaveRowHtml, 50);
@@ -3292,7 +3335,9 @@
             function queryAbsRowHtml(r){
                 var absStart=r.startDate||r.date, absEnd=r.endDate||absStart;
                 var absSt=((leaveCoversNight(absStart,absEnd,todayStr)||todayStr<absStart)?'请假中':'已结束');
-                return '<tr><td data-label="班级">'+r.className+'</td>'
+                return '<tr>'
+                    + checkCell(r.id)
+                    + '<td data-label="班级">'+r.className+'</td>'
                     + '<td data-label="姓名">'+r.name+'</td>'
                     + '<td data-label="类型">'+(absTypeMap[r.type]||r.type)+'</td>'
                     + '<td data-label="说明">'+(r.reason||'-')+'</td>'
@@ -3302,8 +3347,9 @@
             }
             resultArea.innerHTML='<div class="card">'
                 + '<div class="card-header">查询结果（请假记录 '+absRecords.length+' 条）</div>'
+                + buildBatchToolbar(f.dataType)
                 + '<div style="overflow-x:auto;"><table class="mobile-h-table">'
-                + '<thead><tr><th>班级</th><th>姓名</th><th>请假类型</th><th>说明</th><th>开始日期</th><th>结束日期</th><th>状态</th></tr></thead>'
+                + '<thead><tr>'+checkTh()+'<th>班级</th><th>姓名</th><th>请假类型</th><th>说明</th><th>开始日期</th><th>结束日期</th><th>状态</th></tr></thead>'
                 + '<tbody id="queryAbsTbody"></tbody>'
                 + '</table></div></div>';
             renderListInChunks(document.getElementById('queryAbsTbody'), absRecords, queryAbsRowHtml, 50);
@@ -3313,6 +3359,7 @@
         // ===== 扣分记录（原有逻辑保持不变） =====
         var startDate=f.startDate, endDate=f.endDate, className=f.className, dormRoom=f.dormRoom, bed=f.bed, studentName=f.studentName;
         var records = DB.deductionRecords.filter(function(r) {
+            if (r.pendingReview === true) return false; // 待核查记录完全隐藏
             if (r.recordDate < startDate || r.recordDate > endDate) return false;
             var student = r.studentId ? getStudentById(r.studentId) : null;
             var dorm = getDormitoryById(r.dormitoryId);
@@ -3340,9 +3387,6 @@
             return bedA - bedB;
         });
 
-        var resultArea = document.getElementById('queryResultArea');
-        if (!resultArea) return;
-
         if (records.length === 0) {
             resultArea.innerHTML = '<div class="card"><div class="card-header">查询结果</div><div class="card-body"><div class="empty-state">暂无符合条件的扣分记录</div></div></div>';
             return;
@@ -3361,6 +3405,7 @@
             var classNameVal = getClassNameForRecord(r);
             var studentNameVal = student ? student.name : '宿舍集体';
             return '<tr>'
+                + checkCell(r.id)
                 + '<td data-label="日期">' + r.recordDate + '</td>'
                 + '<td data-label="宿舍号">' + getDormDisplayNameById(r.dormitoryId) + '</td>'
                 + '<td data-label="床号">' + bedNumber + '</td>'
@@ -3381,11 +3426,43 @@
 
         resultArea.innerHTML = '<div class="card">'
             + '<div class="card-header">查询结果（' + records.length + '条记录）</div>'
+            + buildBatchToolbar(f.dataType)
             + '<div style="overflow-x:auto;"><table class="mobile-h-table">'
-            + '<thead><tr><th>日期</th><th>宿舍号</th><th>床号</th><th>班级</th><th>学生</th><th>卫生项目</th><th>卫生分值</th><th>纪律项目</th><th>纪律分值</th><th>备注</th>' + (isAdmin() ? '<th>操作</th>' : '<th style="display:none"></th>') + '</tr></thead>'
+            + '<thead><tr>'+checkTh()+'<th>日期</th><th>宿舍号</th><th>床号</th><th>班级</th><th>学生</th><th>卫生项目</th><th>卫生分值</th><th>纪律项目</th><th>纪律分值</th><th>备注</th>' + (isAdmin() ? '<th>操作</th>' : '<th style="display:none"></th>') + '</tr></thead>'
             + '<tbody id="queryDeductionTbody"></tbody>'
             + '</table></div></div>';
         renderListInChunks(document.getElementById('queryDeductionTbody'), records, queryDeductionRowHtml, 50);
+    }
+
+    /**
+     * 局部刷新查询结果区：仅当用户已查询（结果区非空）时，
+     * 用当前筛选条件重新渲染结果区，绝不触发整页 renderView。
+     */
+    function refreshQueryResultIfVisible(){
+        var area = document.getElementById('queryResultArea');
+        if(!area) return;
+        if(!area.innerHTML || area.innerHTML.trim() === '') return;
+        try {
+            if(typeof queryFilteredData === 'function') queryFilteredData();
+        } catch(e) {
+            if(typeof handleError === 'function') handleError(e, '刷新查询结果', { silent: true });
+        }
+    }
+
+    /**
+     * 拼装「批量修改扣分记录」弹层 HTML。
+     * 仅支持统一修改扣分日期与备注（留空字段不修改）。
+     * @param {number} count - 选中记录条数
+     * @returns {string}
+     */
+    function buildBatchEditQueryModalHtml(count){
+        return '<div class="em-header"><span>✏️ 批量修改扣分记录（' + count + ' 条）</span><button class="em-close" aria-label="关闭" onclick="closeBatchEditQueryModal()">✕</button></div>'
+            + '<div class="em-body">'
+            + '<div style="color:var(--gray-500);font-size:0.9286rem;margin-bottom:10px">留空的字段不会被修改，只修改已填写的字段。</div>'
+            + '<div class="form-group"><label>扣分日期（留空不改）</label><input type="text" class="date-picker" id="batchEditDate" placeholder="选择日期"></div>'
+            + '<div class="form-group"><label>备注（留空不改）</label><input type="text" id="batchEditRemark" placeholder="统一备注内容"></div>'
+            + '</div>'
+            + '<div class="em-footer"><button class="btn btn-primary" onclick="saveBatchEditQueryRows()">💾 保存修改</button><button class="btn btn-outline" onclick="closeBatchEditQueryModal()">取消</button></div>';
     }
 
     /**
@@ -3521,6 +3598,7 @@
         // ===== 扣分记录导出（原有逻辑保持不变） =====
         var startDate=f.startDate, endDate=f.endDate, className=f.className, dormRoom=f.dormRoom, bed=f.bed, studentName=f.studentName;
         var records=DB.deductionRecords.filter(function(r){
+            if(r.pendingReview === true) return false; // 待核查记录完全隐藏
             if(r.recordDate<startDate||r.recordDate>endDate) return false;
             var student=r.studentId?getStudentById(r.studentId):null;
             var dorm=getDormitoryById(r.dormitoryId);

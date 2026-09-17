@@ -755,6 +755,29 @@
         return String(stu.dormitoryId) !== String(record.dormitoryId);
     }
 
+    /**
+     * 判断一条请假/退宿/停宿记录是否存在"学生当前宿舍与记录宿舍不一致"的错误。
+     * 与 isRecordDormMismatch 判定规则一致，只是字段取值方式相同：
+     * leaveRecords/absenceRecords 同样含 studentId 与 dormitoryId/dormitory 快照。
+     * 说明：走读生（学生当前无宿舍）不参与判定（不存在宿舍错位）。
+     * @param {object} record - 请假/退宿/停宿记录对象
+     * @returns {boolean} true=存在不一致
+     */
+    function isLeaveRecordDormMismatch(record){
+        if(!record || record.studentId == null) return false;
+        var stu = getStudentById(record.studentId);
+        // 学生已删除、或学生当前无宿舍（走读生）→ 不判定
+        if(!stu || stu.dormitoryId == null) return false;
+        // 记录侧优先用 dormitoryId；无 dormitoryId 时用宿舍号字符串反查
+        var recDormId = record.dormitoryId;
+        if(recDormId == null && record.dormitory){
+            var d = getDormitoryByRoomNumber(record.dormitory);
+            if(d) recDormId = d.id;
+        }
+        if(recDormId == null) return false;
+        return String(stu.dormitoryId) !== String(recDormId);
+    }
+
     function getClassNameForRecord(record) {
         if (record.studentId) {
             var student = getStudentById(record.studentId);
@@ -1742,12 +1765,40 @@
         return stu ? stu.dormitoryId : null;
     }
     /**
-     * 解析一条请假/退宿/异常记录所属楼层 ID（优先 studentId→学生宿舍，
-     * 其次宿舍号字符串），无法解析返回 null。
+     * 解析一条请假/退宿/异常记录所属楼层 ID（巡查核实楼层归属的唯一入口）。
+     * 优先规则：
+     *   1) 记录关联了学生（studentId 可查到学生）：
+     *        - 学生当前有宿舍 → 用学生当前宿舍的楼层；
+     *        - 学生当前无宿舍（走读生）→ 返回 null（走读生不进巡查核实）；
+     *   2) 学生已被删除 → 用记录里的 dormitoryId 或宿舍号字符串兜底；
+     *   3) 都查不到 → 返回 null。
+     * @param {number|string} dormitoryId - 记录里保存的宿舍 ID（历史快照）
+     * @param {string} roomNumber - 记录里保存的宿舍号字符串（历史快照）
+     * @param {number|string} [studentId] - 记录关联的学生 ID（可选；有则以学生当前宿舍为准）
+     * @returns {number|null} 楼层 ID；无法解析返回 null
      */
-    function resolveRecordFloorId(dormitoryId, roomNumber){
-        var dorm = dormitoryId ? getDormitoryById(dormitoryId) : (roomNumber ? getDormitoryByRoomNumber(roomNumber) : null);
-        return dorm ? dorm.floorId : null;
+    function resolveRecordFloorId(dormitoryId, roomNumber, studentId){
+        // 1) 有学生 → 以学生当前宿舍为准
+        if(studentId != null){
+            var stu = getStudentById(studentId);
+            if(stu){
+                // 走读生（当前无宿舍）：返回 null，不进入巡查核实
+                if(stu.dormitoryId == null) return null;
+                var stuDorm = getDormitoryById(stu.dormitoryId);
+                return stuDorm ? stuDorm.floorId : null;
+            }
+            // 学生已被删除 → 继续走下面的兜底
+        }
+        // 2) 记录里的 dormitoryId（历史快照兜底）
+        var dorm = dormitoryId ? getDormitoryById(dormitoryId) : null;
+        if(dorm) return dorm.floorId;
+        // 3) 记录里的宿舍号字符串（历史快照兜底）
+        if(roomNumber){
+            var dorm2 = getDormitoryByRoomNumber(roomNumber);
+            if(dorm2) return dorm2.floorId;
+        }
+        // 4) 无法解析
+        return null;
     }
     /**
      * 查询某日、指定楼层范围内的待巡查核实学生列表。
@@ -1762,11 +1813,20 @@
         if(!DB) return [];
         var fset = {};
         (floorIds || []).forEach(function(f){ fset[f] = true; });
-        function inScope(dormitoryId, room){
-            var fid = resolveRecordFloorId(dormitoryId, room);
+        function inScope(dormitoryId, room, studentId){
+            var fid = resolveRecordFloorId(dormitoryId, room, studentId);
             return fid != null && fset[fid];
         }
-        function dormRoomOf(dormitoryId, fallbackRoom){
+        function dormRoomOf(dormitoryId, fallbackRoom, studentId){
+            // 优先：学生当前宿舍号
+            if(studentId != null){
+                var stu = getStudentById(studentId);
+                if(stu && stu.dormitoryId != null){
+                    var sd = getDormitoryById(stu.dormitoryId);
+                    if(sd) return sd.roomNumber;
+                }
+                // 学生已删除或当前无宿舍 → 走兜底
+            }
             if(fallbackRoom) return fallbackRoom;
             var dorm = dormitoryId ? getDormitoryById(dormitoryId) : null;
             return dorm ? dorm.roomNumber : '';
@@ -1777,11 +1837,11 @@
             if(r.status !== 'pending') return;
             if(!recordCoversDate(r, date)) return;
             var stuDormId = _studentDormitoryId(r.studentId);
-            if(!inScope(stuDormId, r.dormitory)) return;
+            if(!inScope(stuDormId, r.dormitory, r.studentId)) return;
             items.push({
                 recordType: r.type === 'stop' ? 'stop' : 'leave',
                 recordId: r.id, studentId: r.studentId || null, dormitoryId: stuDormId,
-                room: dormRoomOf(stuDormId, r.dormitory), name: r.name, className: r.className,
+                room: dormRoomOf(stuDormId, r.dormitory, r.studentId), name: r.name, className: r.className,
                 bed: r.bed, startDate: r.startDate || r.date, endDate: r.endDate || r.date, reason: r.reason
             });
         });
@@ -1790,10 +1850,10 @@
             if(r.status === 'cancelled') return;   // 已取消的记录不参与巡查核实
             if(!recordCoversDate(r, date)) return;
             var stuDormId = _studentDormitoryId(r.studentId);
-            if(!inScope(stuDormId, r.dormitory)) return;
+            if(!inScope(stuDormId, r.dormitory, r.studentId)) return;
             items.push({
                 recordType: 'absence', recordId: r.id, studentId: r.studentId || null, dormitoryId: stuDormId,
-                room: dormRoomOf(stuDormId, r.dormitory), name: r.name, className: r.className,
+                room: dormRoomOf(stuDormId, r.dormitory, r.studentId), name: r.name, className: r.className,
                 bed: r.bed, startDate: r.startDate, endDate: r.endDate, reason: r.reason
             });
         });
@@ -1821,7 +1881,7 @@
         (floorIds || []).forEach(function(f){ fset[f] = true; });
         return DB.anomalyReports.filter(function(a){
             if(a.reportDate !== date) return false;
-            var fid = resolveRecordFloorId(a.dormitoryId, a.dormitoryRoom);
+            var fid = resolveRecordFloorId(a.dormitoryId, a.dormitoryRoom, a.studentId);
             return fid != null && fset[fid];
         }).sort(function(a,b){ return (b.createdAt||0) - (a.createdAt||0); });
     }
@@ -1864,8 +1924,8 @@
         var floorIds = getAssignedFloorIds(user);
         var fset = {};
         floorIds.forEach(function(f){ fset[f] = true; });
-        function inScope(dormitoryId, room){
-            var fid = resolveRecordFloorId(dormitoryId, room);
+        function inScope(dormitoryId, room, studentId){
+            var fid = resolveRecordFloorId(dormitoryId, room, studentId);
             return fid != null && fset[fid];
         }
         // 入宿人数
@@ -1877,11 +1937,11 @@
         // 当天请假（排除已取消记录）
         var absenceRecs = (DB.absenceRecords || []).filter(function(r){
             if(r.status === 'cancelled') return false;
-            return recordCoversDate(r, date) && inScope(_studentDormitoryId(r.studentId), r.dormitory);
+            return recordCoversDate(r, date) && inScope(_studentDormitoryId(r.studentId), r.dormitory, r.studentId);
         });
         // 退宿/停宿中（已审核通过或待审核 pending，且覆盖当日）
         var leaveRecs = (DB.leaveRecords || []).filter(function(r){
-            return (r.status === 'approved' || r.status === 'pending') && recordCoversDate(r, date) && inScope(_studentDormitoryId(r.studentId), r.dormitory);
+            return (r.status === 'approved' || r.status === 'pending') && recordCoversDate(r, date) && inScope(_studentDormitoryId(r.studentId), r.dormitory, r.studentId);
         });
         // 异常上报
         var anomalies = getInspectionAnomalies(date, floorIds);

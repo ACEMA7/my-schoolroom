@@ -776,61 +776,531 @@
     }
 
     /**
+     * 删除扣分记录的「无重绘版本」：级联删除派生记录、打 V3 墓碑、落库，
+     * 但不调用 renderView()/renderTree()，供查询结果区局部刷新场景使用。
+     * 不弹 confirm（由调用方决定是否二次确认）。
+     * @param {string|number} id - 扣分记录 ID
+     */
+    function deleteRecordWithoutRender(id){
+        if(!isAdmin()) return;
+        var target = DB.deductionRecords.find(function(r){ return String(r.id) === String(id); });
+        if(!target) return;
+        var derivedList = findDerivedRecords(target);
+        var idsToDelete = {};
+        idsToDelete[String(target.id)] = true;
+        derivedList.forEach(function(r){ idsToDelete[String(r.id)] = true; });
+        DB.deductionRecords = DB.deductionRecords.filter(function(r){
+            var k = String(r.id);
+            if(idsToDelete[k]){
+                v3MarkDeleted('deduction_record', r.id);
+                if(DB.deletedRecordIds.indexOf(k) === -1) DB.deletedRecordIds.push(k);
+                return false;
+            }
+            return true;
+        });
+        saveDB();
+    }
+
+    /**
      * 删除扣分记录（数据管理页查询结果专用）。
-     * 在现有 deleteRecord 基础上包一层：删除成功后自动重新执行当前查询条件的筛选，
-     * 刷新底部的查询结果表，保证列表实时反映删除结果。
+     * 复用 deleteRecordWithoutRender 做纯删除，删除后调用 refreshQueryResultIfVisible
+     * 局部刷新查询结果区（保留筛选条件，不整页重绘）。
      * 仅管理员可用（按钮本身仅管理员可见，此处再做一次权限校验兜底）。
      * @param {string|number} id - 扣分记录 ID
      */
     function deleteRecordAndRefreshQuery(id){
         if(!isAdmin()){ toast('无权限操作','error'); return; }
-        // deleteRecord 内部已包含 confirm、级联删除、墓碑标记、saveDB
-        deleteRecord(id);
-        // 删除完成后重新执行当前筛选查询，刷新查询结果表
-        // 通过 queryFilteredData 复用当前 DOM 上未变的筛选下拉值，不丢失筛选状态
+        if(!confirm('确认删除？\n（若为宿舍集体记录，其派生的个人加减分记录将一并删除）')) return;
+        var target = DB.deductionRecords.find(function(r){ return String(r.id) === String(id); });
+        if(!target){ toast('记录不存在或已被删除','error'); return; }
+        var derivedCount = findDerivedRecords(target).length;
+        deleteRecordWithoutRender(id);
+        if(derivedCount > 0){
+            toast('已删除记录（含 ' + derivedCount + ' 条派生的个人加减分记录）');
+        } else {
+            toast('已删除');
+        }
+        refreshQueryResultIfVisible();
+    }
+
+    // ==================== 数据管理查询结果区：批量操作 ====================
+
+    /** 全选/取消全选查询结果区的所有行复选框，并同步两个全选框状态 */
+    function toggleAllQueryRows(checked){
+        var boxes = document.querySelectorAll('.query-row-checkbox');
+        for(var i = 0; i < boxes.length; i++) boxes[i].checked = checked;
+        var sa1 = document.getElementById('querySelectAll');
+        var sa2 = document.getElementById('querySelectAllTop');
+        if(sa1) sa1.checked = checked;
+        if(sa2) sa2.checked = checked;
+        updateQuerySelectedCount();
+    }
+
+    /** 更新"已选中 N 条"计数显示，并同步全选框勾选状态 */
+    function updateQuerySelectedCount(){
+        var boxes = document.querySelectorAll('.query-row-checkbox');
+        var checked = document.querySelectorAll('.query-row-checkbox:checked');
+        var cntEl = document.getElementById('querySelectedCount');
+        if(cntEl) cntEl.textContent = checked.length > 0 ? ('已选中 ' + checked.length + ' 条') : '未选中';
+        var all = boxes.length > 0 && checked.length === boxes.length;
+        var sa1 = document.getElementById('querySelectAll');
+        var sa2 = document.getElementById('querySelectAllTop');
+        if(sa1) sa1.checked = all;
+        if(sa2) sa2.checked = all;
+    }
+
+    /** 批量删除选中行（按当前数据类型分发到各类型的无重绘删除函数） */
+    function batchDeleteQueryRows(){
+        if(!isAdmin()){ toast('无权限操作','error'); return; }
+        var checked = document.querySelectorAll('.query-row-checkbox:checked');
+        if(checked.length === 0){ toast('请先勾选要删除的记录','error'); return; }
+        if(!confirm('确认删除选中的 ' + checked.length + ' 条记录？此操作不可撤销！')) return;
+        var typeEl = document.getElementById('exportDataType');
+        var dataType = typeEl ? typeEl.value : 'deduction';
+        var ids = [];
+        for(var i = 0; i < checked.length; i++){
+            var k = checked[i].getAttribute('data-row-key');
+            if(k) ids.push(k);
+        }
+        if(dataType === 'deduction'){
+            ids.forEach(function(id){ deleteRecordWithoutRender(id); });
+        } else if(dataType === 'absence'){
+            ids.forEach(function(id){ deleteAbsenceRecordWithoutRender(id); });
+        } else if(dataType === 'leave' || dataType === 'stop'){
+            ids.forEach(function(id){ deleteLeaveRecordWithoutRender(id); });
+        } else if(dataType === 'inspection_summary'){
+            ids.forEach(function(id){ deleteDailySummaryWithoutRender(id); });
+        } else if(dataType === 'floor_change'){
+            ids.forEach(function(id){ deleteFloorChangeRequestWithoutRender(id); });
+        }
+        toast('已删除 ' + ids.length + ' 条记录');
+        refreshQueryResultIfVisible();
+    }
+
+    // ---- 批量修改扣分记录（仅扣分类型支持） ----
+    var _batchEditQueryIds = [];
+
+    /** 打开批量修改弹窗（统一修改扣分日期与备注） */
+    function batchEditQueryRows(){
+        if(!isAdmin()){ toast('无权限','error'); return; }
+        var checked = document.querySelectorAll('.query-row-checkbox:checked');
+        if(checked.length === 0){ toast('请先勾选要修改的记录','error'); return; }
+        if(!confirm('确认批量修改选中的 ' + checked.length + ' 条扣分记录？\n\n将统一修改：扣分日期、备注。\n留空的字段不修改，只改填写的字段。')) return;
+        var ids = [];
+        for(var i = 0; i < checked.length; i++){
+            var k = checked[i].getAttribute('data-row-key');
+            if(k) ids.push(k);
+        }
+        openBatchEditQueryModal(ids);
+    }
+
+    function openBatchEditQueryModal(ids){
+        _batchEditQueryIds = ids || [];
+        var box = document.getElementById('batchEditQueryModalBox');
+        if(box) box.innerHTML = buildBatchEditQueryModalHtml(_batchEditQueryIds.length);
+        var m = document.getElementById('batchEditQueryModal');
+        if(m) m.classList.add('show');
+        if(typeof initDatePickers === 'function') initDatePickers(document);
+    }
+
+    function closeBatchEditQueryModal(){
+        var m = document.getElementById('batchEditQueryModal');
+        if(m) m.classList.remove('show');
+        _batchEditQueryIds = [];
+    }
+
+    function saveBatchEditQueryRows(){
+        if(!_batchEditQueryIds.length){ closeBatchEditQueryModal(); return; }
+        var newDateEl = document.getElementById('batchEditDate');
+        var newDate = newDateEl ? newDateEl.value : '';
+        var newRemarkEl = document.getElementById('batchEditRemark');
+        var newRemark = newRemarkEl ? newRemarkEl.value.trim() : '';
+        if(!newDate && !newRemark){ toast('请至少填写一个要修改的字段','error'); return; }
+        var changed = 0;
+        _batchEditQueryIds.forEach(function(id){
+            var r = DB.deductionRecords.find(function(x){ return String(x.id) === String(id); });
+            if(!r) return;
+            if(newDate) r.recordDate = newDate;
+            if(newRemark) r.remark = newRemark;
+            r.lastModified = Date.now();
+            v3MarkDirty('deduction_record', r.id);
+            changed++;
+        });
+        saveDB();
+        closeBatchEditQueryModal();
+        toast('已批量修改 ' + changed + ' 条记录');
+        refreshQueryResultIfVisible();
+    }
+
+    // ---- 各类型的「无重绘删除」辅助函数（供批量删除调用） ----
+
+    function deleteAbsenceRecordWithoutRender(id){
+        if(!isAdmin()) return;
+        DB.absenceRecords = (DB.absenceRecords || []).filter(function(r){ return String(r.id) !== String(id); });
+        v3MarkDeleted('absence_record', id);
+        saveDB();
+    }
+
+    function deleteLeaveRecordWithoutRender(id){
+        if(!isAdmin()) return;
+        DB.leaveRecords = (DB.leaveRecords || []).filter(function(r){ return String(r.id) !== String(id); });
+        v3MarkDeleted('leave_record', id);
+        saveDB();
+    }
+
+    function deleteDailySummaryWithoutRender(id){
+        if(!isAdmin()) return;
+        DB.dailyInspectionSummaries = (DB.dailyInspectionSummaries || []).filter(function(s){ return String(s.id) !== String(id); });
+        v3MarkDeleted('daily_summary', id);
+        saveDB();
+    }
+
+    function deleteFloorChangeRequestWithoutRender(id){
+        if(!isAdmin()) return;
+        DB.floorChangeRequests = (DB.floorChangeRequests || []).filter(function(r){ return String(r.id) !== String(id); });
+        v3MarkDeleted('floor_change_request', id);
+        saveDB();
+    }
+
+    // ==================== 防污染闸门：待核查记录隔离存储 ====================
+    // 【设计说明（遵守"不改 sync.js / data.js"的项目硬约束）】
+    // 被判定为"孤儿派生记录"的可疑记录【不进入 DB.deductionRecords】，而是隔离
+    // 存放在独立 localStorage 键中。同步层（sync.js）只遍历 DB 内的记录表与
+    // 脏/墓碑集合，因此这些记录天然：
+    //   1) 不会上传云端（不在任何 V3_RECORD_TYPES 数据表中，也没有脏标记）；
+    //   2) 云端拉取合并时不会被"溯源清洗"丢弃或覆盖（mergeArrayType 只重建
+    //      DB.deductionRecords，不触碰本隔离键）；
+    //   3) 不出现在任何业务页面，也不计入 getStudentNetScore 与派生迁移
+    //      （这些函数都只遍历 DB.deductionRecords）。
+    // 管理员在"数据管理 → 待核查记录"卡片核查后：
+    //   - 确认上传：从隔离区移入 DB.deductionRecords，清标记 + v3MarkDirty 正常上行；
+    //   - 删除：仅从隔离区移除（从未上传过云端，无需墓碑）。
+    var PENDING_REVIEW_KEY = 'dorm_pending_review_records';
+
+    /** 读取待核查记录隔离区（解析失败返回空数组，不抛异常） */
+    function getPendingReviewRecords(){
         try {
-            if(typeof queryFilteredData === 'function') queryFilteredData();
+            var arr = JSON.parse(localStorage.getItem(PENDING_REVIEW_KEY) || '[]');
+            return Array.isArray(arr) ? arr : [];
+        } catch(e) { return []; }
+    }
+    /** 持久化待核查记录隔离区（写入失败静默忽略） */
+    function savePendingReviewRecords(arr){
+        try { localStorage.setItem(PENDING_REVIEW_KEY, JSON.stringify(arr || [])); } catch(e) {}
+    }
+
+    /**
+     * 【第二道防线·孤儿派生自检】
+     * 检查一条待写入的派生个人记录：同批次（同 dormitoryId + recordDate +
+     * recordMode 且 createdAt 相差 ≤5 秒）不存在对应的"宿舍集体记录"时，
+     * 判定为孤儿派生记录，打上 pendingReview 标记并隔离（返回 true）；
+     * 正常提交时集体记录先于派生记录写入，hasParent 恒为 true，不会误伤。
+     * @param {object} stuRecord 派生个人记录（尚未 push 进 DB）
+     * @returns {boolean} true=已隔离（调用方应跳过 push/标脏）；false=正常记录
+     */
+    function quarantineIfOrphanDerived(stuRecord){
+        var hasParent = (DB.deductionRecords || []).some(function(x){
+            return x && x.studentId == null
+                && String(x.dormitoryId) === String(stuRecord.dormitoryId)
+                && x.recordDate === stuRecord.recordDate
+                && (x.recordMode || 'deduct') === (stuRecord.recordMode || 'deduct')
+                && Math.abs((x.createdAt || 0) - (stuRecord.createdAt || 0)) <= 5000;
+        });
+        if(hasParent) return false;
+        stuRecord.pendingReview = true;
+        stuRecord.interceptedAt = Date.now();
+        var pending = getPendingReviewRecords();
+        pending.push(stuRecord);
+        savePendingReviewRecords(pending);
+        console.warn('[登记防错] 检测到孤儿派生记录，已隔离为待核查记录（不上传云端）：', stuRecord.id);
+        return true;
+    }
+
+    /**
+     * 扫描并渲染"待核查记录"列表（仅管理员）。
+     * 列出隔离区中所有 pendingReview === true 的扣分/加分记录。
+     * 每条可"确认上传"（移入正式表、清除标记、打脏上行）或"删除"（仅移出隔离区）。
+     * 支持全选 + 批量确认 / 批量删除。
+     */
+    function runPendingReviewScan(){
+        if(!isAdmin()){ toast('无权限','error'); return; }
+        var box = document.getElementById('pendingReviewResult');
+        if(!box) return;
+        var list = getPendingReviewRecords().filter(function(r){
+            return r && r.pendingReview === true;
+        });
+        if(list.length === 0){
+            box.innerHTML = '<div class="empty-state" style="padding:18px">暂无待核查记录，数据健康 ✅</div>';
+            return;
+        }
+        var rows = list.map(function(r){
+            var dorm = getDormitoryById(r.dormitoryId);
+            var stu = r.studentId ? getStudentById(r.studentId) : null;
+            var isBonusRec = (r.recordMode === 'bonus');
+            var kind = isBonusRec ? 'bonus' : 'deduct';
+            var nameGetter = isBonusRec ? getBonusItemNameByIdOrCustom : getItemNameByIdOrCustom;
+            var hyNames = (r.hygieneItemIds || []).map(nameGetter).filter(Boolean).join('、');
+            var disNames = (r.disciplineItemIds || []).map(nameGetter).filter(Boolean).join('、');
+            var modeText = isBonusRec ? '加分' : '扣分';
+            return '<tr>'
+                + '<td data-label="选择"><input type="checkbox" class="pending-check" data-record-id="'+escapeHtmlAttr(String(r.id))+'"></td>'
+                + '<td data-label="模式">'+modeText+'</td>'
+                + '<td data-label="日期">'+escapeHtmlAttr(r.recordDate||'-')+'</td>'
+                + '<td data-label="宿舍">'+escapeHtmlAttr(dorm?dorm.roomNumber:'-')+'</td>'
+                + '<td data-label="学生">'+(stu ? escapeHtmlAttr(formatStudentBedName(stu)) : '宿舍集体')+'</td>'
+                + '<td data-label="卫生项目">'+(hyNames||'-')+'</td>'
+                + '<td data-label="卫生分">'+formatScoreText(r.hygieneScore||0, kind)+'</td>'
+                + '<td data-label="纪律项目">'+(disNames||'-')+'</td>'
+                + '<td data-label="纪律分">'+formatScoreText(r.disciplineScore||0, kind)+'</td>'
+                + '<td data-label="备注">'+escapeHtmlAttr(r.remark||'-')+'</td>'
+                + '<td data-label="操作"><button class="btn btn-success btn-xs" onclick="approvePendingRecord(\''+escapeHtmlAttr(String(r.id))+'\')">✅ 确认上传</button> <button class="btn btn-danger btn-xs" onclick="deletePendingRecord(\''+escapeHtmlAttr(String(r.id))+'\')">🗑️ 删除</button></td>'
+                + '</tr>';
+        }).join('');
+        box.innerHTML = '<div style="margin-bottom:10px;color:#b45309;font-weight:700">共发现 '+list.length+' 条待核查记录</div>'
+            + '<div style="display:flex;gap:10px;margin-bottom:10px;flex-wrap:wrap">'
+            + '<label style="display:inline-flex;align-items:center;gap:4px;font-weight:400;cursor:pointer"><input type="checkbox" id="pendingSelectAll" onchange="toggleAllPending(this.checked)"> 全选</label>'
+            + '<button class="btn btn-success btn-sm" onclick="batchApprovePending()">✅ 批量确认上传</button>'
+            + '<button class="btn btn-danger btn-sm" onclick="batchDeletePending()">🗑️ 批量删除</button>'
+            + '</div>'
+            + '<div style="overflow-x:auto"><table class="mobile-h-table"><thead><tr><th style="width:30px"></th><th>模式</th><th>日期</th><th>宿舍</th><th>学生</th><th>卫生项目</th><th>卫生分</th><th>纪律项目</th><th>纪律分</th><th>备注</th><th>操作</th></tr></thead><tbody>'+rows+'</tbody></table></div>';
+    }
+
+    function toggleAllPending(checked){
+        var boxes = document.querySelectorAll('.pending-check');
+        for(var i=0;i<boxes.length;i++) boxes[i].checked = checked;
+    }
+
+    /**
+     * 确认单条待核查记录：从隔离区移入正式记录表，清除 pendingReview 标记，
+     * 打脏上传（不改变记录内容）。
+     */
+    function approvePendingRecord(id){
+        if(!isAdmin()){ toast('无权限','error'); return; }
+        var pending = getPendingReviewRecords();
+        var idx = -1, r = null;
+        for(var i=0;i<pending.length;i++){
+            if(String(pending[i].id) === String(id)){ idx = i; r = pending[i]; break; }
+        }
+        if(!r){ toast('记录不存在','error'); return; }
+        pending.splice(idx, 1);
+        savePendingReviewRecords(pending);
+        delete r.pendingReview;
+        delete r.interceptedAt;
+        r.lastModified = Date.now();
+        DB.deductionRecords = DB.deductionRecords || [];
+        // 防御性去重：同 id 记录若已在正式表中则不重复 push
+        if(!DB.deductionRecords.some(function(x){ return String(x.id) === String(r.id); })){
+            DB.deductionRecords.push(r);
+        }
+        v3MarkDirty('deduction_record', r.id);
+        saveDB();
+        toast('已确认上传');
+        runPendingReviewScan();
+    }
+
+    /**
+     * 删除单条待核查记录：仅从隔离区移除。
+     * 该记录从未进入正式表、从未上传云端，因此不需要 V3 墓碑。
+     */
+    function deletePendingRecord(id){
+        if(!isAdmin()){ toast('无权限','error'); return; }
+        if(!confirm('确认删除这条待核查记录？此操作不可撤销！')) return;
+        savePendingReviewRecords(getPendingReviewRecords().filter(function(r){
+            return String(r.id) !== String(id);
+        }));
+        toast('已删除');
+        runPendingReviewScan();
+    }
+
+    function batchApprovePending(){
+        if(!isAdmin()){ toast('无权限','error'); return; }
+        var boxes = document.querySelectorAll('.pending-check:checked');
+        if(boxes.length === 0){ toast('请先勾选要确认的记录','error'); return; }
+        if(!confirm('确认将选中的 '+boxes.length+' 条记录标记为"通过核查"并上传云端？')) return;
+        var pending = getPendingReviewRecords();
+        var count = 0;
+        for(var i=0;i<boxes.length;i++){
+            var id = boxes[i].getAttribute('data-record-id');
+            var idx = -1, r = null;
+            for(var j=0;j<pending.length;j++){
+                if(String(pending[j].id) === String(id)){ idx = j; r = pending[j]; break; }
+            }
+            if(!r) continue;
+            pending.splice(idx, 1);
+            delete r.pendingReview;
+            delete r.interceptedAt;
+            r.lastModified = Date.now();
+            DB.deductionRecords = DB.deductionRecords || [];
+            if(!DB.deductionRecords.some(function(x){ return String(x.id) === String(r.id); })){
+                DB.deductionRecords.push(r);
+            }
+            v3MarkDirty('deduction_record', r.id);
+            count++;
+        }
+        savePendingReviewRecords(pending);
+        if(count > 0) saveDB();
+        toast('已确认上传 '+count+' 条');
+        runPendingReviewScan();
+    }
+
+    function batchDeletePending(){
+        if(!isAdmin()){ toast('无权限','error'); return; }
+        var boxes = document.querySelectorAll('.pending-check:checked');
+        if(boxes.length === 0){ toast('请先勾选要删除的记录','error'); return; }
+        if(!confirm('确认删除选中的 '+boxes.length+' 条待核查记录？此操作不可撤销！')) return;
+        var idMap = {};
+        for(var i=0;i<boxes.length;i++) idMap[boxes[i].getAttribute('data-record-id')] = true;
+        savePendingReviewRecords(getPendingReviewRecords().filter(function(r){
+            return !idMap[String(r.id)];
+        }));
+        toast('已删除 '+boxes.length+' 条');
+        runPendingReviewScan();
+    }
+
+    // ==================== 扣分/加分登记操作日志（localStorage，最近 100 条） ====================
+    /**
+     * 记录一条"扣分/加分登记"操作日志到 localStorage。
+     * 日志保留最近 100 条。写入失败静默忽略，不影响主流程。
+     */
+    function logDeductionSubmit(entry){
+        try {
+            var KEY = 'dorm_deduction_submit_logs';
+            var LIMIT = 100;
+            var logs = [];
+            try { logs = JSON.parse(localStorage.getItem(KEY) || '[]') || []; } catch(e) { logs = []; }
+            logs.unshift(entry);
+            if(logs.length > LIMIT) logs = logs.slice(0, LIMIT);
+            localStorage.setItem(KEY, JSON.stringify(logs));
+        } catch(e) {}
+    }
+
+    /**
+     * 在控制台打印当前扣分/加分登记的完整状态，供开发者排查。
+     */
+    function dumpDeductionState(tag){
+        try {
+            console.log('[' + tag + '] 扣分/加分登记状态：', JSON.stringify({
+                recordMode: addFormState.recordMode,
+                studentId: addFormState.studentId,
+                dormitoryId: addFormState.dormitoryId,
+                floorId: addFormState.floorId,
+                recordDate: addFormState.recordDate,
+                hygieneItemIds: addFormState.hygieneItemIds,
+                disciplineItemIds: addFormState.disciplineItemIds,
+                hygieneScore: addFormState.hygieneScore,
+                disciplineScore: addFormState.disciplineScore,
+                hygieneBonusItemIds: addFormState.hygieneBonusItemIds,
+                disciplineBonusItemIds: addFormState.disciplineBonusItemIds,
+                hygieneBonusScore: addFormState.hygieneBonusScore,
+                disciplineBonusScore: addFormState.disciplineBonusScore,
+                remark: addFormState.remark
+            }));
+        } catch(e) {}
+    }
+
+    /**
+     * 打印最近 N 条扣分/加分操作日志到控制台（供排查使用）。
+     */
+    function dumpDeductionLogs(limit){
+        limit = limit || 20;
+        try {
+            var logs = JSON.parse(localStorage.getItem('dorm_deduction_submit_logs') || '[]') || [];
+            console.log('=== 最近 ' + Math.min(limit, logs.length) + ' 条扣分/加分操作日志 ===');
+            logs.slice(0, limit).forEach(function(l, i){
+                var time = new Date(l.time).toLocaleString();
+                console.log(
+                    '[' + (i+1) + '] ' + time +
+                    ' | 模式=' + l.mode +
+                    ' | 宿舍ID=' + l.dormitoryId +
+                    ' | 学生ID=' + (l.studentId == null ? '宿舍集体' : l.studentId) +
+                    ' | 卫生=' + JSON.stringify(l.hygieneItemIds || []) + '(' + (l.hygieneScore||0) + ')' +
+                    ' | 纪律=' + JSON.stringify(l.disciplineItemIds || []) + '(' + (l.disciplineScore||0) + ')' +
+                    ' | 日期=' + l.recordDate +
+                    ' | 备注=' + (l.remark||'') +
+                    ' | 设备=' + (l.deviceId||'') +
+                    ' | 用户=' + (l.user||'')
+                );
+            });
+            console.log('=== 日志结束（共 ' + logs.length + ' 条，最多保留 100 条）===');
+            return logs;
         } catch(e) {
-            handleError(e, '刷新查询结果', { silent: true });
+            console.error('读取操作日志失败：', e);
+            return [];
         }
     }
 
     /**
-     * 扫描"学生当前宿舍 ≠ 记录宿舍"的异常扣分记录，并渲染结果表。
-     * 仅管理员可用。扫描不修改任何数据。
+     * 通用异常记录扫描（仅管理员）：
+     * 一次扫描扣分记录、请假记录、停宿记录、退宿记录中
+     * 所有"学生当前宿舍 ≠ 记录宿舍"的错位数据，合并成一张表。
+     * 每条可单独修正/删除，支持全选 + 批量修正 + 批量删除。
+     * 修正/删除按数据类型分发，保证各类型墓碑标记正确、云端同步正确。
+     * 说明：走读生（学生当前无宿舍）不参与扫描（不存在宿舍错位）。
      */
     function runDeductionMismatchScan(){
         if(!isAdmin()){ toast('无权限','error'); return; }
-        var list = (DB.deductionRecords || []).filter(function(r){
-            return isRecordDormMismatch(r);
-        });
         var box = document.getElementById('mismatchScanResult');
         if(!box) return;
+        var list = [];
+        // 1) 扣分记录
+        (DB.deductionRecords || []).forEach(function(r){
+            if(isRecordDormMismatch(r)){
+                list.push({ kind:'deduction', record: r, id: r.id, date: r.recordDate || '-' });
+            }
+        });
+        // 2) 请假记录
+        (DB.absenceRecords || []).forEach(function(r){
+            if(isLeaveRecordDormMismatch(r)){
+                list.push({ kind:'absence', record: r, id: r.id, date: r.startDate || r.date || '-' });
+            }
+        });
+        // 3) 退宿 / 停宿记录（同一数组，按 type 区分）
+        (DB.leaveRecords || []).forEach(function(r){
+            if(isLeaveRecordDormMismatch(r)){
+                list.push({ kind: r.type === 'stop' ? 'stop' : 'leave', record: r, id: r.id, date: r.date || r.startDate || '-' });
+            }
+        });
         if(list.length === 0){
             box.innerHTML = '<div class="empty-state" style="padding:18px">未发现异常记录，数据健康 ✅</div>';
             return;
         }
-        var rows = list.map(function(r){
-            var stu = getStudentById(r.studentId);
+        // 类型中文标签
+        var kindLabel = { deduction:'扣分', absence:'请假', stop:'停宿', leave:'退宿' };
+        var rows = list.map(function(item){
+            var r = item.record;
+            var stu = r.studentId ? getStudentById(r.studentId) : null;
             var stuDorm = stu && stu.dormitoryId ? getDormitoryById(stu.dormitoryId) : null;
-            var recDorm = getDormitoryById(r.dormitoryId);
+            // 记录侧宿舍号：优先 dormitoryId 对应的宿舍号；否则用记录里的宿舍号快照
+            var recDormRoom = '-';
+            if(r.dormitoryId){
+                var rd = getDormitoryById(r.dormitoryId);
+                if(rd) recDormRoom = rd.roomNumber;
+            } else if(r.dormitory){
+                recDormRoom = r.dormitory;
+            }
             return '<tr>'
-                + '<td data-label="选择"><input type="checkbox" class="mismatch-check" data-record-id="'+escapeHtmlAttr(r.id)+'"></td>'
-                + '<td data-label="日期">'+escapeHtmlAttr(r.recordDate||'-')+'</td>'
+                + '<td data-label="选择"><input type="checkbox" class="mismatch-check" data-kind="'+escapeHtmlAttr(item.kind)+'" data-record-id="'+escapeHtmlAttr(String(item.id))+'"></td>'
+                + '<td data-label="类型">'+(kindLabel[item.kind]||item.kind)+'</td>'
+                + '<td data-label="日期">'+escapeHtmlAttr(item.date)+'</td>'
                 + '<td data-label="学生">'+escapeHtmlAttr(stu?stu.name:'-')+'</td>'
                 + '<td data-label="班级">'+escapeHtmlAttr(stu?stu.className:'-')+'</td>'
                 + '<td data-label="学生当前宿舍">'+escapeHtmlAttr(stuDorm?stuDorm.roomNumber:'-')+'</td>'
-                + '<td data-label="记录宿舍" style="color:#ff3b30;font-weight:700">'+escapeHtmlAttr(recDorm?recDorm.roomNumber:'-')+'</td>'
-                + '<td data-label="操作"><button class="btn btn-primary btn-xs" onclick="fixMismatchRecord(\''+escapeHtmlAttr(r.id)+'\')">修正</button> <button class="btn btn-danger btn-xs" onclick="deleteMismatchRecord(\''+escapeHtmlAttr(r.id)+'\')">删除</button></td>'
+                + '<td data-label="记录宿舍" style="color:#ff3b30;font-weight:700">'+escapeHtmlAttr(recDormRoom)+'</td>'
+                + '<td data-label="操作"><button class="btn btn-primary btn-xs" onclick="fixMismatchRecord(\''+escapeHtmlAttr(String(item.id))+'\',\''+escapeHtmlAttr(item.kind)+'\')">修正</button> <button class="btn btn-danger btn-xs" onclick="deleteMismatchRecord(\''+escapeHtmlAttr(String(item.id))+'\',\''+escapeHtmlAttr(item.kind)+'\')">删除</button></td>'
                 + '</tr>';
         }).join('');
-        box.innerHTML = '<div style="margin-bottom:10px;color:#ff3b30;font-weight:700">共发现 '+list.length+' 条异常记录</div>'
+        // 统计各类型数量
+        var cnt = { deduction:0, absence:0, stop:0, leave:0 };
+        list.forEach(function(item){ cnt[item.kind] = (cnt[item.kind]||0) + 1; });
+        var cntText = '共发现 '+list.length+' 条异常记录'
+            + '（扣分 '+cnt.deduction+'，请假 '+cnt.absence+'，停宿 '+cnt.stop+'，退宿 '+cnt.leave+'）';
+        box.innerHTML = '<div style="margin-bottom:10px;color:#ff3b30;font-weight:700">'+cntText+'</div>'
             + '<div style="display:flex;gap:10px;margin-bottom:10px;flex-wrap:wrap">'
             + '<label style="display:inline-flex;align-items:center;gap:4px;font-weight:400;cursor:pointer"><input type="checkbox" id="mismatchSelectAll" onchange="toggleAllMismatch(this.checked)"> 全选</label>'
             + '<button class="btn btn-primary btn-sm" onclick="batchFixMismatch()">🔧 批量修正（改为学生当前宿舍）</button>'
             + '<button class="btn btn-danger btn-sm" onclick="batchDeleteMismatch()">🗑️ 批量删除</button>'
             + '</div>'
-            + '<div style="overflow-x:auto"><table class="mobile-h-table"><thead><tr><th style="width:30px"></th><th>日期</th><th>学生</th><th>班级</th><th>学生当前宿舍</th><th>记录宿舍</th><th>操作</th></tr></thead><tbody>'+rows+'</tbody></table></div>';
+            + '<div style="overflow-x:auto"><table class="mobile-h-table"><thead><tr><th style="width:30px"></th><th>类型</th><th>日期</th><th>学生</th><th>班级</th><th>学生当前宿舍</th><th>记录宿舍</th><th>操作</th></tr></thead><tbody>'+rows+'</tbody></table></div>';
     }
 
     /** 全选/取消全选异常记录勾选框 */
@@ -839,33 +1309,68 @@
         for(var i=0;i<boxes.length;i++) boxes[i].checked = checked;
     }
 
-    /**
-     * 修正单条异常记录：把记录的 dormitoryId 改为学生当前的 dormitoryId。
-     * 只改记录，不改学生数据。
-     */
-    function fixMismatchRecord(id){
+    /** 修正单条异常记录：按类型分发改记录宿舍（只改记录，不改学生数据） */
+    function fixMismatchRecord(id, kind){
         if(!isAdmin()){ toast('无权限','error'); return; }
-        var r = DB.deductionRecords.find(function(x){ return String(x.id) === String(id); });
-        if(!r){ toast('记录不存在','error'); return; }
-        var stu = getStudentById(r.studentId);
-        if(!stu || !stu.dormitoryId){ toast('学生当前无宿舍，无法修正','error'); return; }
-        r.dormitoryId = stu.dormitoryId;
-        r.lastModified = Date.now();
-        v3MarkDirty('deduction_record', r.id);
+        kind = kind || 'deduction';
+        var stu = null, rec = null;
+        if(kind === 'deduction'){
+            rec = (DB.deductionRecords||[]).find(function(x){ return String(x.id) === String(id); });
+            if(!rec){ toast('记录不存在','error'); return; }
+            stu = rec.studentId ? getStudentById(rec.studentId) : null;
+            if(!stu || !stu.dormitoryId){ toast('学生当前无宿舍，无法修正','error'); return; }
+            rec.dormitoryId = stu.dormitoryId;
+            rec.lastModified = Date.now();
+            v3MarkDirty('deduction_record', rec.id);
+        } else if(kind === 'absence'){
+            rec = (DB.absenceRecords||[]).find(function(x){ return String(x.id) === String(id); });
+            if(!rec){ toast('记录不存在','error'); return; }
+            stu = rec.studentId ? getStudentById(rec.studentId) : null;
+            if(!stu || !stu.dormitoryId){ toast('学生当前无宿舍，无法修正','error'); return; }
+            var newD = getDormitoryById(stu.dormitoryId);
+            rec.dormitoryId = stu.dormitoryId;
+            rec.dormitory = newD ? newD.roomNumber : rec.dormitory;
+            rec.bed = stu.bedNumber != null ? String(stu.bedNumber) : rec.bed;
+            rec.lastModified = Date.now();
+            v3MarkDirty('absence_record', rec.id);
+        } else {
+            rec = (DB.leaveRecords||[]).find(function(x){ return String(x.id) === String(id); });
+            if(!rec){ toast('记录不存在','error'); return; }
+            stu = rec.studentId ? getStudentById(rec.studentId) : null;
+            if(!stu || !stu.dormitoryId){ toast('学生当前无宿舍，无法修正','error'); return; }
+            var newD2 = getDormitoryById(stu.dormitoryId);
+            rec.dormitoryId = stu.dormitoryId;
+            rec.dormitory = newD2 ? newD2.roomNumber : rec.dormitory;
+            rec.bed = stu.bedNumber != null ? String(stu.bedNumber) : rec.bed;
+            rec.lastModified = Date.now();
+            v3MarkDirty('leave_record', rec.id);
+        }
         saveDB();
-        toast('已修正为 '+((getDormitoryById(stu.dormitoryId)||{}).roomNumber||'学生当前宿舍'));
+        toast('已修正');
         runDeductionMismatchScan();
     }
 
-    /** 删除单条异常记录（含二次确认） */
-    function deleteMismatchRecord(id){
+    /** 删除单条异常记录（按类型分发，含二次确认） */
+    function deleteMismatchRecord(id, kind){
         if(!isAdmin()){ toast('无权限','error'); return; }
         if(!confirm('确认删除这条异常记录？此操作不可撤销！')) return;
-        deleteRecord(id);  // 复用现有删除逻辑（内部含级联、墓碑、saveDB）
+        kind = kind || 'deduction';
+        if(kind === 'deduction'){
+            deleteRecord(id);
+        } else if(kind === 'absence'){
+            DB.absenceRecords = (DB.absenceRecords||[]).filter(function(r){ return String(r.id) !== String(id); });
+            v3MarkDeleted('absence_record', id);
+            saveDB();
+        } else {
+            DB.leaveRecords = (DB.leaveRecords||[]).filter(function(r){ return String(r.id) !== String(id); });
+            v3MarkDeleted('leave_record', id);
+            saveDB();
+        }
+        toast('已删除');
         runDeductionMismatchScan();
     }
 
-    /** 批量修正勾选的异常记录 */
+    /** 批量修正勾选的异常记录（按每条自己的类型分发） */
     function batchFixMismatch(){
         if(!isAdmin()){ toast('无权限','error'); return; }
         var boxes = document.querySelectorAll('.mismatch-check:checked');
@@ -874,13 +1379,36 @@
         var count = 0;
         for(var i=0;i<boxes.length;i++){
             var id = boxes[i].getAttribute('data-record-id');
-            var r = DB.deductionRecords.find(function(x){ return String(x.id) === String(id); });
-            if(!r) continue;
-            var stu = getStudentById(r.studentId);
-            if(!stu || !stu.dormitoryId) continue;
-            r.dormitoryId = stu.dormitoryId;
-            r.lastModified = Date.now();
-            v3MarkDirty('deduction_record', r.id);
+            var kind = boxes[i].getAttribute('data-kind') || 'deduction';
+            var stu = null, rec = null;
+            if(kind === 'deduction'){
+                rec = (DB.deductionRecords||[]).find(function(x){ return String(x.id) === String(id); });
+                if(rec) stu = rec.studentId ? getStudentById(rec.studentId) : null;
+                if(!rec || !stu || !stu.dormitoryId) continue;
+                rec.dormitoryId = stu.dormitoryId;
+                rec.lastModified = Date.now();
+                v3MarkDirty('deduction_record', rec.id);
+            } else if(kind === 'absence'){
+                rec = (DB.absenceRecords||[]).find(function(x){ return String(x.id) === String(id); });
+                if(rec) stu = rec.studentId ? getStudentById(rec.studentId) : null;
+                if(!rec || !stu || !stu.dormitoryId) continue;
+                var nd = getDormitoryById(stu.dormitoryId);
+                rec.dormitoryId = stu.dormitoryId;
+                rec.dormitory = nd ? nd.roomNumber : rec.dormitory;
+                rec.bed = stu.bedNumber != null ? String(stu.bedNumber) : rec.bed;
+                rec.lastModified = Date.now();
+                v3MarkDirty('absence_record', rec.id);
+            } else {
+                rec = (DB.leaveRecords||[]).find(function(x){ return String(x.id) === String(id); });
+                if(rec) stu = rec.studentId ? getStudentById(rec.studentId) : null;
+                if(!rec || !stu || !stu.dormitoryId) continue;
+                var nd2 = getDormitoryById(stu.dormitoryId);
+                rec.dormitoryId = stu.dormitoryId;
+                rec.dormitory = nd2 ? nd2.roomNumber : rec.dormitory;
+                rec.bed = stu.bedNumber != null ? String(stu.bedNumber) : rec.bed;
+                rec.lastModified = Date.now();
+                v3MarkDirty('leave_record', rec.id);
+            }
             count++;
         }
         if(count > 0){ saveDB(); }
@@ -888,20 +1416,35 @@
         runDeductionMismatchScan();
     }
 
-    /** 批量删除勾选的异常记录 */
+    /** 批量删除勾选的异常记录（按每条自己的类型分发） */
     function batchDeleteMismatch(){
         if(!isAdmin()){ toast('无权限','error'); return; }
         var boxes = document.querySelectorAll('.mismatch-check:checked');
         if(boxes.length === 0){ toast('请先勾选要删除的记录','error'); return; }
         if(!confirm('确认删除选中的 '+boxes.length+' 条异常记录？此操作不可撤销！')) return;
-        var ids = [];
-        for(var i=0;i<boxes.length;i++){ ids.push(boxes[i].getAttribute('data-record-id')); }
-        ids.forEach(function(id){ v3MarkDeleted('deduction_record', id); });
-        DB.deductionRecords = DB.deductionRecords.filter(function(r){
-            return ids.indexOf(String(r.id)) === -1;
+        var dedIds = [], absIds = [], leaveIds = [];
+        for(var i=0;i<boxes.length;i++){
+            var id = boxes[i].getAttribute('data-record-id');
+            var kind = boxes[i].getAttribute('data-kind') || 'deduction';
+            if(kind === 'deduction') dedIds.push(id);
+            else if(kind === 'absence') absIds.push(id);
+            else leaveIds.push(id);
+        }
+        // 扣分记录：若存在 deleteRecordWithoutRender 则用它（避免整页重绘），否则退回 deleteRecord
+        dedIds.forEach(function(id){
+            if(typeof deleteRecordWithoutRender === 'function') deleteRecordWithoutRender(id);
+            else deleteRecord(id);
         });
-        saveDB();
-        toast('已删除 '+ids.length+' 条记录');
+        absIds.forEach(function(id){
+            DB.absenceRecords = (DB.absenceRecords||[]).filter(function(r){ return String(r.id) !== String(id); });
+            v3MarkDeleted('absence_record', id);
+        });
+        leaveIds.forEach(function(id){
+            DB.leaveRecords = (DB.leaveRecords||[]).filter(function(r){ return String(r.id) !== String(id); });
+            v3MarkDeleted('leave_record', id);
+        });
+        if(absIds.length || leaveIds.length || dedIds.length) saveDB();
+        toast('已删除 '+(dedIds.length + absIds.length + leaveIds.length)+' 条记录');
         runDeductionMismatchScan();
     }
 
@@ -1133,8 +1676,16 @@
         } catch(e) { handleError(e, '修改记录预警触发', { silent: true }); }
         closeEditModal();
         toast('修改已保存');
-        renderView();
-        renderTree();
+        // 若当前处于数据管理页的查询结果状态，局部刷新查询结果（保留筛选条件）；
+        // 否则仍走整页重绘（住宿信息页、今日明细页等依赖重绘）
+        var qArea = document.getElementById('queryResultArea');
+        if(qArea && qArea.innerHTML.trim() !== '' && currentView === 'export'){
+            refreshQueryResultIfVisible();
+            renderTree();
+        } else {
+            renderView();
+            renderTree();
+        }
     }
     function closeEditModal(){
         var m=document.getElementById('editModal');
@@ -1165,17 +1716,45 @@
         var dn=document.getElementById('disCustomName'); if(dn) addFormState.disCustomName=dn.value;
         var hbn=document.getElementById('hyBonusCustomName'); if(hbn) addFormState.hyBonusCustomName=hbn.value;
         var dbn=document.getElementById('disBonusCustomName'); if(dbn) addFormState.disBonusCustomName=dbn.value;
+        // 【关键修复】同步当前界面上的"扣分/加分对象"到状态：
+        //   - 加分模式：对象恒为宿舍集体，强制 studentId=null；
+        //   - 扣分模式：
+        //       移动端：从 .chip-targets 中 .active 的芯片读取 data-student-id（若无则为宿舍集体）；
+        //       PC 端：从 #addStudent 下拉框读取 value（空串为宿舍集体）。
+        try {
+            if(addFormState.recordMode === 'bonus'){
+                addFormState.studentId = null;
+            } else {
+                var activeChip = document.querySelector('.chip-targets .chip.active[data-student-id]');
+                if(activeChip){
+                    var cid = activeChip.getAttribute('data-student-id');
+                    addFormState.studentId = cid ? parseInt(cid, 10) : null;
+                    if(isNaN(addFormState.studentId)) addFormState.studentId = null;
+                } else {
+                    var selEl = document.getElementById('addStudent');
+                    if(selEl){
+                        var sv = String(selEl.value || '').trim();
+                        addFormState.studentId = sv ? parseInt(sv, 10) : null;
+                        if(isNaN(addFormState.studentId)) addFormState.studentId = null;
+                    }
+                }
+            }
+        } catch(e) { /* 同步失败不影响主流程 */ }
     }
     /** 切换加/扣分模式（重渲染表单，保留楼层/宿舍/日期选择） */
     function switchRecordMode(mode){
         syncAddFormInputs();
         addFormState.recordMode = mode;
+        // 【关键修复】两种模式切换都必须强制清空 studentId：
+        //   - 切到加分模式：加分对象只能是"宿舍集体"；
+        //   - 切回扣分模式：扣分对象默认应为"宿舍集体"，之前的残留 ID 必须清掉，
+        //     否则会把上一步残留的学生 ID 当成扣分对象，生成"未操作的扣分记录"。
+        addFormState.studentId = null;
         // 切模式时清空被切走模式的勾选项与合计（两套项目不同；分数一并清零，
         // 避免重渲染后"无勾选却残留旧分数"）
         if(mode==='bonus'){
             addFormState.hygieneItemIds=[]; addFormState.disciplineItemIds=[];
             addFormState.hygieneScore=0; addFormState.disciplineScore=0;
-            addFormState.studentId=null;
         }else{
             addFormState.hygieneBonusItemIds=[]; addFormState.disciplineBonusItemIds=[];
             addFormState.hygieneBonusScore=0; addFormState.disciplineBonusScore=0;
@@ -1244,6 +1823,14 @@
     }
     // 移动端：选择扣分对象 → 仅更新高亮与状态，不重渲染（保留已勾选项目）
     function mobilePickTarget(el,v){
+        // 加分模式下，对象只能是"宿舍集体"，禁止修改 studentId。
+        if(addFormState.recordMode === 'bonus'){
+            addFormState.studentId = null;
+            var chipsBonus = document.querySelectorAll('.chip-targets .chip');
+            for(var j=0;j<chipsBonus.length;j++) chipsBonus[j].classList.remove('active');
+            if(chipsBonus.length > 0) chipsBonus[0].classList.add('active');
+            return;
+        }
         addFormState.studentId=v?parseInt(v):null;
         var chips=document.querySelectorAll('.chip-targets .chip');
         for(var i=0;i<chips.length;i++) chips[i].classList.remove('active');
@@ -1308,6 +1895,28 @@
     function submitDeductionImpl(){
         if(!addFormState.dormitoryId){toast('请选择宿舍','error');return;}
         var isBonus = (addFormState.recordMode === 'bonus');
+        // 【第一道防线】提交前强制归一化 studentId：
+        //   - 加分模式：studentId 必须为 null；
+        //   - 扣分模式：若 studentId 为 undefined/空串/NaN，归一化为 null；
+        //   - 扣分模式：若 studentId 对应的学生不在当前宿舍（防跨宿舍残留 ID），归一化为 null 并记录警告。
+        if(isBonus){
+            if(addFormState.studentId !== null && addFormState.studentId !== undefined){
+                console.warn('[登记防错] 加分模式下检测到残留 studentId=' + addFormState.studentId + '，已强制清空为宿舍集体');
+            }
+            addFormState.studentId = null;
+        } else {
+            var sid = addFormState.studentId;
+            if(sid === undefined || sid === '' || (typeof sid === 'number' && isNaN(sid))){
+                addFormState.studentId = null;
+            } else {
+                var checkStu = getStudentById(parseInt(sid, 10));
+                if(!checkStu || String(checkStu.dormitoryId) !== String(addFormState.dormitoryId)){
+                    console.warn('[登记防错] 扣分模式下检测到无效/跨宿舍 studentId=' + sid + '，已强制清空为宿舍集体');
+                    addFormState.studentId = null;
+                }
+            }
+        }
+        dumpDeductionState('提交前');
         var hygieneItemIds=[]; var disciplineItemIds=[];
         var hygieneScore=0; var disciplineScore=0;
         // 加分模式使用 bonus 系列元素 ID；扣分模式使用原有元素
@@ -1360,11 +1969,28 @@
                 // 使其不计入宿舍汇总分（避免"一次集体加分被算成多人加分之和"），
                 // 但仍计入个人净分（学生个人账上确实加了分）。
                 var stuRecord={id:generateRecordId(),createdAt:Date.now(),lastModified:Date.now(),dormitoryId:addFormState.dormitoryId,studentId:s.id,hygieneItemIds:hygieneItemIds,hygieneScore:perHyScore,disciplineItemIds:disciplineItemIds,disciplineScore:perDisScore,recordDate:addFormState.recordDate,remark:addFormState.remark||'',recordMode:mode,autoDerived:true};
+                // 【第二道防线·孤儿派生自检】命中则隔离到待核查存储（不进 DB、不标脏、不上传云端）
+                if(quarantineIfOrphanDerived(stuRecord)) return;
                 DB.deductionRecords.push(stuRecord);
                 v3MarkDirty('deduction_record', stuRecord.id);
             });
             saveDB();
             toast('加分成功！'+dormStudents.length+'名学生各获加分');
+            logDeductionSubmit({
+                time: Date.now(),
+                mode: 'bonus',
+                dormitoryId: addFormState.dormitoryId,
+                studentId: null,
+                hygieneItemIds: hygieneItemIds,
+                disciplineItemIds: disciplineItemIds,
+                hygieneScore: hygieneScore,
+                disciplineScore: disciplineScore,
+                recordDate: addFormState.recordDate,
+                remark: addFormState.remark || '',
+                dormStudentCount: dormStudents.length,
+                deviceId: (typeof DEVICE_ID !== 'undefined' ? DEVICE_ID : ''),
+                user: (currentUser ? (currentUser.username + '/' + currentUser.role) : '')
+            });
         }else{
             // 扣分模式：原有逻辑
             var newRecord={id:generateRecordId(),createdAt:Date.now(),lastModified:Date.now(),dormitoryId:addFormState.dormitoryId,studentId:addFormState.studentId||null,hygieneItemIds:hygieneItemIds,hygieneScore:hygieneScore,disciplineItemIds:disciplineItemIds,disciplineScore:disciplineScore,recordDate:addFormState.recordDate,remark:addFormState.remark||'',recordMode:'deduct'};
@@ -1394,6 +2020,8 @@
                         recordMode: 'deduct',
                         autoDerived: true
                     };
+                    // 【第二道防线·孤儿派生自检】命中则隔离到待核查存储（不进 DB、不标脏、不上传云端）
+                    if(quarantineIfOrphanDerived(stuRecord)) return;
                     DB.deductionRecords.push(stuRecord);
                     v3MarkDirty('deduction_record', stuRecord.id);
                 });
@@ -1410,6 +2038,21 @@
                 }
             } catch(e) { handleError(e, '扣分登记预警触发', { silent: true }); }
             toast('登记成功！');
+            logDeductionSubmit({
+                time: Date.now(),
+                mode: 'deduct',
+                dormitoryId: addFormState.dormitoryId,
+                studentId: (newRecord.studentId === undefined ? null : newRecord.studentId),
+                hygieneItemIds: hygieneItemIds,
+                disciplineItemIds: disciplineItemIds,
+                hygieneScore: hygieneScore,
+                disciplineScore: disciplineScore,
+                recordDate: addFormState.recordDate,
+                remark: addFormState.remark || '',
+                isCollective: (newRecord.studentId == null),
+                deviceId: (typeof DEVICE_ID !== 'undefined' ? DEVICE_ID : ''),
+                user: (currentUser ? (currentUser.username + '/' + currentUser.role) : '')
+            });
         }
         addFormState.studentId=null;
         addFormState.hygieneItemIds=[]; addFormState.disciplineItemIds=[];

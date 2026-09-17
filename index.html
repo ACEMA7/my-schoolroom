@@ -1003,6 +1003,9 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
     <div class="modal-overlay" id="changePwdModal" onclick="if(event.target===this) closeChangePasswordModal()">
         <div class="edit-modal" id="changePwdModalBox" role="dialog" aria-label="修改密码"></div>
     </div>
+    <div class="modal-overlay" id="batchEditQueryModal" onclick="if(event.target===this) closeBatchEditQueryModal()">
+        <div class="edit-modal" id="batchEditQueryModalBox" role="dialog" aria-label="批量修改扣分记录"></div>
+    </div>
 
     <!-- 业务逻辑模块化拆分：config -> data -> sync -> ui -> app（经典脚本，全局作用域） -->
     <script src="config.js"></script>
