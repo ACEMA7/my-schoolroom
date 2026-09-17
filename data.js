@@ -485,6 +485,56 @@
     }
 
     /**
+     * 迁移历史「个人记录」（含个人直接登记 + 集体派生个人）的分值，折算为 ±1。
+     * 集体记录本身（studentId=null）不迁移，保持原值。
+     * 判定条件（同时满足）：
+     *   1) studentId != null（个人记录，含派生）
+     *   2) scoreMigratedV2 !== true（尚未迁移，幂等）
+     *   3) 存在需要折算的分值
+     * 折算规则：扣分侧记 -1、加分侧记 +1；无项目记 0。
+     * @returns {number} 迁移条数
+     */
+    function migratePersonalScores() {
+        if (!DB || !Array.isArray(DB.deductionRecords)) return 0;
+        var migrated = 0;
+        DB.deductionRecords.forEach(function(r) {
+            if (!r) return;
+            // 只处理个人记录（含派生）；集体记录本身 studentId=null 跳过
+            if (r.studentId === null || r.studentId === undefined) return;
+            if (r.scoreMigratedV2 === true) return;
+
+            var isBonus = (r.recordMode === 'bonus');
+            var hy = Number(r.hygieneScore) || 0;
+            var dis = Number(r.disciplineScore) || 0;
+            var targetHy = isBonus ? 1 : -1;
+            var targetDis = isBonus ? 1 : -1;
+            var needHy = (hy !== 0 && hy !== targetHy);
+            var needDis = (dis !== 0 && dis !== targetDis);
+            if (!needHy && !needDis) {
+                r.scoreMigratedV2 = true;
+                return;
+            }
+            var hyIds = Array.isArray(r.hygieneItemIds) ? r.hygieneItemIds : [];
+            var disIds = Array.isArray(r.disciplineItemIds) ? r.disciplineItemIds : [];
+            if (needHy) {
+                r.hygieneScore = (hyIds.length > 0) ? targetHy : 0;
+            }
+            if (needDis) {
+                r.disciplineScore = (disIds.length > 0) ? targetDis : 0;
+            }
+            r.scoreMigratedV2 = true;
+            r.lastModified = Date.now();
+            v3MarkDirty('deduction_record', r.id);
+            migrated++;
+        });
+        if (migrated > 0) {
+            console.log('[分数折算迁移] 已将 ' + migrated + ' 条历史个人记录折算为 ±1');
+            saveDBToLocal();
+        }
+        return migrated;
+    }
+
+    /**
      * 迁移：为历史"宿舍集体扣分/加分记录"补齐缺失的派生个人记录。
      *
      * 背景：早期版本的集体扣分/加分没有为每个学生派生个人记录，
@@ -1218,17 +1268,27 @@
         // 新口径（符号版本 2）：扣分项目默认分为【负数】，加分项目默认分为【正数】
         var deductionItems = {
             hygiene: [
-                { id: 101, name: '地面脏乱', defaultScore: -2 },
-                { id: 102, name: '物品摆放不齐', defaultScore: -2 },
-                { id: 103, name: '未叠被子', defaultScore: -1 },
-                { id: 104, name: '垃圾未倒', defaultScore: -2 }
+                { id: 101, name: '没拖地', defaultScore: -0.2 },
+                { id: 102, name: '厕所脏', defaultScore: -0.2 },
+                { id: 103, name: '没倒垃圾', defaultScore: -0.2 },
+                { id: 104, name: '洗漱台脏', defaultScore: -0.2 },
+                { id: 105, name: '没关电器', defaultScore: -0.2 },
+                { id: 106, name: '被子没叠', defaultScore: -0.2 },
+                { id: 107, name: '厕所有杂物', defaultScore: -0.2 },
+                { id: 108, name: '鞋摆不规范', defaultScore: -0.2 },
+                { id: 109, name: '蚊帐没拉链', defaultScore: -0.2 },
+                { id: 110, name: '床上有杂物', defaultScore: -0.2 },
+                { id: 111, name: '空床有杂物', defaultScore: -0.2 },
+                { id: 112, name: '阳台地面脏', defaultScore: -0.2 }
             ],
             discipline: [
-                { id: 201, name: '多人大声讲话', defaultScore: -1 },
-                { id: 202, name: '离开宿舍', defaultScore: -1 },
-                { id: 203, name: '无请假信息', defaultScore: -1 },
-                { id: 204, name: '打铃后在宿舍走动', defaultScore: -1 },
-                { id: 205, name: '在阳台上洗漱', defaultScore: -1 }
+                { id: 201, name: '讲话', defaultScore: -1 },
+                { id: 202, name: '走动', defaultScore: -1 },
+                { id: 203, name: '孖铺', defaultScore: -1 },
+                { id: 204, name: '串宿舍', defaultScore: -1 },
+                { id: 205, name: '纪律不好', defaultScore: -1 },
+                { id: 206, name: '多人讲话吵闹', defaultScore: -1 },
+                { id: 207, name: '带炒粉炒面等食物进宿舍', defaultScore: -1 }
             ],
             hygieneBonus: [
                 { id: 301, name: '卫生优秀', defaultScore: 0.2 }
@@ -2291,6 +2351,7 @@ window.getStudentNetScore = getStudentNetScore;
 window.getDormCumulativeNetScore = getDormCumulativeNetScore;
 window.getFloorCumulativeNetScore = getFloorCumulativeNetScore;
 window.migrateDerivedDeductionRecords = migrateDerivedDeductionRecords;
+window.migratePersonalScores = migratePersonalScores;
 window.migrateScoreSign = migrateScoreSign;
 window.findDerivedRecords = findDerivedRecords;
 window.formatStudentBedName = formatStudentBedName;

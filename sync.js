@@ -1395,6 +1395,7 @@
         // 【历史数据迁移】识别旧版"集体加分派生的个人记录"，补上 autoDerived: true。
         // 幂等：已标记过的记录不会重复处理。迁移后标脏，云端会自动同步新字段。
         try { migrateDerivedDeductionRecords(); } catch(e) { console.warn('[派生迁移] 执行失败：', e); }
+        try { migratePersonalScores(); } catch(e) { console.warn('[分数折算迁移] 执行失败：', e); }
         try { migrateMissingDerivedRecords(); } catch(e) { console.warn('[派生补齐迁移] 执行失败：', e); }
         // 【分数符号迁移·步骤21·主控闸门】
         // 旧符号版本（扣分正/加分正）→ 新符号版本（扣分负/加分正）。

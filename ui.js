@@ -1136,7 +1136,34 @@
             disSection = '<div class="form-group"><label>📏 纪律'+scoreLabel+'（可多选）</label><div class="checkbox-group">'+disCheckboxes+'</div><div style="margin-top:5px">纪律'+scoreLabel+'合计：<input type="text" id="'+disScoreId+'" value="'+disScoreText+'" inputmode="decimal" style="width:80px;padding:4px" onchange="addFormChange(\''+disScoreRestoreKey+'\')"> 分</div></div>';
         }
         var submitLabel = isBonus ? '✅ 提交加分' : '✅ 提交扣分';
-        var tailHtml='<div class="form-group"><label>备注</label><input type="text" id="addRemark" placeholder="可填写具体原因..." onchange="addFormChange(\'remark\')" value="'+(addFormState.remark||'')+'"></div><div style="display:flex;gap:8px;margin-top:8px"><button class="btn btn-primary" onclick="submitDeduction()">'+submitLabel+'</button><button class="btn btn-outline" onclick="resetAddForm()">🔄 重置</button></div>';
+        // 当前登记对象提示（第一层加固）
+        var targetText;
+        var targetColor;
+        if(isBonus){
+            // 加分模式：对象恒为宿舍集体
+            var dormForTarget = getDormitoryById(addFormState.dormitoryId);
+            targetText = '📌 本次加分对象：' + (dormForTarget ? dormForTarget.roomNumber : '') + ' 宿舍集体（全体在住学生）';
+            targetColor = '#34c759';
+        } else if(addFormState.studentId === null || addFormState.studentId === undefined){
+            // 扣分模式 + 宿舍集体
+            var dormForTarget2 = getDormitoryById(addFormState.dormitoryId);
+            var stuCount = dormForTarget2 ? getStudentsByDormitory(dormForTarget2.id).length : 0;
+            targetText = '📌 本次扣分对象：' + (dormForTarget2 ? dormForTarget2.roomNumber : '') + ' 宿舍集体（全体 ' + stuCount + ' 名在住学生）';
+            targetColor = '#ff9500';
+        } else {
+            // 扣分模式 + 指定学生
+            var stuForTarget = getStudentById(addFormState.studentId);
+            if(stuForTarget){
+                var dormForTarget3 = getDormitoryById(stuForTarget.dormitoryId);
+                targetText = '📌 本次扣分对象：' + formatStudentBedName(stuForTarget) + '（' + (dormForTarget3 ? dormForTarget3.roomNumber : '') + ' 宿舍）';
+                targetColor = '#4f6ef7';
+            } else {
+                targetText = '📌 本次扣分对象：未选择（请检查）';
+                targetColor = '#ff3b30';
+            }
+        }
+        var currentTargetHtml = '<div style="background:#f8f9fc;border:2px solid ' + targetColor + ';border-radius:8px;padding:10px 14px;margin-bottom:12px;font-weight:700;color:' + targetColor + ';font-size:1rem">' + targetText + '</div>';
+        var tailHtml=currentTargetHtml+'<div class="form-group"><label>备注</label><input type="text" id="addRemark" placeholder="可填写具体原因..." onchange="addFormChange(\'remark\')" value="'+(addFormState.remark||'')+'"></div><div style="display:flex;gap:8px;margin-top:8px"><button class="btn btn-primary" onclick="submitDeduction()">'+submitLabel+'</button><button class="btn btn-outline" onclick="resetAddForm()">🔄 重置</button></div>';
         if(isMobile){
             // ===== 移动端芯片式布局：楼层4/行均布 → 宿舍横滑 → 对象（加分模式仅宿舍集体） =====
             var floorChips=allowedFloors.map(function(f){
@@ -3758,10 +3785,16 @@
             + '<div class="batch-tab ' + (st.importType === 'text' ? 'active' : '') + '" onclick="switchDeductionImportTab(\'text\')">📋 粘贴文本</div>'
             + '<div class="batch-tab ' + (st.importType === 'excel' ? 'active' : '') + '" onclick="switchDeductionImportTab(\'excel\')">📂 Excel导入</div>'
             + '</div>';
-        var hint = '<div class="batch-hint">每行一条记录，列顺序（逗号分隔或制表符分隔均可）：<b>日期, 宿舍号, 班级, 姓名, 类型, 项目, 分值, 备注</b><br>'
-            + '示例：2026-09-16, 801, 三28, 宿舍集体, 纪律, 讲话责任不详, -1, 2人讲话<br>'
-            + '类型支持：卫生（扣分）、纪律（扣分）、加分（"卫生加分/纪律加分"可指定侧别，仅写"加分"默认卫生加分）；分值可省略，省略时按系统默认值（卫生-0.2、纪律-1、加分+1）自动填充。<br>'
-            + '“干净加分”请填写：类型=加分，项目=干净，姓名=宿舍集体。</div>';
+        var hint = '<div class="batch-hint">每行一条记录，列顺序（逗号分隔或制表符分隔均可）：<b>日期, 宿舍号, 床号, 班级, 学生, 卫生项目, 卫生分值, 纪律项目, 纪律分值, 备注</b><br>'
+            + '示例：2026-09-15, 103, -, 三1, 宿舍集体, 卫生优秀, 0.2, -, 0, <br>'
+            + '示例：2026-09-15, 201, 1, 三10, 吴嘉乐, 厕所有杂物, -0.2, -, 0, <br>'
+            + '示例：2026-09-15, 601, -, 三3, 段凯琪, -, 0, -, -1, <br>'
+            + '说明：<br>'
+            + '· 宿舍集体：床号填 “-”（或留空），学生填 “宿舍集体”；<br>'
+            + '· 分值带符号：正数 = 加分，负数 = 扣分；<br>'
+            + '· 卫生与纪律可同时有值，但两侧分值符号必须一致；<br>'
+            + '· 项目列填 “-” 或留空表示该侧无分值；<br>'
+            + '· 个人记录折算为 ±1；集体记录本身保留原值，并为该宿舍每位在住学生派生一条折算为 ±1 的个人记录。</div>';
         var body;
         if(st.parsed){
             // ============ 阶段2：预览确认 ============
@@ -3797,7 +3830,7 @@
         }
         // ============ 阶段1：数据源 ============
         if(st.importType === 'text'){
-            body = hint + '<textarea id="deductionImportText" rows="9" style="width:100%;padding:10px;border:1.5px solid var(--gray-200);border-radius:8px;font-size:0.9286rem" placeholder="2026-09-16,801,三28,宿舍集体,纪律,讲话责任不详,-1,2人讲话"></textarea>';
+            body = hint + '<textarea id="deductionImportText" rows="9" style="width:100%;padding:10px;border:1.5px solid var(--gray-200);border-radius:8px;font-size:0.9286rem" placeholder="2026-09-16,801,-,三28,宿舍集体,-,0,讲话责任不详,-1,2人讲话"></textarea>';
         } else {
             body = hint + '<div style="margin-bottom:10px"><span class="file-upload-wrapper"><span class="file-upload-btn">📂 选择Excel文件</span><input type="file" id="deductionImportExcel" accept=".xlsx,.xls" onchange="onDeductionImportExcelChange(this.files[0])"></span>'
                 + '<span id="deductionImportFileName" style="margin-left:8px;color:var(--gray-600);font-size:0.8571rem">' + (st.file ? escapeHtmlAttr(st.file.name) : '未选择文件') + '</span></div>';

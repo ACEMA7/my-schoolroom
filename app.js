@@ -1767,6 +1767,12 @@
     function switchRecordMode(mode){
         syncAddFormInputs();
         addFormState.recordMode = mode;
+        // 第二层加固：切换模式时，若原选了个人，提示对象将被重置
+        if(addFormState.studentId !== null && addFormState.studentId !== undefined){
+            var oldStuM = getStudentById(addFormState.studentId);
+            var oldNameM = oldStuM ? formatStudentBedName(oldStuM) : '原学生';
+            toast('已切换登记模式，登记对象已重置为「宿舍集体」（原选：' + oldNameM + '）', 'error');
+        }
         // 【关键修复】两种模式切换都必须强制清空 studentId：
         //   - 切到加分模式：加分对象只能是"宿舍集体"；
         //   - 切回扣分模式：扣分对象默认应为"宿舍集体"，之前的残留 ID 必须清掉，
@@ -1831,6 +1837,12 @@
     // 移动端：选择楼层 → 宿舍/对象重置并重渲染（已勾选项自动恢复）
     function mobilePickFloor(fid){
         syncAddFormInputs();
+        // 第二层加固：切换楼层时，若原选了个人，提示对象将被重置
+        if(addFormState.recordMode !== 'bonus' && addFormState.studentId !== null && addFormState.studentId !== undefined){
+            var oldStu = getStudentById(addFormState.studentId);
+            var oldName = oldStu ? formatStudentBedName(oldStu) : '原学生';
+            toast('已切换楼层，登记对象已重置为「宿舍集体」（原选：' + oldName + '）', 'error');
+        }
         addFormState.floorId=fid;
         addFormState.dormitoryId=null;
         addFormState.studentId=null;
@@ -1839,30 +1851,63 @@
     // 移动端：选择宿舍 → 对象重置为宿舍集体并重渲染（已勾选项自动恢复）
     function mobilePickDorm(id){
         syncAddFormInputs();
+        // 第二层加固：切换宿舍时，若原选了个人，提示对象将被重置
+        if(addFormState.recordMode !== 'bonus' && addFormState.studentId !== null && addFormState.studentId !== undefined){
+            var oldStu = getStudentById(addFormState.studentId);
+            var oldName = oldStu ? formatStudentBedName(oldStu) : '原学生';
+            toast('已切换宿舍，登记对象已重置为「宿舍集体」（原选：' + oldName + '）', 'error');
+        }
         addFormState.dormitoryId=id;
         addFormState.studentId=null;
         renderAddView(document.getElementById('contentArea'));
     }
-    // 移动端：选择扣分对象 → 仅更新高亮与状态，不重渲染（保留已勾选项目）
+    // 移动端：选择扣分对象 → 更新状态并重绘（第 2 层加固：高亮与状态永远同步）
     function mobilePickTarget(el,v){
         // 加分模式下，对象只能是"宿舍集体"，禁止修改 studentId。
         if(addFormState.recordMode === 'bonus'){
+            try { syncAddFormInputs(); } catch(e) {}
             addFormState.studentId = null;
-            var chipsBonus = document.querySelectorAll('.chip-targets .chip');
-            for(var j=0;j<chipsBonus.length;j++) chipsBonus[j].classList.remove('active');
-            if(chipsBonus.length > 0) chipsBonus[0].classList.add('active');
+            // 重绘对象区域（保持与状态一致）
+            renderAddView(document.getElementById('contentArea'));
             return;
         }
-        addFormState.studentId=v?parseInt(v):null;
-        var chips=document.querySelectorAll('.chip-targets .chip');
-        for(var i=0;i<chips.length;i++) chips[i].classList.remove('active');
-        el.classList.add('active');
+        // 先同步当前 DOM 上已勾选项目/合计/备注，避免重绘后选择丢失。
+        // 注意顺序：syncAddFormInputs 会按"旧高亮芯片"回写一次 studentId，
+        // 因此必须先 sync、再用本次点击的 v 覆盖，最终对象以 v 为准。
+        try { syncAddFormInputs(); } catch(e) {}
+        // 更新状态（v 为空/null → 宿舍集体；否则为学生 ID）
+        if(v === null || v === undefined || v === ''){
+            addFormState.studentId = null;
+        } else {
+            var parsed = parseInt(v, 10);
+            addFormState.studentId = isNaN(parsed) ? null : parsed;
+        }
+        // 重绘整个登记页：芯片高亮、当前对象提示条、合计显示全部按最新 addFormState 重建
+        renderAddView(document.getElementById('contentArea'));
     }
     // bindCheckboxEventsGeneric / bindCustomCheckboxEventsGeneric 已迁移至 ui.js
     // （由 renderAddView 在渲染后直接绑定，同文件调用更稳；全局共享，无调用差异）
     function addFormChange(type){
-        if(type==='floor'){syncAddFormInputs();addFormState.floorId=parseInt(document.getElementById('addFloor').value);addFormState.dormitoryId=null;renderAddView(document.getElementById('contentArea'));}
-        else if(type==='dorm'){syncAddFormInputs();addFormState.dormitoryId=parseInt(document.getElementById('addDormitory').value);addFormState.studentId=null;renderAddView(document.getElementById('contentArea'));}
+        if(type==='floor'){
+            syncAddFormInputs();
+            // 第二层加固：切换楼层时，若原选了个人，提示对象将被重置
+            if(addFormState.recordMode !== 'bonus' && addFormState.studentId !== null && addFormState.studentId !== undefined){
+                var oldStuF = getStudentById(addFormState.studentId);
+                var oldNameF = oldStuF ? formatStudentBedName(oldStuF) : '原学生';
+                toast('已切换楼层，登记对象已重置为「宿舍集体」（原选：' + oldNameF + '）', 'error');
+            }
+            addFormState.floorId=parseInt(document.getElementById('addFloor').value);addFormState.dormitoryId=null;renderAddView(document.getElementById('contentArea'));
+        }
+        else if(type==='dorm'){
+            syncAddFormInputs();
+            // 第二层加固：切换宿舍时，若原选了个人，提示对象将被重置
+            if(addFormState.recordMode !== 'bonus' && addFormState.studentId !== null && addFormState.studentId !== undefined){
+                var oldStuD = getStudentById(addFormState.studentId);
+                var oldNameD = oldStuD ? formatStudentBedName(oldStuD) : '原学生';
+                toast('已切换宿舍，登记对象已重置为「宿舍集体」（原选：' + oldNameD + '）', 'error');
+            }
+            addFormState.dormitoryId=parseInt(document.getElementById('addDormitory').value);addFormState.studentId=null;renderAddView(document.getElementById('contentArea'));
+        }
         else if(type==='student'){addFormState.studentId=document.getElementById('addStudent').value?parseInt(document.getElementById('addStudent').value):null;}
         else if(type==='date'){addFormState.recordDate=document.getElementById('addDate').value;}
         else if(type==='hygieneScore'){
@@ -1940,6 +1985,20 @@
                 }
             }
         }
+        // 第三层加固：宿舍集体扣分二次确认（放在 studentId 归一化之后，
+        // 确保判定的是最终生效对象——残留/跨宿舍 ID 已在上方被清空为集体）
+        if(!isBonus && (addFormState.studentId === null || addFormState.studentId === undefined)){
+            var dormForConfirm = getDormitoryById(addFormState.dormitoryId);
+            var stuCountForConfirm = dormForConfirm ? getStudentsByDormitory(dormForConfirm.id).length : 0;
+            var confirmMsg = '本次为「宿舍集体」扣分登记：\n\n' +
+                '宿舍：' + (dormForConfirm ? dormForConfirm.roomNumber : '未知') + '\n' +
+                '影响：该宿舍全部 ' + stuCountForConfirm + ' 名在住学生（每人扣 1 分）\n\n' +
+                '如需改为「指定学生」扣分，请点【取消】，然后在下方选择具体学生。\n\n' +
+                '确认提交宿舍集体扣分？';
+            if(!confirm(confirmMsg)){
+                return;
+            }
+        }
         dumpDeductionState('提交前');
         var hygieneItemIds=[]; var disciplineItemIds=[];
         var hygieneScore=0; var disciplineScore=0;
@@ -1991,9 +2050,9 @@
                 // 二次校验：学生当前必须确实住在本宿舍（防止宿舍名单瞬时错位）
                 var currentStu = getStudentById(s.id);
                 if(!currentStu || String(currentStu.dormitoryId) !== String(addFormState.dormitoryId)) return;
-                // 新口径：按非零判定有无分值，加分派生 +1、扣分派生 -1
-                var perHyScore = hygieneScore !== 0 ? (isBonus ? 1 : -1) : 0;
-                var perDisScore = disciplineScore !== 0 ? (isBonus ? 1 : -1) : 0;
+                // 最终口径：派生只看该侧是否勾选了项目（itemIds 非空），加分派生 +1
+                var perHyScore = hygieneItemIds.length > 0 ? 1 : 0;
+                var perDisScore = disciplineItemIds.length > 0 ? 1 : 0;
                 // 【关键】给派生的个人加分记录打上 autoDerived: true，
                 // 使其不计入宿舍汇总分（避免"一次集体加分被算成多人加分之和"），
                 // 但仍计入个人净分（学生个人账上确实加了分）。
@@ -2022,7 +2081,12 @@
             });
         }else{
             // 扣分模式：原有逻辑
-            var newRecord={id:generateRecordId(),createdAt:Date.now(),lastModified:Date.now(),dormitoryId:addFormState.dormitoryId,studentId:addFormState.studentId||null,hygieneItemIds:hygieneItemIds,hygieneScore:hygieneScore,disciplineItemIds:disciplineItemIds,disciplineScore:disciplineScore,recordDate:addFormState.recordDate,remark:addFormState.remark||'',recordMode:'deduct'};
+            // 个人直接登记扣分：按侧别折算为 -1（与集体派生口径一致）
+            // 判定：studentId 为空 = 宿舍集体（保持原始分值）；studentId 非空 = 个人直接登记（折算）
+            var isCollectiveDeduct = (addFormState.studentId === null || addFormState.studentId === undefined);
+            var finalHyScore = isCollectiveDeduct ? hygieneScore : (hygieneItemIds.length > 0 ? -1 : 0);
+            var finalDisScore = isCollectiveDeduct ? disciplineScore : (disciplineItemIds.length > 0 ? -1 : 0);
+            var newRecord={id:generateRecordId(),createdAt:Date.now(),lastModified:Date.now(),dormitoryId:addFormState.dormitoryId,studentId:addFormState.studentId||null,hygieneItemIds:hygieneItemIds,hygieneScore:finalHyScore,disciplineItemIds:disciplineItemIds,disciplineScore:finalDisScore,recordDate:addFormState.recordDate,remark:addFormState.remark||'',recordMode:'deduct'};
             DB.deductionRecords.push(newRecord);
             v3MarkDirty('deduction_record', newRecord.id);
             // 【新增】扣分模式下，如果是宿舍集体扣分，为宿舍每个学生派生一条个人扣分记录
@@ -2032,9 +2096,9 @@
                     // 二次校验：学生当前必须确实住在本宿舍（防止宿舍名单瞬时错位）
                     var currentStu = getStudentById(s.id);
                     if(!currentStu || String(currentStu.dormitoryId) !== String(addFormState.dormitoryId)) return;
-                    // 新口径：扣分派生个人记录为 -1（卫生/纪律侧非零即扣）
-                    var perHyScore = hygieneScore !== 0 ? -1 : 0;
-                    var perDisScore = disciplineScore !== 0 ? -1 : 0;
+                    // 最终口径：派生只看该侧是否勾选了项目（itemIds 非空），扣分派生 -1
+                    var perHyScore = hygieneItemIds.length > 0 ? -1 : 0;
+                    var perDisScore = disciplineItemIds.length > 0 ? -1 : 0;
                     var stuRecord = {
                         id: generateRecordId(),
                         createdAt: Date.now(),
@@ -5258,92 +5322,126 @@
         return dup;
     }
 
-    /**
-     * 核心解析：批量导入扣分/加分记录。
-     * 列格式：日期、宿舍号、班级、姓名、类型(卫生/纪律/加分)、项目、分值、备注。
-     *   - 首行日期无法识别时按表头跳过（与请假导入一致）；
-     *   - 姓名为"宿舍集体/集体"时生成宿舍集体记录（studentId=null），否则按"班级+姓名"匹配学生；
-     *   - 分值省略时：卫生 0.2、纪律 1、加分 1；填写时先取绝对值再按模式赋符号
-     *     （符号版本 2：扣分存负数、加分存正数）；
-     *   - 【侧别规则】扣分：卫生→卫生侧、纪律→纪律侧；加分：含"纪律"→纪律加分侧，
-     *     其余（卫生加分/仅写"加分"）→卫生加分侧。每条记录只落单侧——
-     *     getTotalBonusScore = 卫生分+纪律分，加分落两侧会导致加分翻倍、今日明细重复显示。
-     * 解析结果写入 deductionImportState.parsed（valid 附加预览用展示字段，落库前剥离）。
-     * @param {Array[]} rows - 二维数据行
-     */
     function parseDeductionImportRows(rows){
         var result = { valid: [], skipped: [], duplicates: 0 };
         var batchSeen = {};
         rows.forEach(function(row, idx){
             if(!row || row.length === 0 || row.every(function(c){ return c === undefined || c === null || String(c).trim() === ''; })) return;
+
             var date = parseLeaveImportDate(row[0]);
             if(!date){
                 result.skipped.push(idx === 0 ? '第1行：首行按表头跳过' : '第' + (idx+1) + '行：日期无法识别（' + String(row[0]).substring(0, 20) + '）');
                 return;
             }
             var dormitoryRoom = String(row[1] || '').trim();
-            var className = String(row[2] || '').trim();
-            var name = String(row[3] || '').trim();
-            var type = String(row[4] || '').trim();
-            var itemName = String(row[5] || '').trim();
-            var scoreRaw = String(row[6] || '').trim();
-            var remark = String(row[7] || '').trim();
-            if(!dormitoryRoom || !className || !name || !type || !itemName){
-                result.skipped.push('第' + (idx+1) + '行：缺少必填字段（日期/宿舍号/班级/姓名/类型/项目）'); return;
+            var bedRaw = String(row[2] || '').trim();
+            var bedNumber = (bedRaw === '-' || bedRaw === '' || bedRaw === '—') ? '' : bedRaw;
+            var className = String(row[3] || '').trim();
+            var nameRaw = String(row[4] || '').trim();
+            var hyItemName = String(row[5] || '').trim();
+            var hyScoreRaw = String(row[6] || '').trim();
+            var disItemName = String(row[7] || '').trim();
+            var disScoreRaw = String(row[8] || '').trim();
+            var remark = String(row[9] || '').trim();
+
+            if(!dormitoryRoom || !className || !nameRaw){
+                result.skipped.push('第' + (idx+1) + '行：缺少必填字段（日期/宿舍号/班级/学生）');
+                return;
             }
             var dorm = getDormitoryByRoomNumber(dormitoryRoom);
-            if(!dorm){ result.skipped.push('第' + (idx+1) + '行：宿舍号不存在（' + dormitoryRoom + '）'); return; }
-            var isBonus = (type.indexOf('加分') !== -1 || type === 'bonus' || type === 'add');
-            var isHygiene = (type.indexOf('卫生') !== -1);
-            var isDiscipline = (type.indexOf('纪律') !== -1);
-            if(!isBonus && !isHygiene && !isDiscipline){
-                result.skipped.push('第' + (idx+1) + '行：类型必须为 卫生/纪律/加分（实际：' + type + '）'); return;
+            if(!dorm){
+                result.skipped.push('第' + (idx+1) + '行：宿舍号不存在（' + dormitoryRoom + '）');
+                return;
             }
-            var isCollective = (name === '宿舍集体' || name === '集体');
-            var student = isCollective ? null : ((DB.students || []).find(function(s){ return s.name === name && s.className === className; }) || null);
-            if(!student && !isCollective){
-                result.skipped.push('第' + (idx+1) + '行：未找到学生（' + className + ' ' + name + '）'); return;
+            var isCollective = (nameRaw === '宿舍集体' || nameRaw === '集体');
+
+            function normItem(v){ return (v === '-' || v === '—' || v === '') ? '' : v; }
+            function normScore(v){
+                if(v === '' || v === '-' || v === '—') return null;
+                var n = parseFloat(v);
+                return isNaN(n) ? null : n;
             }
-            var score = parseFloat(scoreRaw);
-            if(isNaN(score)){
-                score = isBonus ? 1 : (isHygiene ? 0.2 : 1);
+            var hyItem = normItem(hyItemName);
+            var disItem = normItem(disItemName);
+            var hyScore = normScore(hyScoreRaw);
+            var disScore = normScore(disScoreRaw);
+
+            // 侧别判定以“分值非 0”为准（0/空 = 该侧无分值）；
+            // 与 15 行样例数据一致：仅登记“纪律 -1”时项目名允许留空。
+            var hasHy = (hyScore !== null && hyScore !== 0);
+            var hasDis = (disScore !== null && disScore !== 0);
+            if(!hasHy && !hasDis){
+                result.skipped.push('第' + (idx+1) + '行：卫生侧与纪律侧都无有效项目/分值');
+                return;
+            }
+            // 有分值但项目名为空时用侧别名兜底，保证 itemIds 非空
+            // （否则折算展示与历史迁移会把该侧当作无项目处理）
+            if(hasHy && hyItem === '') hyItem = '卫生';
+            if(hasDis && disItem === '') disItem = '纪律';
+
+            var signs = [];
+            if(hasHy) signs.push(hyScore > 0 ? 1 : -1);
+            if(hasDis) signs.push(disScore > 0 ? 1 : -1);
+            if(signs.length === 2 && signs[0] !== signs[1]){
+                result.skipped.push('第' + (idx+1) + '行：卫生与纪律分值符号不一致（一正一负）');
+                return;
+            }
+            var isBonus = (signs[0] > 0);
+            var recordMode = isBonus ? 'bonus' : 'deduct';
+
+            var student = null;
+            if(!isCollective){
+                student = (DB.students || []).find(function(s){ return s.name === nameRaw && s.className === className; }) || null;
+                if(!student){
+                    result.skipped.push('第' + (idx+1) + '行：未找到学生（' + className + ' ' + nameRaw + '）');
+                    return;
+                }
+            }
+
+            // ===== 折算（口径 X·最终版） =====
+            // 集体记录本身：保留原值；个人记录：折算为 ±1
+            var unit = isBonus ? 1 : -1;
+            var finalHyScore, finalDisScore;
+            if(isCollective){
+                // 集体记录本身保留原值
+                finalHyScore = hasHy ? hyScore : 0;
+                finalDisScore = hasDis ? disScore : 0;
             } else {
-                score = Math.abs(score);
+                // 个人记录折算 ±1
+                finalHyScore = hasHy ? unit : 0;
+                finalDisScore = hasDis ? unit : 0;
             }
-            score = roundScore1(score);
-            // 【符号版本 2】统一按模式赋底层符号：扣分取负、加分保持正
-            if(!isBonus) score = -score;
-            // 单侧归属（见函数头说明）：加分默认卫生侧，含"纪律"才走纪律侧
-            var useHygieneSide = isBonus ? !isDiscipline : isHygiene;
-            var useDisciplineSide = isBonus ? isDiscipline : (!isHygiene && isDiscipline);
-            var side = useHygieneSide ? 'hygiene' : 'discipline';
-            var itemId = 'custom:' + itemName;
+
             var rec = {
                 id: generateRecordId(),
                 createdAt: Date.now(),
+                lastModified: Date.now(),
                 dormitoryId: dorm.id,
                 studentId: student ? student.id : null,
-                hygieneItemIds: useHygieneSide ? [itemId] : [],
-                hygieneScore: useHygieneSide ? score : 0,
-                disciplineItemIds: useDisciplineSide ? [itemId] : [],
-                disciplineScore: useDisciplineSide ? score : 0,
+                hygieneItemIds: hasHy ? ['custom:' + hyItem] : [],
+                hygieneScore: finalHyScore,
+                disciplineItemIds: hasDis ? ['custom:' + disItem] : [],
+                disciplineScore: finalDisScore,
                 recordDate: date,
                 remark: remark,
-                recordMode: isBonus ? 'bonus' : 'deduct'
+                recordMode: recordMode
             };
+
+            var side = hasHy ? 'hygiene' : 'discipline';
+            var itemName = hasHy ? hyItem : disItem;
             if(isDeductionRecordDuplicate(rec, side, itemName, batchSeen)){
                 result.duplicates++;
                 return;
             }
-            // 仅用于预览展示的附加字段，confirmDeductionImportImpl 落库前会删除
+
             result.valid.push(Object.assign({}, rec, {
-                itemName: itemName,
-                side: side,
-                scoreText: formatScoreText(score, isBonus ? 'bonus' : 'deduct'),
+                isCollective: isCollective,
+                itemName: hasHy ? hyItem : disItem,
+                scoreText: formatScoreText(hasHy ? finalHyScore : finalDisScore, recordMode),
                 date: date,
                 dormitory: dormitoryRoom,
                 className: className,
-                name: isCollective ? '宿舍集体' : name
+                name: isCollective ? '宿舍集体' : nameRaw
             }));
         });
         deductionImportState.parsed = result;
@@ -5357,14 +5455,17 @@
         safeAsync(confirmDeductionImportImpl, '批量导入扣分/加分记录', { retry: true });
     }
 
-    /** 确认导入实际逻辑：剥离预览字段 → 落库 → 逐条 V3 标脏 → saveDB → 刷新 */
+    /**
+     * 确认导入实际逻辑：剥离预览字段 → 落主记录 → 集体记录按宿舍派生个人记录（±1）
+     * → 逐条 V3 标脏 → saveDB → toast 汇总 → 刷新。
+     */
     function confirmDeductionImportImpl(){
         var st = deductionImportState;
         if(!st.parsed || !st.parsed.valid || !st.parsed.valid.length){ toast('没有可导入的记录','error'); return Promise.resolve(); }
-        var n = 0;
+        var mainCount = 0;
+        var derivedCount = 0;
         st.parsed.valid.forEach(function(rec){
             var cleanRec = Object.assign({}, rec);
-            // 剥离仅用于预览展示的附加字段，不写入 DB
             delete cleanRec.itemName;
             delete cleanRec.scoreText;
             delete cleanRec.side;
@@ -5372,12 +5473,53 @@
             delete cleanRec.dormitory;
             delete cleanRec.className;
             delete cleanRec.name;
+            delete cleanRec.isCollective;
+
+            // 1) 落主记录（集体或个人的）
             DB.deductionRecords.push(cleanRec);
             v3MarkDirty('deduction_record', cleanRec.id);
-            n++;
+            mainCount++;
+
+            // 2) 若为宿舍集体记录，为该宿舍每位在住学生派生一条个人记录（折算 ±1）
+            if(rec.isCollective === true){
+                var isBonusRec = (cleanRec.recordMode === 'bonus');
+                var unit = isBonusRec ? 1 : -1;
+                var hasHy = (cleanRec.hygieneItemIds && cleanRec.hygieneItemIds.length > 0);
+                var hasDis = (cleanRec.disciplineItemIds && cleanRec.disciplineItemIds.length > 0);
+                var perHyScore = hasHy ? unit : 0;
+                var perDisScore = hasDis ? unit : 0;
+                var dormStudents = getStudentsByDormitory(cleanRec.dormitoryId);
+                dormStudents.forEach(function(s){
+                    var currentStu = getStudentById(s.id);
+                    if(!currentStu || String(currentStu.dormitoryId) !== String(cleanRec.dormitoryId)) return;
+                    var derived = {
+                        id: generateRecordId(),
+                        createdAt: Date.now(),
+                        lastModified: Date.now(),
+                        dormitoryId: cleanRec.dormitoryId,
+                        studentId: s.id,
+                        hygieneItemIds: (cleanRec.hygieneItemIds || []).slice(),
+                        hygieneScore: perHyScore,
+                        disciplineItemIds: (cleanRec.disciplineItemIds || []).slice(),
+                        disciplineScore: perDisScore,
+                        recordDate: cleanRec.recordDate,
+                        remark: cleanRec.remark || '',
+                        recordMode: cleanRec.recordMode,
+                        autoDerived: true
+                    };
+                    if(typeof quarantineIfOrphanDerived === 'function' && quarantineIfOrphanDerived(derived)) return;
+                    DB.deductionRecords.push(derived);
+                    v3MarkDirty('deduction_record', derived.id);
+                    derivedCount++;
+                });
+            }
         });
         saveDB();
-        toast('导入完成：成功导入 ' + n + ' 条记录' + (st.parsed.duplicates > 0 ? '，重复跳过 ' + st.parsed.duplicates + ' 条' : '') + (st.parsed.skipped.length > 0 ? '，无效跳过 ' + st.parsed.skipped.length + ' 条' : ''));
+        var msg = '导入完成：成功导入 ' + mainCount + ' 条主记录';
+        if(derivedCount > 0) msg += '（含 ' + derivedCount + ' 条派生个人记录）';
+        if(st.parsed.duplicates > 0) msg += '，重复跳过 ' + st.parsed.duplicates + ' 条';
+        if(st.parsed.skipped.length > 0) msg += '，无效跳过 ' + st.parsed.skipped.length + ' 条';
+        toast(msg);
         closeDeductionImportModal();
         renderView();
         renderTree();
