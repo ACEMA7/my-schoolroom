@@ -997,9 +997,10 @@
                 total += isBonus ? customMag : -customMag;
             }
             else {
-                // 复选框 value 恒为字符串，parseInt 归一化；getItemById 内部用 String 比较兼容两种 id
+                // 复选框 value 恒为字符串；查找函数内部用 String 比较兼容数字/字符串两种 id，
+                // 禁止再 parseInt：字符串 id（如自建项目 mu5ifb4k-...）会被转成 NaN 而漏算。
                 // defaultScore 已按新口径带符号（扣分负、加分正），直接累加
-                var item = isBonus ? getBonusItemById(parseInt(checked[j].value, 10)) : getItemById(parseInt(checked[j].value, 10));
+                var item = isBonus ? getBonusItemById(checked[j].value) : getItemById(checked[j].value);
                 if(item) total+=(parseFloat(item.defaultScore)||0);
             }
         }

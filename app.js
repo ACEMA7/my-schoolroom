@@ -1588,7 +1588,7 @@
             var checked=document.querySelectorAll('.'+prefix+'-item:checked');
             for(var i=0;i<checked.length;i++){
                 if(checked[i].value==='custom') total+=customScore;
-                else{var it=getItemById(parseInt(checked[i].value));if(it) total+=Math.abs(parseFloat(it.defaultScore)||0);}
+                else{var it=getItemById(checked[i].value);if(it) total+=Math.abs(parseFloat(it.defaultScore)||0);}
             }
             // 扣分合计：新口径底层为负数
             return roundScore1(-total);
@@ -1641,7 +1641,11 @@
                     ids.push('custom:'+name);
                     score+=customScore;
                 }else{
-                    var v=parseInt(checked[i].value);
+                    // 项目 id：数字形态保持数字（与历史数据一致），字符串形态（自建项目）
+                    // 原样保留——parseInt 会把 "mu5ifb4k-..." 转成 NaN，序列化后变 null
+                    var rawV=checked[i].value;
+                    var numV=parseInt(rawV,10);
+                    var v=isNaN(numV)?rawV:numV;
                     ids.push(v);
                     var it=getItemById(v);
                     // 新口径扣分项 defaultScore 为负：合计阶段按绝对值累加，
@@ -2016,7 +2020,12 @@
                     var customName=document.getElementById(hyCustomNameId).value.trim();
                     if(!customName){toast('请输入自定义卫生项目名称','error');return;}
                     hygieneItemIds.push('custom:'+customName);
-                } else hygieneItemIds.push(parseInt(hyChecked[i].value));
+                } else {
+                    // 数字 id 保持数字、字符串 id（自建项目）原样保留，
+                    // parseInt 会把 "mu5ifb4k-..." 转 NaN，JSON 序列化后变 null
+                    var hyRawId=hyChecked[i].value, hyNumId=parseInt(hyRawId,10);
+                    hygieneItemIds.push(isNaN(hyNumId)?hyRawId:hyNumId);
+                }
             }
             hygieneScore=roundScore1(Math.abs(parseFloat(String(hyScoreEl.value).replace(/[^\d.\-]/g,''))||0));
         }
@@ -2027,7 +2036,12 @@
                     var customName=document.getElementById(disCustomNameId).value.trim();
                     if(!customName){toast('请输入自定义纪律项目名称','error');return;}
                     disciplineItemIds.push('custom:'+customName);
-                } else disciplineItemIds.push(parseInt(disChecked[i].value));
+                } else {
+                    // 数字 id 保持数字、字符串 id（自建项目）原样保留，
+                    // parseInt 会把 "mu5ifb4k-..." 转 NaN，JSON 序列化后变 null
+                    var disRawId=disChecked[i].value, disNumId=parseInt(disRawId,10);
+                    disciplineItemIds.push(isNaN(disNumId)?disRawId:disNumId);
+                }
             }
             disciplineScore=roundScore1(Math.abs(parseFloat(String(disScoreEl.value).replace(/[^\d.\-]/g,''))||0));
         }
