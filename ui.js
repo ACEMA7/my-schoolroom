@@ -2504,6 +2504,15 @@
                 + '<div id="mismatchScanResult" style="margin-top:14px"></div>'
                 + '</div></div>';
         }
+        // 清理历史异常记录卡片（仅管理员在主控设备可用）：
+        // 删除携带 targetClassNames 字段的历史异常扣分记录，逐条打 V3 墓碑同步云端
+        if(isAdmin() && IS_MASTER_DEVICE){
+            html += '<div class="card"><div class="card-header">🧹 清理历史异常记录</div><div class="card-body">'
+                + '<p style="margin:0 0 10px;color:var(--text-light);font-size:0.9rem">扫描全部扣分记录，识别并删除携带 targetClassNames 字段的历史异常记录（当前版本代码不再写入该字段）。清理前请确认备份，清理操作不可撤销。</p>'
+                + '<button class="btn btn-danger" onclick="cleanLegacyAnomalyRecords()">🧹 开始清理</button>'
+                + '<div id="legacyCleanupResult" style="margin-top:14px"></div>'
+                + '</div></div>';
+        }
         // 待核查记录卡片（仅管理员可见）：列出被防污染闸门隔离、暂缓上传云端的
         // 扣分/加分记录（孤儿派生记录）。这些记录不进入正式记录表，业务页面完全
         // 不可见；仅在此处由管理员核对后"确认上传"或"删除"。

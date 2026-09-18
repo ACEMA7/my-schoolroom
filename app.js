@@ -1463,6 +1463,82 @@
         runDeductionMismatchScan();
     }
 
+    /**
+     * 清理历史异常扣分记录（仅管理员在主控设备可用）：
+     * 扫描全部扣分记录，识别携带 targetClassNames 字段的历史异常记录
+     * （当前任何版本代码都不再写入该字段），先展示按日期分布的扫描结果，
+     * 二次确认后逐条打 V3 墓碑并从数组移除，saveDB 同步云端，
+     * 避免其他设备再次拉回。
+     */
+    function cleanLegacyAnomalyRecords(){
+        if(!IS_MASTER_DEVICE){ toast('当前设备为受限设备，无权限修改基础数据！请在主控设备操作。','error'); return; }
+        if(!isAdmin()){ toast('无权限','error'); return; }
+        if(!DB || !Array.isArray(DB.deductionRecords)){ toast('数据未初始化','error'); return; }
+
+        // 1) 扫描异常记录（带 targetClassNames 字段）
+        var anomalies = DB.deductionRecords.filter(function(r){
+            return r && r.targetClassNames !== undefined;
+        });
+
+        if(anomalies.length === 0){
+            var box0 = document.getElementById('legacyCleanupResult');
+            if(box0) box0.innerHTML = '<div class="empty-state" style="padding:18px">未发现历史异常记录，数据健康 ✅</div>';
+            toast('未发现历史异常记录');
+            return;
+        }
+
+        // 2) 显示扫描结果，让管理员确认
+        var box = document.getElementById('legacyCleanupResult');
+        if(box){
+            var dateStats = {};
+            anomalies.forEach(function(r){
+                var d = r.recordDate || '未知日期';
+                dateStats[d] = (dateStats[d] || 0) + 1;
+            });
+            var dateLines = Object.keys(dateStats).sort().map(function(d){
+                return '<li>' + escapeHtmlAttr(d) + '：' + dateStats[d] + ' 条</li>';
+            }).join('');
+            box.innerHTML = '<div style="background:#fff7ed;border:1.5px solid #ff9500;border-radius:8px;padding:12px">'
+                + '<div style="font-weight:700;margin-bottom:8px">⚠️ 共发现 ' + anomalies.length + ' 条历史异常记录（含 targetClassNames 字段）</div>'
+                + '<div style="font-size:0.8571rem;color:var(--gray-600);margin-bottom:6px">按日期分布：</div>'
+                + '<ul style="margin:0 0 10px 18px;font-size:0.8571rem;color:var(--gray-600)">' + dateLines + '</ul>'
+                + '<div style="font-size:0.8571rem;color:var(--danger);font-weight:600">清理将删除以上全部记录，并打 V3 墓碑同步到云端。此操作不可撤销！</div>'
+                + '</div>';
+        }
+
+        // 3) 二次确认
+        if(!confirm('确认删除这 ' + anomalies.length + ' 条历史异常记录吗？\n\n这批记录带有 targetClassNames 字段，非当前版本代码产生。\n删除后云端与其他设备将同步删除，不可撤销。')) return;
+
+        // 4) 逐条打墓碑 + 从数组移除
+        var idSet = {};
+        anomalies.forEach(function(r){ idSet[String(r.id)] = true; });
+
+        var removedCount = 0;
+        DB.deductionRecords = DB.deductionRecords.filter(function(r){
+            var k = String(r.id);
+            if(idSet[k]){
+                v3MarkDeleted('deduction_record', r.id);
+                removedCount++;
+                return false;
+            }
+            return true;
+        });
+
+        // 5) 落库同步
+        saveDB();
+
+        // 6) 反馈结果
+        if(box){
+            box.innerHTML = '<div style="background:#e8f5e9;border:1.5px solid #34c759;border-radius:8px;padding:12px">'
+                + '<div style="font-weight:700;color:#2e7d32">✅ 已清理 ' + removedCount + ' 条历史异常记录</div>'
+                + '<div style="font-size:0.8571rem;color:var(--gray-600);margin-top:6px">删除标记已上传，其他设备同步后将一并删除。</div>'
+                + '</div>';
+        }
+        toast('已清理 ' + removedCount + ' 条历史异常记录');
+        renderView();
+        renderTree();
+    }
+
     // ==================== 学生迁出 / 调宿（仅管理员） ====================
     var transferStudentId = null;
     /**
@@ -5710,6 +5786,39 @@
     }
 
     /**
+     * 查找楼层调整申请的申请人（按姓名优先，避免旧 id 误命中）。
+     * 匹配优先级：
+     *   1) realName === r.staffName（最可靠，姓名稳定）
+     *   2) username === r.staffUsername（次可靠）
+     *   3) id === r.staffId（最弱，仅当前两步都找不到时才用）
+     * 同时要求 role 必须为 'STAFF'，防止误命中同名的班主任/管理员账号。
+     * @param {object} r - floorChangeRequests 中的一条记录
+     * @returns {object|null} 匹配到的 STAFF 用户；找不到返回 null
+     */
+    function findFloorChangeApplicant(r){
+        if(!r || !Array.isArray(DB.users)) return null;
+        var byName = null, byUsername = null, byId = null;
+        if(r.staffName){
+            byName = DB.users.find(function(u){
+                return u && u.role === 'STAFF' && String(u.realName || '') === String(r.staffName);
+            }) || null;
+        }
+        if(!byName && r.staffUsername){
+            byUsername = DB.users.find(function(u){
+                return u && u.role === 'STAFF' && String(u.username || '') === String(r.staffUsername);
+            }) || null;
+        }
+        if(!byName && !byUsername && r.staffId != null){
+            // 兜底按 id 匹配，但要求姓名一致，避免旧 id 误命中现在的另一个人
+            byId = DB.users.find(function(u){
+                return u && u.role === 'STAFF' && String(u.id) === String(r.staffId)
+                    && (!r.staffName || String(u.realName || '') === String(r.staffName));
+            }) || null;
+        }
+        return byName || byUsername || byId || null;
+    }
+
+    /**
      * 管理员审核通过楼层调整申请：
      *   校验权限/状态；
      *   立即覆盖被申请老师的 assignedFloors，标记 user 脏；
@@ -5724,12 +5833,18 @@
         if(!r){ toast('申请不存在','error'); return; }
         if(r.status !== 'pending'){ toast('该申请已处理','error'); return; }
         if(r.applied){ toast('该申请已应用，请勿重复操作','error'); return; }
-        var u = DB.users.find(function(x){ return String(x.id) === String(r.staffId); });
-        if(!u){ toast('申请人账号不存在','error'); return; }
-        // 立即生效：完全覆盖 assignedFloors
-        u.assignedFloors = Array.isArray(r.toFloors) ? r.toFloors.slice() : [];
-        u.lastModified = Date.now();
-        v3MarkDirty('user', u.id);
+        var u = findFloorChangeApplicant(r);
+        if(u){
+            // 找到了申请人账号：更新其负责楼层
+            u.assignedFloors = Array.isArray(r.toFloors) ? r.toFloors.slice() : [];
+            u.lastModified = Date.now();
+            v3MarkDirty('user', u.id);
+        } else {
+            // 找不到申请人账号（可能已被删除或改名）：
+            // 不再死锁，仅警告并继续更新申请状态，保留审批痕迹。
+            console.warn('[楼层调整] 未找到申请人账号，跳过用户数据更新。staffId=', r.staffId, 'staffName=', r.staffName);
+            toast('申请人账号已不存在，仅记录审批结果，不更新其负责楼层', 'error');
+        }
         // 更新申请记录
         r.status = 'approved';
         r.reviewedBy = currentUser.id;
@@ -5752,8 +5867,11 @@
         var title = tpl ? renderNotificationTemplate({content: tpl.title||''}, vars) : '✅ 楼层调整申请已通过';
         var content = tpl ? renderNotificationTemplate(tpl, vars)
             : ('你申请的楼层调整已通过审核，当前负责楼层已更新为 ' + vars.toFloors + '。');
-        addNotification(r.staffId, 'approval', title, content, r.id);
-        toast('已通过，'+ (r.staffName||'该老师') +' 的负责楼层已更新');
+        if(u){
+            // 仅在找到申请人账号时通知本人（用匹配到的正确账号 id，避免向旧 id 误命中的无关账号发通知）
+            addNotification(u.id, 'approval', title, content, r.id);
+            toast('已通过，'+ (r.staffName||'该老师') +' 的负责楼层已更新');
+        }
         var box = document.getElementById('floorAssignBody');
         if(box) box.innerHTML = buildFloorAssignHtml();
     }
@@ -5797,6 +5915,12 @@
         var r = findFloorChangeRequestById(floorChangeRejectId);
         if(!r){ toast('申请不存在','error'); closeFloorChangeRejectModal(); return; }
         if(r.status !== 'pending'){ toast('该申请已处理','error'); closeFloorChangeRejectModal(); return; }
+        var u = findFloorChangeApplicant(r);
+        if(!u){
+            // 申请人账号找不到（旧 id 失效/账号已删除或改名）：不中断驳回流程，
+            // 仅警告并继续更新申请状态，避免申请永久卡死在 pending。
+            console.warn('[楼层调整] 驳回时未找到申请人账号，跳过对申请人的通知。staffId=', r.staffId, 'staffName=', r.staffName);
+        }
         var remarkEl = document.getElementById('floorChangeRejectRemark');
         var remark = remarkEl ? String(remarkEl.value||'').trim() : '';
         r.status = 'rejected';
@@ -5816,7 +5940,10 @@
         var title = tpl ? renderNotificationTemplate({content: tpl.title||''}, vars) : '❌ 楼层调整申请被驳回';
         var content = tpl ? renderNotificationTemplate(tpl, vars)
             : ('你申请的楼层调整未通过审核。' + vars.reviewRemark);
-        addNotification(r.staffId, 'approval', title, content, r.id);
+        if(u){
+            // 仅在找到申请人账号时通知本人（用匹配到的正确账号 id，避免向旧 id 误命中的无关账号发通知）
+            addNotification(u.id, 'approval', title, content, r.id);
+        }
         toast('已驳回');
         closeFloorChangeRejectModal();
         var box = document.getElementById('floorAssignBody');
