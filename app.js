@@ -5311,26 +5311,26 @@
 
     /**
      * 判断一条待导入记录是否与库中已有记录（或本批次已收集记录）重复。
-     * 去重口径：日期 + 宿舍 + 学生 + 模式(扣分/加分) + 侧别(卫生/纪律) + 项目名。
-     * 同一对象同一天允许存在不同项目的多条记录；同项目重复行才跳过。
+     * 去重口径：日期 + 宿舍 + 学生 + 模式(扣分/加分) + 侧别(卫生/纪律) + 完整项目ID列表。
+     * 同一对象同一天，仅当该侧完整项目组合（排序后）完全一致才判重；项目组合不同允许共存。
      * @param {Object} rec - 已构造的记录对象
      * @param {string} side - 'hygiene' | 'discipline'
-     * @param {string} itemName - 项目名（custom: 前缀已去除）
      * @param {Object} batchSeen - 本批次去重索引（key→true）
      * @returns {boolean}
      */
-    function isDeductionRecordDuplicate(rec, side, itemName, batchSeen){
+    function isDeductionRecordDuplicate(rec, side, batchSeen){
         var stuKey = (rec.studentId == null) ? 'null' : String(rec.studentId);
-        var key = [rec.recordDate, rec.dormitoryId, stuKey, rec.recordMode, side, itemName].join('|');
+        var sideIds = (side === 'hygiene') ? (rec.hygieneItemIds || []) : (rec.disciplineItemIds || []);
+        var idsKey = sideIds.slice().sort().join(',');
+        var key = [rec.recordDate, rec.dormitoryId, stuKey, rec.recordMode, side, idsKey].join('|');
         if(batchSeen && batchSeen[key]) return true;
-        var getter = (rec.recordMode === 'bonus') ? getBonusItemNameByIdOrCustom : getItemNameByIdOrCustom;
         var dup = (DB.deductionRecords || []).some(function(x){
             if(x.recordDate !== rec.recordDate) return false;
             if(String(x.dormitoryId) !== String(rec.dormitoryId)) return false;
             if(String(x.studentId == null ? 'null' : x.studentId) !== stuKey) return false;
             if((x.recordMode || 'deduct') !== rec.recordMode) return false;
-            var ids = (side === 'hygiene') ? (x.hygieneItemIds || []) : (x.disciplineItemIds || []);
-            return ids.some(function(id){ return getter(id) === itemName; });
+            var existIds = (side === 'hygiene') ? (x.hygieneItemIds || []) : (x.disciplineItemIds || []);
+            return existIds.slice().sort().join(',') === idsKey;
         });
         if(!dup && batchSeen) batchSeen[key] = true;
         return dup;
@@ -5367,7 +5367,8 @@
                 result.skipped.push('第' + (idx+1) + '行：宿舍号不存在（' + dormitoryRoom + '）');
                 return;
             }
-            var isCollective = (nameRaw === '宿舍集体' || nameRaw === '集体');
+            var collectiveName = String(nameRaw).trim();
+            var isCollective = (collectiveName === '宿舍集体' || collectiveName === '集体');
 
             function normItem(v){ return (v === '-' || v === '—' || v === '') ? '' : v; }
             function normScore(v){
@@ -5442,8 +5443,7 @@
             };
 
             var side = hasHy ? 'hygiene' : 'discipline';
-            var itemName = hasHy ? hyItem : disItem;
-            if(isDeductionRecordDuplicate(rec, side, itemName, batchSeen)){
+            if(isDeductionRecordDuplicate(rec, side, batchSeen)){
                 result.duplicates++;
                 return;
             }
