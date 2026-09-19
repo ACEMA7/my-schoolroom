@@ -892,6 +892,57 @@
         refreshQueryResultIfVisible();
     }
 
+    /**
+     * 按日期范围清理宿舍集体记录（仅管理员 + 主控设备可用）。
+     * 只删除 studentId === null 且 recordDate 在指定范围内的记录，
+     * 逐条打 V3 墓碑后从 DB 移除，保证云端与其他设备同步删除。
+     * 注意：集体记录被删后，其派生的个人记录不会被自动删除——
+     *       因为当前场景（用户 9-18 导入失败）派生记录本就不存在，无需级联。
+     *       若需处理有派生的情况，请调用 findDerivedRecords 一并删除。
+     */
+    function deleteCollectiveRecordsByRange(){
+        if(!IS_MASTER_DEVICE){ toast('当前设备为受限设备，无权限修改基础数据！请在主控设备操作。','error'); return; }
+        if(!isAdmin()){ toast('无权限','error'); return; }
+        if(!DB || !Array.isArray(DB.deductionRecords)){ toast('数据未初始化','error'); return; }
+
+        var startEl = document.getElementById('exportStartDate');
+        var endEl = document.getElementById('exportEndDate');
+        var startDate = startEl ? String(startEl.value).trim() : '';
+        var endDate = endEl ? String(endEl.value).trim() : '';
+        if(!startDate || !endDate){ toast('请先在筛选条件中填写开始日期与结束日期','error'); return; }
+        if(startDate > endDate){ toast('开始日期不能晚于结束日期','error'); return; }
+
+        var targets = DB.deductionRecords.filter(function(r){
+            return r && r.studentId == null && r.recordDate >= startDate && r.recordDate <= endDate;
+        });
+
+        if(targets.length === 0){
+            toast('该日期范围内没有集体记录','success');
+            return;
+        }
+
+        if(!confirm('确认删除 ' + startDate + ' 至 ' + endDate + ' 范围内的全部宿舍集体记录吗？\n\n共 ' + targets.length + ' 条。\n删除后将打 V3 墓碑同步到云端，不可撤销。')) return;
+
+        var idSet = {};
+        targets.forEach(function(r){ idSet[String(r.id)] = true; });
+
+        var removed = 0;
+        DB.deductionRecords = DB.deductionRecords.filter(function(r){
+            var k = String(r.id);
+            if(idSet[k]){
+                v3MarkDeleted('deduction_record', r.id);
+                removed++;
+                return false;
+            }
+            return true;
+        });
+
+        saveDB();
+        toast('已删除 ' + removed + ' 条集体记录');
+        if(currentView === 'export') renderView();
+        renderTree();
+    }
+
     // ---- 批量修改扣分记录（仅扣分类型支持） ----
     var _batchEditQueryIds = [];
 

@@ -2530,6 +2530,13 @@
                 + '<button class="btn btn-primary" onclick="openDeductionImportModal()">📥 批量导入扣分/加分记录</button>'
                 + '</div></div>';
         }
+        // 集体记录清理卡片（仅管理员在主控设备可用）：按日期范围删除宿舍集体记录，逐条打 V3 墓碑同步云端
+        if(isAdmin() && IS_MASTER_DEVICE){
+            html += '<div class="card"><div class="card-header">🧹 清理集体记录</div><div class="card-body">'
+                + '<p style="margin:0 0 10px;color:var(--text-light);font-size:0.9rem">仅删除宿舍集体记录（不含个人记录），会同步到云端。请先在上面选择开始日期与结束日期。</p>'
+                + '<button class="btn btn-danger btn-sm" onclick="deleteCollectiveRecordsByRange()">🗑️ 删除该日期范围的集体记录</button>'
+                + '</div></div>';
+        }
 
         if (!isClassAdmin) {
             // 主控设备绑定入口：管理员可将当前设备设为主控（非主控设备可见，主控设备也显示但点击提示已绑定）
@@ -3158,9 +3165,8 @@
             if (studentName && (!student || student.name !== studentName)) return false;
             return true;
         });
-        // 隐藏"原始宿舍集体记录"（studentId 为 null），只显示个人直接记录 + 派生个人记录：
-        // 查某个学生时结果条数与个人净分完全一致；查全部时也只见派生记录不见集体记录。
-        records = records.filter(function(r){ return r.studentId != null; });
+        // 宿舍集体记录（studentId 为 null）也进入查询结果，表格用"类型"列区分集体/个人，
+        // 使集体记录在数据管理页可见、可勾选、可删除，不再形成管理盲区。
 
         records.sort(function(a, b) {
             var dateCompare = a.recordDate.localeCompare(b.recordDate);
@@ -3202,6 +3208,7 @@
                 + '<td data-label="学生">' + studentNameVal
                 + ((isAdmin() && isRecordDormMismatch(r)) ? ' <span style="color:#ff3b30;font-weight:700;font-size:0.7857rem" title="该学生当前宿舍与记录宿舍不一致，请核实">⚠️ 宿舍不符</span>' : '')
                 + '</td>'
+                + '<td data-label="类型">' + (r.studentId == null ? '🏠 集体' : '👤 个人') + '</td>'
                 + '<td data-label="卫生项目">' + (hyNames || '-') + '</td>'
                 + '<td data-label="卫生分值" class="' + scoreCls + '">' + formatScoreText(r.hygieneScore || 0, kind) + '</td>'
                 + '<td data-label="纪律项目">' + (disNames || '-') + '</td>'
@@ -3217,7 +3224,7 @@
             + '<div class="card-header">查询结果（' + records.length + '条记录）</div>'
             + buildBatchToolbar(f.dataType)
             + '<div style="overflow-x:auto;"><table class="mobile-h-table">'
-            + '<thead><tr>'+checkTh()+'<th>日期</th><th>宿舍号</th><th>床号</th><th>班级</th><th>学生</th><th>卫生项目</th><th>卫生分值</th><th>纪律项目</th><th>纪律分值</th><th>备注</th>' + (isAdmin() ? '<th>操作</th>' : '<th style="display:none"></th>') + '</tr></thead>'
+            + '<thead><tr>'+checkTh()+'<th>日期</th><th>宿舍号</th><th>床号</th><th>班级</th><th>学生</th><th>类型</th><th>卫生项目</th><th>卫生分值</th><th>纪律项目</th><th>纪律分值</th><th>备注</th>' + (isAdmin() ? '<th>操作</th>' : '<th style="display:none"></th>') + '</tr></thead>'
             + '<tbody id="queryDeductionTbody"></tbody>'
             + '</table></div></div>';
         renderListInChunks(document.getElementById('queryDeductionTbody'), records, queryDeductionRowHtml, 50);
