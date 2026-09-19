@@ -2542,6 +2542,71 @@
         reader.readAsArrayBuffer(file);
     }
     /**
+     * 导出学生名单为 Excel（.xlsx）。
+     * 规则：
+     *   - 导出范围 = 当前筛选结果（studentSearch.className / name / residence）
+     *   - 无筛选时导出全部学生
+     *   - 导出列：姓名、班级、住宿状态、床号、宿舍、楼层
+     *   - 文件名：有班级筛选带班名，否则只带日期
+     * 仅管理员可用。数据源与 renderStudentsView 的筛选逻辑保持一致。
+     */
+    function exportStudentsList(){
+        if(!isAdmin()){ toast('无权限','error'); return; }
+        if(!window.XLSX){ toast('Excel 组件未加载','error'); return; }
+        if(!DB || !Array.isArray(DB.students)){ toast('数据未初始化','error'); return; }
+
+        // 1) 按当前筛选条件过滤（与 renderStudentsView 一致）
+        var filtered = DB.students.filter(function(s){
+            if(studentSearch.className && s.className !== studentSearch.className) return false;
+            if(studentSearch.name && s.name && s.name.indexOf(studentSearch.name) === -1) return false;
+            if(studentSearch.residence === 'resident' && isNonResidentStudent(s)) return false;
+            if(studentSearch.residence === 'nonresident' && !isNonResidentStudent(s)) return false;
+            return true;
+        });
+
+        if(filtered.length === 0){
+            toast('当前筛选条件下没有学生可导出','error');
+            return;
+        }
+
+        // 2) 表头
+        var aoa = [['姓名', '班级', '住宿状态', '床号', '宿舍号', '楼层']];
+
+        // 3) 数据行（与页面显示一致）
+        filtered.forEach(function(s){
+            var dorm = getDormitoryById(s.dormitoryId);
+            var floor = dorm ? getFloorById(dorm.floorId) : null;
+            var dormDisplay = dorm ? dorm.roomNumber : '-';
+            var resideText = isNonResidentStudent(s) ? '走读' : '住宿';
+            aoa.push([
+                s.name || '',
+                s.className || '',
+                resideText,
+                s.bedNumber != null ? String(s.bedNumber) : '-',
+                dormDisplay,
+                floor ? floor.name : '-'
+            ]);
+        });
+
+        // 4) 生成并下载
+        var wb = XLSX.utils.book_new();
+        var ws = XLSX.utils.aoa_to_sheet(aoa);
+        // 简单列宽设置，提升可读性
+        ws['!cols'] = [{ wch: 12 }, { wch: 14 }, { wch: 10 }, { wch: 8 }, { wch: 10 }, { wch: 10 }];
+        XLSX.utils.book_append_sheet(wb, ws, '学生名单');
+
+        // 5) 文件名
+        var today = getTodayLocalStr();
+        var fileName;
+        if(studentSearch.className){
+            fileName = '学生名单_' + studentSearch.className + '_' + today + '.xlsx';
+        } else {
+            fileName = '学生名单_' + today + '.xlsx';
+        }
+        XLSX.writeFile(wb, fileName);
+        toast('已导出 ' + filtered.length + ' 名学生');
+    }
+    /**
      * 删除单个学生（管理员，confirm 确认）：打 V3 墓碑、落库同步并刷新名单。
      * @param {number} id - 学生 ID
      */

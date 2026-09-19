@@ -1629,7 +1629,7 @@
         }
         var isFiltered = (studentSearch.className || studentSearch.name || studentSearch.residence);
         var listTitle = isFiltered ? ('学生列表（筛选结果 '+filteredStudents.length+' / 共 '+DB.students.length+' 人）') : ('学生列表（'+DB.students.length+'人）');
-        container.innerHTML='<div class="content-header"><h2>👥 学生名单管理</h2><button class="btn btn-outline btn-sm" onclick="openDormitoryManageModal()" style="margin-left:auto">🏠 宿舍号管理</button></div>'
+        container.innerHTML='<div class="content-header"><h2>👥 学生名单管理</h2><div style="margin-left:auto;display:flex;gap:8px"><button class="btn btn-primary btn-sm" onclick="exportStudentsList()">📥 导出名单</button><button class="btn btn-outline btn-sm" onclick="openDormitoryManageModal()">🏠 宿舍号管理</button></div></div>'
             +'<div class="two-col-grid">'
             +'<div class="card"><div class="card-header">单个添加学生</div><div class="card-body">'
             +'<div class="form-row"><div class="form-group"><label>姓名 *</label><input type="text" id="newStuName" placeholder="学生姓名"></div>'
