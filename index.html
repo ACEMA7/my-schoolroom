@@ -791,6 +791,13 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
             .content-header h2{font-size:1.2857rem}
             .empty-state{padding:28px 12px}
 
+            /* ===== 移动端左滑删除 ===== */
+            /* 删除按钮默认隐藏，行左滑（.swiped）后显示；PC 端不受影响（本规则仅在 ≤768px 生效） */
+            .delete-btn{display:none}
+            .swiped .delete-btn{display:inline-flex}
+            /* 记录行允许纵向原生滚动，横向手势交给左滑删除 JS 处理 */
+            .mobile-h-table tr, .record-row{touch-action:pan-y}
+
             /* ===== 字体调节面板（仅STAFF移动端） ===== */
             .font-scale-btn{
                 display:none;

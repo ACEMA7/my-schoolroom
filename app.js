@@ -681,6 +681,35 @@
         else if(currentView==='leavemanage') renderLeaveManageView(c);
         else if(currentView==='export') renderExportView(c);
         else if(currentView==='notifications') renderNotificationsView(c);
+        // 首次使用引导：从未成功同步且云端开关打开、当前在线时，内容区顶部提示手动同步
+        maybeShowFirstSyncHint();
+    }
+
+    // ==================== 首次使用：未同步引导横幅（纯 UI，不改数据/同步逻辑） ====================
+    // 条件：已登录 + DB.lastSyncTime===0 + sync.js 的 syncEnabled 为 true + navigator.onLine。
+    // 每个页面会话仅显示一次；✕ 可关闭；点击横幅调用 manualSync()。
+    var firstSyncHintShown = false;
+    function maybeShowFirstSyncHint(){
+        if(firstSyncHintShown) return;
+        if(!currentUser || !DB) return;
+        if(DB.lastSyncTime !== 0) return;
+        if(typeof syncEnabled === 'undefined' || !syncEnabled) return;
+        if(!navigator || navigator.onLine !== true) return;
+        var c = document.getElementById('contentArea');
+        if(!c) return;
+        firstSyncHintShown = true;
+        var bar = document.createElement('div');
+        bar.id = 'firstSyncHintBanner';
+        bar.style.cssText = 'margin:0 0 14px;padding:10px 14px;background:#fff7e6;border:1px solid #ffb020;border-radius:8px;display:flex;align-items:center;gap:10px;cursor:pointer;color:#8a5a00;font-size:0.95rem;line-height:1.4';
+        bar.innerHTML = '<span style="flex:1">☁️ ' + escapeHtmlAttr('云端数据尚未同步，点击此处手动同步') + '</span>'
+            + '<button type="button" class="btn btn-outline btn-sm" aria-label="关闭" title="关闭" style="flex-shrink:0">✕</button>';
+        // 点击横幅任意位置（✕ 除外）触发手动同步
+        bar.onclick = function(){ if(typeof manualSync === 'function') manualSync(); };
+        bar.lastElementChild.onclick = function(ev){
+            ev.stopPropagation();
+            if(bar.parentNode) bar.parentNode.removeChild(bar);
+        };
+        c.insertBefore(bar, c.firstChild);
     }
 
     // ==================== 返回与侧边栏 ====================
@@ -2564,6 +2593,57 @@
         };
         reader.readAsArrayBuffer(file);
     }
+
+    // ==================== 扣分记录导出自定义列（localStorage: dorm_export_columns） ====================
+    // 仅作用于数据管理页"扣分记录"CSV 导出；不影响请假/退宿/停宿/巡查总结导出，
+    // 不涉及数据层与同步层逻辑。
+    var EXPORT_COLUMNS_STORAGE_KEY = 'dorm_export_columns';
+    // 扣分记录导出支持的全部列 key（顺序即页面勾选与导出列顺序）
+    var EXPORT_COLUMN_ALL_KEYS = ['date','dorm','bed','class','student','type','hyItem','hyScore','disItem','disScore','remark'];
+    /**
+     * 读取导出列配置面板复选框状态，返回选中列 key 数组（按页面顺序）。
+     * 复选框不在 DOM（导出视图未渲染）时回退为全部列，保证其他调用场景可用。
+     * @returns {string[]}
+     */
+    function getExportColumns(){
+        var boxes = document.querySelectorAll('.export-col-check');
+        if(!boxes || !boxes.length) return EXPORT_COLUMN_ALL_KEYS.slice();
+        var keys = [];
+        Array.prototype.forEach.call(boxes, function(cb){
+            if(cb.checked) keys.push(cb.value);
+        });
+        return keys;
+    }
+    /**
+     * 将当前勾选的导出列保存到 localStorage（复选框 onchange 即时调用）。
+     */
+    function saveExportColumns(){
+        try {
+            localStorage.setItem(EXPORT_COLUMNS_STORAGE_KEY, JSON.stringify(getExportColumns()));
+        } catch(e) {
+            handleError(e, '保存导出列配置', { silent: true });
+        }
+    }
+    /**
+     * renderExportView 渲染完成后回显已保存的导出列配置；
+     * 无有效配置（首次使用/解析失败）时保持复选框默认全选。
+     */
+    function restoreExportColumns(){
+        var boxes = document.querySelectorAll('.export-col-check');
+        if(!boxes || !boxes.length) return;
+        var saved = null;
+        try {
+            var raw = localStorage.getItem(EXPORT_COLUMNS_STORAGE_KEY);
+            if(raw) saved = JSON.parse(raw);
+        } catch(e) {
+            saved = null;
+        }
+        if(!Array.isArray(saved)) return;
+        Array.prototype.forEach.call(boxes, function(cb){
+            cb.checked = saved.indexOf(cb.value) !== -1;
+        });
+    }
+
     /**
      * 导出学生名单为 Excel（.xlsx）。
      * 规则：
@@ -2572,11 +2652,17 @@
      *   - 导出列：姓名、班级、住宿状态、床号、宿舍、楼层
      *   - 文件名：有班级筛选带班名，否则只带日期
      * 仅管理员可用。数据源与 renderStudentsView 的筛选逻辑保持一致。
+     * 经 safeAsync 包装（上下文"导出学生名单"，{retry:true}）：导出期间触发按钮
+     * 禁用并显示"⏳ 导出中…"，异常统一分类提示并带"点击重试"。
      */
     function exportStudentsList(){
         if(!isAdmin()){ toast('无权限','error'); return; }
         if(!window.XLSX){ toast('Excel 组件未加载','error'); return; }
         if(!DB || !Array.isArray(DB.students)){ toast('数据未初始化','error'); return; }
+        var _exportBtn = captureExportButton();
+        return safeAsync(function(){
+        var _restoreBtn = prepareExportButton(_exportBtn);
+        try {
 
         // 1) 按当前筛选条件过滤（与 renderStudentsView 一致）
         var filtered = DB.students.filter(function(s){
@@ -2628,6 +2714,8 @@
         }
         XLSX.writeFile(wb, fileName);
         toast('已导出 ' + filtered.length + ' 名学生');
+        } finally { _restoreBtn(); }
+        }, '导出学生名单', { retry: true });
     }
     /**
      * 删除单个学生（管理员，confirm 确认）：打 V3 墓碑、落库同步并刷新名单。
@@ -3320,7 +3408,7 @@
                 btns='<button class="btn btn-success btn-xs" onclick="approveLeaveRecord(\''+r.id+'\')">通过</button> '
                     +'<button class="btn btn-warning btn-xs" onclick="rejectLeaveRecord(\''+r.id+'\')">驳回</button> ';
             }
-            btns+='<button class="btn btn-danger btn-xs" onclick="deleteLeaveRecord(\''+r.id+'\')">删除</button>';
+            btns+='<button class="btn btn-danger btn-xs delete-btn" onclick="deleteLeaveRecord(\''+r.id+'\')">删除</button>';
             return '<td data-label="操作">'+btns+'</td>';
         }
         // 单行退宿/停宿记录 HTML（供分片渲染逐条调用）
@@ -3336,6 +3424,7 @@
                 leaveListEl.innerHTML='<div class="empty-state">暂无退宿记录</div>';
             }else{
                 leaveListEl.innerHTML='<div style="overflow-x:auto"><table class="mobile-h-table"><thead><tr><th>班级</th><th>姓名</th><th>宿舍号</th><th>床号</th><th>退宿时间</th><th>退宿原因</th><th>状态</th>'+(isAdm?'<th>操作</th>':'')+'</tr></thead><tbody id="leaveTbody"></tbody></table></div>';
+                initSwipeToDelete(document.getElementById('leaveTbody')); // 左滑删除手势（仅含删除按钮的行生效）
                 renderListInChunks(document.getElementById('leaveTbody'), leaveRecords, leaveRowHtml, 50);
             }
         }
@@ -3347,6 +3436,7 @@
                 stopListEl.innerHTML='<div class="empty-state">暂无停宿记录</div>';
             }else{
                 stopListEl.innerHTML='<div style="overflow-x:auto"><table class="mobile-h-table"><thead><tr><th>班级</th><th>姓名</th><th>宿舍号</th><th>床号</th><th>停宿时间段</th><th>停宿原因</th><th>状态</th>'+(isAdm?'<th>操作</th>':'')+'</tr></thead><tbody id="stopTbody"></tbody></table></div>';
+                initSwipeToDelete(document.getElementById('stopTbody')); // 左滑删除手势（仅含删除按钮的行生效）
                 renderListInChunks(document.getElementById('stopTbody'), stopRecords, leaveRowHtml, 50);
             }
         }
@@ -4586,6 +4676,8 @@
      * 每天一个 Sheet，Sheet 名用日期（如 2026-09-09）；每个 Sheet 内容为
      * 巡查核实总结（标题/楼栋/楼层/值班老师 + 统计数字 + 三类学生详情）。
      * 仅 ADMIN 可用。
+     * 经 safeAsync 包装（上下文"导出巡查总结"，{retry:true}）：导出期间触发按钮
+     * 禁用并显示"⏳ 导出中…"，异常统一分类提示并带"点击重试"。
      */
     function exportInspectionSummariesRange(){
         if(!isAdmin()){toast('无权限','error');return;}
@@ -4596,6 +4688,10 @@
         var endDate=endEl?String(endEl.value).trim():'';
         if(!startDate||!endDate){toast('请选择日期范围','error');return;}
         if(startDate>endDate){toast('开始日期不能晚于结束日期','error');return;}
+        var _exportBtn = captureExportButton();
+        return safeAsync(function(){
+        var _restoreBtn = prepareExportButton(_exportBtn);
+        try {
         var summaries=(DB.dailyInspectionSummaries||[]).filter(function(s){
             return s.summaryDate && s.summaryDate>=startDate && s.summaryDate<=endDate;
         }).sort(function(a,b){ return a.summaryDate<b.summaryDate?-1:(a.summaryDate>b.summaryDate?1:0); });
@@ -4666,6 +4762,8 @@
         var fileName='巡查核实总结_'+startDate+(startDate===endDate?'':'_至_'+endDate)+'.xlsx';
         XLSX.writeFile(wb, fileName);
         toast('已导出 '+summaries.length+' 天的巡查总结');
+        } finally { _restoreBtn(); }
+        }, '导出巡查总结', { retry: true });
     }
 
     /**

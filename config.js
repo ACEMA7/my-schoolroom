@@ -53,6 +53,8 @@
     var LOCAL_LZ_PREFIX = 'LZC1:';   // 本地压缩存储标记（compressToUTF16，localStorage 按 UTF-16 计长，密度最高）
     var CLOUD_LZ_PREFIX = 'LZC1B:';  // 云端压缩存储标记（compressToBase64，纯 ASCII，HTTP/UTF-8 传输无膨胀）
     var STORAGE_WARN_BYTES = 4 * 1024 * 1024; // 本地数据 4MB 预警阈值
+    var STORAGE_AUTO_COMPRESS_BYTES = 3 * 1024 * 1024; // 本地数据超过 3MB 时主动切换压缩存储（不等配额耗尽）
+    var TOMBSTONE_RETENTION_MS = 7 * 24 * 60 * 60 * 1000; // 墓碑上传成功后本地保留 7 天（期内随同步重广播）
 
     // ==================== V3 按行存储架构：常量与辅助 ====================
     // 业务记录类型 → DB 中对应数组的映射。

@@ -169,9 +169,65 @@
         });
     }
 
+    // ==================== 导出按钮状态辅助（供各 Excel/CSV 导出函数复用） ====================
+    /**
+     * 获取触发本次导出的按钮。优先调用方传入的 btn，否则取 document.activeElement；
+     * 排除非按钮元素、已禁用按钮以及 toast 内的按钮（safeAsync 重试由 toast 按钮
+     * 触发，不能去改写重试按钮自身的文案/状态）。
+     * @param {HTMLElement} [btn] - 调用方显式传入的触发按钮（如 onclick 传 this）
+     * @returns {HTMLButtonElement|null}
+     */
+    function captureExportButton(btn){
+        try {
+            var el = btn || document.activeElement;
+            if(el && el.tagName === 'BUTTON' && !el.disabled && el.closest && !el.closest('#toast')) return el;
+        } catch(e) {}
+        return null;
+    }
+    /**
+     * 将导出按钮置为禁用并显示"⏳ 导出中…"，返回一次性的恢复函数
+     * （幂等，重复调用安全；恢复原文字与原 disabled 状态）。
+     * @param {HTMLButtonElement|null} btn
+     * @returns {Function} restore 恢复按钮状态（btn 为空时为空操作）
+     */
+    function prepareExportButton(btn){
+        if(!btn) return function(){};
+        var oldText = btn.textContent;
+        var wasDisabled = !!btn.disabled;
+        btn.disabled = true;
+        btn.textContent = '⏳ 导出中…';
+        var restored = false;
+        return function restoreExportButton(){
+            if(restored) return;
+            restored = true;
+            btn.disabled = wasDisabled;
+            btn.textContent = oldText;
+        };
+    }
+
     // ==================== 分片渲染（大列表性能优化） ====================
     // 每个容器对应一个渲染令牌：同一容器开始新一轮渲染时，上一轮分片自动作废（快速切换不串内容）
     var _chunkRenderTokens = (typeof WeakMap !== 'undefined') ? new WeakMap() : null;
+    // 每个容器对应的活跃 IntersectionObserver：新一轮渲染开始前先断开旧的，防止串内容
+    var _chunkRenderObservers = (typeof WeakMap !== 'undefined') ? new WeakMap() : null;
+    /**
+     * 从 el 起（含自身）向上查找最近"真正可纵向滚动"的祖先（overflow-y 为 auto/scroll
+     * 且当前内容确实超出）。找不到返回 null。
+     * 说明：仅设 overflow-x:auto 的包裹层，其 overflow-y 计算值也会变成 auto，
+     * 必须再用 scrollHeight>clientHeight 排除，否则会错选到不能纵向滚动的包裹层。
+     * @param {HTMLElement} el
+     * @returns {HTMLElement|null}
+     */
+    function getNearestScrollableAncestor(el){
+        var node = el;
+        while(node && node.nodeType === 1 && node !== document.body && node !== document.documentElement){
+            var oy = '';
+            try { oy = window.getComputedStyle(node).overflowY; } catch(e) { oy = ''; }
+            if((oy === 'auto' || oy === 'scroll') && node.scrollHeight > node.clientHeight + 1) return node;
+            node = node.parentNode;
+        }
+        return null;
+    }
     /**
      * 分片渲染列表数据，避免大量 DOM 一次性插入造成卡顿
      * @param {HTMLElement} container - 目标容器（<tbody> 或普通块元素）
@@ -179,51 +235,169 @@
      * @param {Function} renderItem - 接收 (数据项, 索引)，返回该行 HTML 字符串
      * @param {number} chunkSize - 每批渲染条数（默认 50）
      * @param {Function} callback - 全部渲染完成后的回调（可选）
-     * @param {Object} options - { emptyHtml: 空数据时的占位 HTML }（可选）
+     * @param {Object} options - { emptyHtml: 空数据时的占位 HTML, preserveScroll: 是否在重绘前后
+     *   保持最近滚动容器的 scrollTop（默认 false） }（可选）
      */
     function renderListInChunks(container, data, renderItem, chunkSize, callback, options) {
         if (!container) return;
         chunkSize = chunkSize || 50;
         options = options || {};
         data = Array.isArray(data) ? data : [];
+        // ===== 滚动位置保持（options.preserveScroll） =====
+        // 渲染前记录最近可滚动祖先的 scrollTop，渲染完成后恢复，避免列表重建后跳回顶部。
+        // 快速切换视图（容器/滚动容器已脱离 DOM）时所有恢复操作静默失败，不抛异常。
+        var preserveScroll = !!options.preserveScroll;
+        var scrollEl = null, savedScrollTop = 0;
+        if(preserveScroll){
+            try {
+                scrollEl = getNearestScrollableAncestor(container);
+                if(scrollEl) savedScrollTop = scrollEl.scrollTop || 0;
+            } catch(eCap) { scrollEl = null; }
+        }
+        function restoreScroll(){
+            if(!preserveScroll || !scrollEl) return;
+            try {
+                if(!scrollEl.isConnected) return; // 已脱离 DOM（视图被切换/重绘）：静默放弃
+                scrollEl.scrollTop = savedScrollTop;
+            } catch(eR) {}
+        }
         // 令牌：使该容器上一轮尚未完成的分片立即停止
         var token = {};
         if (_chunkRenderTokens) _chunkRenderTokens.set(container, token);
+        // 断开该容器上可能仍在监听的旧 IntersectionObserver（视图切换/重绘时防串内容）
+        if (_chunkRenderObservers && _chunkRenderObservers.has(container)) {
+            try { _chunkRenderObservers.get(container).disconnect(); } catch(e) {}
+            _chunkRenderObservers.delete(container);
+        }
         var isTbody = container.tagName === 'TBODY';
         var emptyHtml = options.emptyHtml || (isTbody
             ? '<tr><td colspan="999" style="text-align:center;color:#aaa">暂无数据</td></tr>'
             : '<div class="empty-state" style="padding:24px">暂无数据</div>');
-        function done() { if (typeof callback === 'function') callback(); }
+        // 渲染完成统一入口：先恢复滚动位置，再触发外部回调；
+        // 分片/布局可能导致高度尚未稳定，100ms 后按同一位置再恢复一次。
+        function finish(){
+            restoreScroll();
+            if(preserveScroll && scrollEl){
+                var finishToken = token;
+                setTimeout(function(){
+                    try {
+                        // 新一轮渲染已开始（令牌变更）或容器已移除 → 不再恢复，避免与新渲染串扰
+                        if(_chunkRenderTokens && _chunkRenderTokens.get(container) !== finishToken) return;
+                        if(!scrollEl.isConnected) return;
+                        scrollEl.scrollTop = savedScrollTop;
+                    } catch(eLate) {}
+                }, 100);
+            }
+            if (typeof callback === 'function') callback();
+        }
+        function done() { finish(); }
         if (data.length === 0) { container.innerHTML = emptyHtml; done(); return; }
-        // 小数据量：同步一次性渲染，避免动画帧开销
-        if (data.length <= chunkSize) {
+        // 小数据量（≤200 条）：同步一次性渲染，避免 observer / rAF 开销
+        if (data.length <= 200) {
             container.innerHTML = data.map(function(item, i) { return renderItem(item, i); }).join('');
             done();
             return;
         }
-        // 大数据量：按帧分片。tbody 必须用 tbody 元素解析 <tr>（在 div 中解析 <tr> 会被浏览器丢弃）
+        // 大数据量（>200 条）：IntersectionObserver 按需渲染，每批 100 条
+        // 初始只渲染前 100 条，用户滚动接近底部时再渲染下一批 100 条，依此类推
+        var OBSERVER_BATCH = 100;
         var parser = document.createElement(isTbody ? 'tbody' : 'div');
         container.innerHTML = '';
         var index = 0;
-        function renderChunk() {
-            // 容器已被新一轮渲染取代，或已脱离 DOM（视图切换/重绘）→ 安全停止
-            if (_chunkRenderTokens && _chunkRenderTokens.get(container) !== token) return;
-            if (!container.isConnected) return;
-            var end = Math.min(index + chunkSize, data.length);
+        // 哨兵元素：不可见，仅用于触发 IntersectionObserver；始终保持在容器末尾
+        var sentinel = document.createElement(isTbody ? 'tr' : 'div');
+        if (isTbody) {
+            var td = document.createElement('td');
+            td.colSpan = 999;
+            td.style.height = '1px';
+            td.style.padding = '0';
+            td.style.border = 'none';
+            sentinel.appendChild(td);
+        }
+        sentinel.style.height = '1px';
+        sentinel.style.overflow = 'hidden';
+        sentinel.setAttribute('aria-hidden', 'true');
+        sentinel.className = 'chunk-sentinel';
+
+        function isTokenValid() {
+            return _chunkRenderTokens && _chunkRenderTokens.get(container) === token && container.isConnected;
+        }
+
+        /**
+         * 渲染下一批 OBSERVER_BATCH 条数据，在哨兵之前插入，保持哨兵始终在末尾。
+         * @returns {boolean} true=仍有未渲染数据；false=全部完成
+         */
+        function renderBatch() {
+            if (!isTokenValid()) return false;
+            var end = Math.min(index + OBSERVER_BATCH, data.length);
             var html = '';
             for (var i = index; i < end; i++) html += renderItem(data[i], i);
             parser.innerHTML = html;
             var frag = document.createDocumentFragment();
             while (parser.children.length) frag.appendChild(parser.children[0]);
-            container.appendChild(frag);
-            index = end;
-            if (index < data.length) {
-                requestAnimationFrame(renderChunk);
+            // 哨兵已在容器中：在其之前插入新行；否则先追加数据再追加哨兵
+            if (sentinel.parentNode === container) {
+                container.insertBefore(frag, sentinel);
             } else {
-                done();
+                container.appendChild(frag);
+                container.appendChild(sentinel);
             }
+            index = end;
+            return index < data.length;
         }
-        requestAnimationFrame(renderChunk);
+
+        // 初始渲染前 100 条（同步）
+        var hasMore = renderBatch();
+        // 首批已插入：立即恢复一次（此时高度可能不足，scrollTop 会被钳制，
+        // 后续分片加载、全部完成时的 done() 会再恢复到精确位置）
+        restoreScroll();
+        if (!hasMore) {
+            // 边界：数据恰好 ≤100（但 >200 才进此分支，实际不会触发）
+            if (sentinel.parentNode) sentinel.parentNode.removeChild(sentinel);
+            done();
+            return;
+        }
+
+        // 创建 IntersectionObserver 监听哨兵，哨兵进入视口时渲染下一批
+        if (typeof IntersectionObserver !== 'undefined') {
+            var observer = new IntersectionObserver(function(entries) {
+                // 令牌失效（视图切换/新一轮渲染已开始）：立即断开，不串内容
+                if (!isTokenValid()) {
+                    observer.disconnect();
+                    return;
+                }
+                var entry = entries[0];
+                if (entry && entry.isIntersecting) {
+                    var stillMore = renderBatch();
+                    if (!stillMore) {
+                        // 全部渲染完成：断开 observer、移除哨兵、触发回调
+                        observer.disconnect();
+                        if (_chunkRenderObservers) _chunkRenderObservers.delete(container);
+                        if (sentinel.parentNode) sentinel.parentNode.removeChild(sentinel);
+                        done();
+                    }
+                    // 仍有数据：哨兵已随 insertBefore 移到新末尾，observer 继续监听
+                }
+            }, {
+                root: null,
+                rootMargin: '200px',
+                threshold: 0
+            });
+            observer.observe(sentinel);
+            if (_chunkRenderObservers) _chunkRenderObservers.set(container, observer);
+        } else {
+            // 浏览器不支持 IntersectionObserver：回退到 rAF 分片（兼容老环境）
+            function fallbackChunk() {
+                if (!isTokenValid()) return;
+                var more = renderBatch();
+                if (more) requestAnimationFrame(fallbackChunk);
+                else {
+                    if (sentinel.parentNode) sentinel.parentNode.removeChild(sentinel);
+                    done();
+                }
+            }
+            requestAnimationFrame(fallbackChunk);
+        }
     }
 
     // ==================== 底部导航栏（移动端） ====================
@@ -622,6 +796,59 @@
         }
     }
 
+    // ==================== 移动端左滑删除手势 ====================
+    /**
+     * 为容器内的记录行（tr / .record-row）启用"左滑显示删除按钮"手势（纯 UI 层）：
+     * - 事件委托绑定在 container 上一次即可，分片渲染/重绘插入的行无需重新绑定；
+     * - 仅当行内存在 .delete-btn 删除按钮时手势生效，无删除按钮的行（无权限/只读）自动跳过；
+     * - touchstart 记录起点，touchmove 判定：左滑水平位移超过 60px 且大于垂直位移
+     *   → 行加 .swiped（移动端 CSS 中 .swiped .delete-btn 显示）；同时收起容器内其他已滑开的行；
+     * - touchend/touchcancel 未达阈值则移除 .swiped 恢复原状；已达阈值保持滑开态；
+     * - 删除按钮自带内联 onclick（原有删除函数），点击即原生触发，此处不重复绑定，
+     *   不改动任何删除逻辑与权限判断；touchend 落在删除按钮上时保持滑开态，
+     *   避免按钮在 click 派发前被隐藏。
+     * @param {HTMLElement} container - 记录行所在容器（tbody 或列表容器）
+     */
+    function initSwipeToDelete(container){
+        if(!container || container._swipeBound) return;
+        container._swipeBound = true;
+        var startX=0, startY=0, row=null, swiped=false;
+        container.addEventListener('touchstart', function(ev){
+            var t = ev.touches && ev.touches[0];
+            if(!t) return;
+            row = (ev.target && ev.target.closest) ? ev.target.closest('tr, .record-row') : null;
+            // 仅对包含删除按钮的行启用左滑（无删除按钮的行不绑定/不响应）
+            if(!row || !row.querySelector || !row.querySelector('.delete-btn')){ row=null; return; }
+            // 开始新手势时收起容器内其他已滑开的行（同时仅一行处于滑开态）
+            Array.prototype.forEach.call(container.querySelectorAll('.swiped'), function(r){
+                if(r !== row) r.classList.remove('swiped');
+            });
+            startX = t.clientX; startY = t.clientY; swiped = false;
+        }, {passive:true});
+        container.addEventListener('touchmove', function(ev){
+            if(!row || swiped) return;
+            var t = ev.touches && ev.touches[0];
+            if(!t) return;
+            var dx = t.clientX - startX, dy = t.clientY - startY;
+            // 左滑（dx 为负）且水平位移 > 60px 并大于垂直位移 → 显示该行删除按钮
+            if(dx < -60 && Math.abs(dx) > Math.abs(dy)){
+                swiped = true;
+                row.classList.add('swiped');
+            }
+        }, {passive:true});
+        container.addEventListener('touchend', function(ev){
+            if(!row) return;
+            var onDelBtn = ev.target && ev.target.closest && ev.target.closest('.delete-btn');
+            // 未达阈值恢复原状；触摸落在删除按钮上（点击删除）时保持滑开态
+            if(!swiped && !onDelBtn) row.classList.remove('swiped');
+            row = null; swiped = false;
+        }, {passive:true});
+        container.addEventListener('touchcancel', function(){
+            if(row && !swiped) row.classList.remove('swiped');
+            row = null; swiped = false;
+        }, {passive:true});
+    }
+
     /**
      * 渲染「今日明细」视图：按"楼层 → 宿舍"两级分组，一次性展示当天全部记录。
      * 权限范围：
@@ -728,7 +955,7 @@
             var kind = isBonusRec ? 'bonus' : 'deduct';
             var actionHtml = '<td data-label="操作">-</td>';
             if(isAdminUser){
-                actionHtml = '<td data-label="操作"><button class="btn btn-danger btn-xs" onclick="deleteRecord(\''+r.id+'\')">删除</button></td>';
+                actionHtml = '<td data-label="操作"><button class="btn btn-danger btn-xs delete-btn" onclick="deleteRecord(\''+r.id+'\')">删除</button></td>';
             } else if(staffMode){
                 actionHtml = '<td data-label="操作"><button class="btn btn-primary btn-xs" onclick="editRecord(\''+r.id+'\')">修改</button></td>';
             }
@@ -783,7 +1010,11 @@
 
         // 楼层 → 宿舍 → 记录
         if(floorIds.length === 0){
-            html += '<div class="card"><div class="card-body"><div class="empty-state" style="padding:24px">今日暂无扣分/加分记录</div></div></div>';
+            // 今日零记录空状态：ADMIN/STAFF 附"去登记扣分"引导按钮（CLASS_ADMIN 只读，不显示）
+            var todayEmptyGuide = (totalRecords === 0 && (isAdminUser || staffMode))
+                ? '<button class="btn btn-primary" style="margin-top:14px" onclick="switchView(\'add\')">📝 去登记扣分</button>'
+                : '';
+            html += '<div class="card"><div class="card-body"><div class="empty-state" style="padding:24px">今日暂无扣分/加分记录'+todayEmptyGuide+'</div></div></div>';
         } else {
             floorIds.forEach(function(fid){
                 var fg = floorMap[fid];
@@ -811,6 +1042,7 @@
                     var bucket = fg.rooms[rid];
                     var tb = document.getElementById('todayTbody-'+bucket.dorm.id);
                     if(tb){
+                        initSwipeToDelete(tb); // 左滑删除手势（仅含删除按钮的行生效）
                         renderListInChunks(tb, bucket.records, todayRecordRowHtml, 50, function(){
                             // 分片完成后：给所有复选框绑定勾选变化事件（委托在 tbody 上更稳）
                             if(tb._todayCheckBound) return;
@@ -821,7 +1053,7 @@
                                 }
                             });
                         },
-                            { emptyHtml:'<tr><td colspan="9" style="text-align:center;color:#aaa">暂无记录</td></tr>' });
+                            { emptyHtml:'<tr><td colspan="9" style="text-align:center;color:#aaa">暂无记录</td></tr>', preserveScroll:true });
                     }
                 });
             });
@@ -839,6 +1071,22 @@
      * @param {HTMLElement} container - contentArea 容器
      */
     function renderHierarchyView(container){
+        // 首次使用空状态引导（纯 UI：不涉及数据层/同步层，不触碰防污染闸门）
+        // ADMIN：系统中完全没有学生 → 引导到学生名单管理添加或导入
+        if(isAdmin() && (!DB.students || DB.students.length === 0)){
+            container.innerHTML = '<div class="content-header"><h2>📋 住宿信息</h2></div>'
+                + '<div class="card"><div class="card-body" style="text-align:center;padding:32px 16px">'
+                + '<div class="empty-state" style="padding:0 0 14px">'+escapeHtmlAttr('还没有学生数据，请先到学生名单管理添加或导入学生')+'</div>'
+                + '<button class="btn btn-primary" onclick="switchView(\'students\')">👥 去学生名单管理</button>'
+                + '</div></div>';
+            return;
+        }
+        // CLASS_ADMIN：本班学生数为 0（无本班学生档案）→ 提示联系管理员，不提供操作按钮
+        if(isClassAdmin() && DB.students.filter(function(s){ return s.className === currentUser.className; }).length === 0){
+            container.innerHTML = '<div class="content-header"><h2>📋 住宿信息</h2></div>'
+                + '<div class="card"><div class="card-body"><div class="empty-state" style="padding:24px">'+escapeHtmlAttr('本班暂无学生入住数据，请联系管理员导入')+'</div></div></div>';
+            return;
+        }
         var isMobileH=window.innerWidth<=768;
         var classMode=isClassAdmin();
         var classDormSet=classMode?getClassDormIds():null;
@@ -1650,7 +1898,7 @@
             var floor=dorm?getFloorById(dorm.floorId):null;
             var dormDisplay = dorm ? (isDormitoryDeleted(dorm.roomNumber) ? dorm.roomNumber+' [已删除]' : dorm.roomNumber) : '-';
             var resideTag = isNonResidentStudent(s) ? '<span style="color:var(--info)">走读</span>' : '住宿';
-            return '<tr><td data-label="选择"><input type="checkbox" class="student-checkbox" data-student-id="'+s.id+'"></td><td data-label="姓名"><b>'+s.name+'</b></td><td data-label="班级">'+(s.className||'-')+'</td><td data-label="住宿状态">'+resideTag+'</td><td data-label="床号">'+(s.bedNumber||'-')+'</td><td data-label="宿舍">'+dormDisplay+'</td><td data-label="楼层">'+(floor?floor.name:'-')+'</td><td data-label="操作"><button class="btn btn-danger btn-xs" onclick="deleteStudent('+s.id+')">删除</button></td></tr>';
+            return '<tr><td data-label="选择"><input type="checkbox" class="student-checkbox" data-student-id="'+s.id+'"></td><td data-label="姓名"><b>'+s.name+'</b></td><td data-label="班级">'+(s.className||'-')+'</td><td data-label="住宿状态">'+resideTag+'</td><td data-label="床号">'+(s.bedNumber||'-')+'</td><td data-label="宿舍">'+dormDisplay+'</td><td data-label="楼层">'+(floor?floor.name:'-')+'</td><td data-label="操作"><button class="btn btn-danger btn-xs delete-btn" onclick="deleteStudent('+s.id+')">删除</button></td></tr>';
         }
         var isFiltered = (studentSearch.className || studentSearch.name || studentSearch.residence);
         var listTitle = isFiltered ? ('学生列表（筛选结果 '+filteredStudents.length+' / 共 '+DB.students.length+' 人）') : ('学生列表（'+DB.students.length+'人）');
@@ -1689,6 +1937,7 @@
         // 学生列表分片渲染：checkbox 事件改在 tbody 上委托（逐行绑定在分批插入时会漏绑）
         var stuTbody=document.getElementById('studentsTbody');
         if(stuTbody) stuTbody.addEventListener('change', updateSelectedCount);
+        if(stuTbody) initSwipeToDelete(stuTbody); // 左滑删除手势（仅含删除按钮的行生效）
         renderListInChunks(stuTbody, filteredStudents, studentRowHtml, 50, function(){
             updateSelectedCount();
             // 分片插入期间用户若已点"全选"，全部行就绪后补同步一次
@@ -1696,7 +1945,7 @@
             if(sa && sa.checked) toggleAllStudents(true);
             // 分片完成后启用拖拽框选（PC 端）
             if(typeof initDragSelectForAllTables === 'function') initDragSelectForAllTables();
-        }, { emptyHtml:'<tr><td colspan="8" style="text-align:center;color:#aaa">暂无符合条件的学生</td></tr>' });
+        }, { emptyHtml:'<tr><td colspan="8" style="text-align:center;color:#aaa">暂无符合条件的学生</td></tr>', preserveScroll:true });
     }
 
     /**
@@ -2458,7 +2707,7 @@
         function absenceRowHtml(r){
             var stu = r.studentId ? getStudentById(r.studentId) : DB.students.find(function(s){return s.className===r.className&&s.name===r.name;});
             var resideTag = isNonResidentStudent(stu) ? '<span style="color:var(--info)">走读</span>' : '住宿';
-            return '<tr><td data-label="班级">'+r.className+'</td><td data-label="姓名">'+r.name+'</td><td data-label="住宿状态">'+resideTag+'</td><td data-label="宿舍号">'+getDormSnapshotDisplay(r.dormitory)+'</td><td data-label="床号">'+r.bed+'</td><td data-label="类型">'+(typeMap[r.type]||r.type)+'</td><td data-label="说明">'+(r.reason||'-')+'</td><td data-label="开始">'+r.startDate+'</td><td data-label="结束">'+r.endDate+'</td><td data-label="状态">'+getAbsenceStatusBadge(r)+'</td>'+(isAdm?'<td data-label="操作"><button class="btn btn-danger btn-xs" onclick="deleteAbsenceRecord(\''+r.id+'\')">删除</button></td>':'')+'</tr>';
+            return '<tr><td data-label="班级">'+r.className+'</td><td data-label="姓名">'+r.name+'</td><td data-label="住宿状态">'+resideTag+'</td><td data-label="宿舍号">'+getDormSnapshotDisplay(r.dormitory)+'</td><td data-label="床号">'+r.bed+'</td><td data-label="类型">'+(typeMap[r.type]||r.type)+'</td><td data-label="说明">'+(r.reason||'-')+'</td><td data-label="开始">'+r.startDate+'</td><td data-label="结束">'+r.endDate+'</td><td data-label="状态">'+getAbsenceStatusBadge(r)+'</td>'+(isAdm?'<td data-label="操作"><button class="btn btn-danger btn-xs delete-btn" onclick="deleteAbsenceRecord(\''+r.id+'\')">删除</button></td>':'')+'</tr>';
         }
         var cntEl=document.getElementById('recCount-absence');
         if(cntEl) cntEl.textContent='（'+records.length+'条）';
@@ -2468,6 +2717,7 @@
         }
         // 表格骨架 + 分片填充（大量请假记录时不卡顿；删除按钮为内联 onclick，逐批插入即生效）
         container.innerHTML='<div style="overflow-x:auto"><table class="mobile-h-table"><thead><tr><th>班级</th><th>姓名</th><th>住宿状态</th><th>宿舍号</th><th>床号</th><th>请假类型</th><th>说明</th><th>开始日期</th><th>结束日期</th><th>状态</th>'+(isAdm?'<th>操作</th>':'')+'</tr></thead><tbody id="absenceTbody"></tbody></table></div>';
+        initSwipeToDelete(document.getElementById('absenceTbody')); // 左滑删除手势（仅含删除按钮的行生效）
         renderListInChunks(document.getElementById('absenceTbody'), records, absenceRowHtml, 50);
     }
 
@@ -2569,6 +2819,26 @@
             + '<div class="form-group" id="grpExportBed"><label>床号</label><select id="exportBed" onchange="onExportBedChange()"></select></div>'
             + '<button class="btn btn-primary" onclick="queryFilteredData()">🔍 查询筛选数据</button>'
             + '<button class="btn btn-outline" onclick="exportFilteredDataNew()">📥 导出筛选数据</button>'
+            + '</div></div></div>';
+
+        // 扣分记录导出列配置折叠面板：默认全部勾选，勾选状态由 app.js 的
+        // saveExportColumns 即时持久化（localStorage: dorm_export_columns），
+        // 渲染后 restoreExportColumns 回显；仅影响扣分记录 CSV 导出列
+        var exportColDefs = [
+            {key:'date',label:'日期'},{key:'dorm',label:'宿舍号'},{key:'bed',label:'床号'},
+            {key:'class',label:'班级'},{key:'student',label:'学生'},{key:'type',label:'类型'},
+            {key:'hyItem',label:'卫生项目'},{key:'hyScore',label:'卫生分值'},
+            {key:'disItem',label:'纪律项目'},{key:'disScore',label:'纪律分值'},{key:'remark',label:'备注'}
+        ];
+        var exportColsCheckHtml = exportColDefs.map(function(c){
+            return '<label style="display:inline-flex;align-items:center;gap:4px;font-weight:400;cursor:pointer;margin:0">'
+                + '<input type="checkbox" class="export-col-check" value="'+c.key+'" checked onchange="saveExportColumns()">'+c.label+'</label>';
+        }).join('');
+        html += '<div class="fold-block'+(foldState['fold-export-columns']===false?'':' open')+'" id="fold-export-columns">'
+            + '<div class="fold-header" onclick="toggleFold(\'fold-export-columns\')">📋 导出列配置（仅扣分记录）<span class="fold-arrow">▶</span></div>'
+            + '<div class="fold-body"><div class="card-body">'
+            + '<div style="display:flex;flex-wrap:wrap;gap:8px 22px">'+exportColsCheckHtml+'</div>'
+            + '<p style="margin:8px 0 0;color:var(--text-light);font-size:0.8571rem">勾选的列将按此顺序写入扣分记录导出文件，默认全部勾选；配置仅保存在本机，不影响请假/退宿/停宿/巡查总结导出。</p>'
             + '</div></div></div>';
 
         // 批量导入请假/退宿/停宿：粘贴文本或 Excel 两种方式，解析预览确认后落库（管理员与班主任均可用）
@@ -2675,6 +2945,7 @@
         // 初始化联动
         refreshExportSelects();
         initDatePickers(document); // 初始化导出筛选日期选择器
+        restoreExportColumns(); // 回显已保存的扣分记录导出列配置（dorm_export_columns）
         // 渲染完成后启用拖拽框选（PC 端）
         if(typeof initDragSelectForAllTables === 'function') initDragSelectForAllTables();
     }
@@ -3307,7 +3578,7 @@
             + '<thead><tr>'+checkTh()+'<th>日期</th><th>宿舍号</th><th>床号</th><th>班级</th><th>学生</th><th>类型</th><th>卫生项目</th><th>卫生分值</th><th>纪律项目</th><th>纪律分值</th><th>备注</th>' + (isAdmin() ? '<th>操作</th>' : '<th style="display:none"></th>') + '</tr></thead>'
             + '<tbody id="queryDeductionTbody"></tbody>'
             + '</table></div></div>';
-        renderListInChunks(document.getElementById('queryDeductionTbody'), records, queryDeductionRowHtml, 50);
+        renderListInChunks(document.getElementById('queryDeductionTbody'), records, queryDeductionRowHtml, 50, null, { preserveScroll:true });
     }
 
     /**
@@ -3373,14 +3644,20 @@
     }
 
     /**
-     * 导出筛选后的数据为 XLSX 工作簿（SheetJS/xlsx）。
-     * 按所选数据类型（扣分/退宿/请假）构建表头与行数据，导出文件名含本地日期。
+     * 导出筛选后的数据为 XLSX/CSV（按所选数据类型构建表头与行数据，文件名含本地日期）。
+     * 整体经 safeAsync 包装（上下文"导出筛选数据"，{retry:true}）：导出期间触发按钮
+     * 禁用并显示"⏳ 导出中…"，异常统一走 handleError 分类提示并带"点击重试"。
+     * 前置权限/日期校验不属于导出异常，保留原有 toast 提前返回。
      */
     function exportFilteredDataNew(){
         if(!isAdmin() && currentUser.role !== 'CLASS_ADMIN'){toast('无权限','error');return;}
         var f=getExportFilterValues();
         if(!f.startDate||!f.endDate){toast('请选择日期范围','error');return;}
         if(f.startDate>f.endDate){toast('开始日期不能晚于结束日期','error');return;}
+        var _exportBtn = captureExportButton();
+        return safeAsync(function(){
+        var _restoreBtn = prepareExportButton(_exportBtn);
+        try {
 
         // ===== 楼层调整记录导出 =====
         if(f.dataType === 'floor_change'){
@@ -3498,7 +3775,15 @@
             var bedA=getBedNumberForSort(a); var bedB=getBedNumberForSort(b);
             return bedA-bedB;
         });
-        var csv='\uFEFF日期,宿舍号,床号,班级,学生,卫生项目,卫生分值,纪律项目,纪律分值,备注\n';
+        // 自定义导出列：读取"导出列配置（仅扣分记录）"面板勾选状态，未选列不输出
+        var exportCols=getExportColumns();
+        if(exportCols.length===0){ toast('请至少勾选一个导出列','error'); return; }
+        var EXPORT_COL_LABELS={date:'日期',dorm:'宿舍号',bed:'床号',class:'班级',student:'学生',type:'类型',hyItem:'卫生项目',hyScore:'卫生分值',disItem:'纪律项目',disScore:'纪律分值',remark:'备注'};
+        // 大数据量预警：超 5000 条时先征求用户意见（取消则终止导出，finally 恢复按钮）
+        if(records.length > 5000){
+            if(!confirm('当前筛选结果共 ' + records.length + ' 条记录，导出可能需要几秒，是否继续？')) return;
+        }
+        var csv='\uFEFF'+exportCols.map(function(k){return EXPORT_COL_LABELS[k];}).join(',')+'\n';
         records.forEach(function(r){
             var dorm=getDormitoryById(r.dormitoryId);
             var student=r.studentId?getStudentById(r.studentId):null;
@@ -3510,8 +3795,23 @@
             var bedNumber=student?(student.bedNumber||'-'):'-';
             var classNameVal=getClassNameForRecord(r);
             var studentNameVal=student?student.name:'宿舍集体';
-            // 分值列用双引号包裹，确保 Excel 打开时保留 "+4" 的正号不被吞掉
-            csv+=r.recordDate+','+getDormDisplayNameById(r.dormitoryId)+','+bedNumber+','+classNameVal+','+studentNameVal+','+(hyNames||'-')+',"'+formatScoreText(r.hygieneScore||0,kind)+'",'+(disNames||'-')+',"'+formatScoreText(r.disciplineScore||0,kind)+'",'+escapeHtmlAttr(r.remark||'').replace(/,/g,'，')+'\n';
+            // 类型列与查询结果表格一致：无 studentId 为宿舍集体记录
+            var typeVal=(r.studentId==null)?'集体':'个人';
+            // 每列取值与原固定列导出完全一致；分值列双引号包裹，确保 Excel 打开保留 "+4" 正号
+            var colVals={
+                date:r.recordDate,
+                dorm:getDormDisplayNameById(r.dormitoryId),
+                bed:bedNumber,
+                class:classNameVal,
+                student:studentNameVal,
+                type:typeVal,
+                hyItem:(hyNames||'-'),
+                hyScore:'"'+formatScoreText(r.hygieneScore||0,kind)+'"',
+                disItem:(disNames||'-'),
+                disScore:'"'+formatScoreText(r.disciplineScore||0,kind)+'"',
+                remark:escapeHtmlAttr(r.remark||'').replace(/,/g,'，')
+            };
+            csv+=exportCols.map(function(k){return colVals[k];}).join(',')+'\n';
         });
         var fileName;
         if(startDate===endDate && !className && !dormRoom && !bed && !studentName){
@@ -3530,6 +3830,8 @@
         link.download=fileName+'.csv';
         link.click();
         toast('导出成功');
+        } finally { _restoreBtn(); }
+        }, '导出筛选数据', { retry: true });
     }
     function getWeekNumber(dateStr){
         var refDate = new Date('2026-08-28');
@@ -4013,6 +4315,88 @@
             + '<div class="form-group"><label style="display:inline-flex;align-items:center;gap:6px;font-weight:500"><input type="checkbox" id="notifTplEnabled" style="width:auto" ' + (enabled ? 'checked' : '') + '> 启用该模板（关闭后发送通知时不可选用）</label></div>'
             + '</div>'
             + '<div class="em-footer"><button class="btn btn-primary" onclick="saveNotifTemplate()">💾 保存</button><button class="btn btn-outline" onclick="closeNotifTemplateModal()">取消</button></div>';
+    }
+
+    // ==================== 同步冲突可视化（showSyncConflicts） ====================
+    /**
+     * 弹出模态框展示 loadFromCloudV3 合并阶段产生的同步冲突（只读对照，不改变
+     * 已经完成的合并结果）。外层 .modal-overlay / 内层 .edit-modal 均复用现有
+     * 样式；overlay 由本函数动态创建（无需在 index.html 中预置容器），配套的
+     * 冲突条目样式以一次性注入的 <style> 承载。
+     * 每条冲突展示：序号 + 类型（V3 类型码→中文名）+ ID + 原因标签
+     * （overwritten=云端更新覆盖 / tombstoned=云端墓碑删除）+ 本地快照/云端快照
+     * （JSON 美化后放入 <pre>；全部文本经 escapeHtmlAttr 转义，杜绝快照内容注入）。
+     * @param {Array<{type:string,id:string|number,localSnapshot:*,cloudSnapshot:*,reason:string}>} conflicts
+     * @returns {void}
+     */
+    function showSyncConflicts(conflicts){
+        if(!Array.isArray(conflicts) || conflicts.length === 0) return;
+        // ---- 一次性注入冲突条目样式（幂等） ----
+        if(!document.getElementById('syncConflictModalStyle')){
+            var styleEl = document.createElement('style');
+            styleEl.id = 'syncConflictModalStyle';
+            styleEl.textContent =
+                '.sc-item{border:1px solid var(--gray-200);border-radius:10px;overflow:hidden;margin-bottom:12px}' +
+                '.sc-item-head{display:flex;flex-wrap:wrap;align-items:center;gap:6px;padding:9px 12px;background:var(--gray-50);font-weight:700;font-size:.92rem}' +
+                '.sc-id{color:var(--gray-500);font-weight:400}' +
+                '.sc-reason{margin-left:auto;padding:2px 10px;border-radius:999px;font-size:.78rem;font-weight:500}' +
+                '.sc-reason-overwritten{background:#fef3c7;color:#92400e}' +
+                '.sc-reason-tombstoned{background:#fee2e2;color:#991b1b}' +
+                '.sc-snap{padding:8px 12px}' +
+                '.sc-snap-label{font-size:.78rem;color:var(--gray-500);margin-bottom:4px}' +
+                '.sc-snap pre{margin:0;background:#f8fafc;border:1px solid var(--gray-200);border-radius:8px;padding:8px 10px;font-size:.76rem;line-height:1.45;max-height:190px;overflow:auto;white-space:pre-wrap;word-break:break-word}';
+            document.head.appendChild(styleEl);
+        }
+        // 重复打开：先移除旧弹层
+        var oldOverlay = document.getElementById('syncConflictModal');
+        if(oldOverlay && oldOverlay.parentNode) oldOverlay.parentNode.removeChild(oldOverlay);
+        // V3 类型码 → 中文标签
+        var TYPE_LABELS = {
+            meta: '系统元数据', floor: '楼层', dormitory: '宿舍', student: '学生',
+            user: '账号', deduction_item: '扣分项', deduction_record: '扣分记录',
+            leave_record: '请假/停宿记录', absence_record: '退宿记录',
+            inspection_confirmation: '巡查确认', anomaly_report: '异常上报',
+            daily_summary: '晚检总结', notification: '通知',
+            notification_template: '通知模板', floor_change_request: '楼层调整申请'
+        };
+        function reasonLabel(reason){
+            return reason === 'tombstoned' ? '云端墓碑删除' : '云端更新覆盖';
+        }
+        function prettyJson(o){
+            if(o === undefined) return '（无）';
+            try { return JSON.stringify(o, null, 2); } catch(e) { return String(o); }
+        }
+        var cardsHtml = conflicts.map(function(c, i){
+            var typeName = TYPE_LABELS[c.type] || c.type;
+            return '<div class="sc-item">'
+                + '<div class="sc-item-head"><span>#' + (i+1) + ' ' + escapeHtmlAttr(typeName) + '</span>'
+                + '<span class="sc-id">ID：' + escapeHtmlAttr(c.id) + '</span>'
+                + '<span class="sc-reason sc-reason-' + escapeHtmlAttr(c.reason) + '">' + escapeHtmlAttr(reasonLabel(c.reason)) + '</span></div>'
+                + '<div class="sc-snap"><div class="sc-snap-label">📦 本地快照</div><pre>' + escapeHtmlAttr(prettyJson(c.localSnapshot)) + '</pre></div>'
+                + '<div class="sc-snap"><div class="sc-snap-label">☁️ 云端快照</div><pre>' + escapeHtmlAttr(prettyJson(c.cloudSnapshot)) + '</pre></div>'
+                + '</div>';
+        }).join('');
+        var overlay = document.createElement('div');
+        overlay.className = 'modal-overlay show';
+        overlay.id = 'syncConflictModal';
+        overlay.innerHTML =
+            '<div class="edit-modal" role="dialog" aria-modal="true" aria-label="同步冲突详情">'
+            + '<div class="em-header"><span>🔀 同步冲突详情（' + conflicts.length + ' 条）</span>'
+            + '<button type="button" class="em-close" aria-label="关闭">✕</button></div>'
+            + '<div class="em-body">' + cardsHtml + '</div>'
+            + '<div class="em-footer"><button type="button" class="btn btn-primary" data-action="close">关闭</button></div>'
+            + '</div>';
+        function close(){
+            if(overlay.parentNode) overlay.parentNode.removeChild(overlay);
+            document.removeEventListener('keydown', onEscKey);
+        }
+        function onEscKey(e){ if(e.key === 'Escape') close(); }
+        // 点遮罩空白处关闭；✕、底部"关闭"按钮、ESC 三种方式均可关闭
+        overlay.addEventListener('click', function(e){ if(e.target === overlay) close(); });
+        overlay.querySelector('.em-close').addEventListener('click', close);
+        overlay.querySelector('[data-action="close"]').addEventListener('click', close);
+        document.addEventListener('keydown', onEscKey);
+        document.body.appendChild(overlay);
     }
 
 // ---- shared globals explicitly mounted on window ----

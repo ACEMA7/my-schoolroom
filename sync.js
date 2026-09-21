@@ -152,8 +152,10 @@
     /**
      * V3 增量上行：收集本地全部脏记录与墓碑行，批量 upsert 到 sync_store。
      * 流程：遍历 V3_RECORD_TYPES → 脏记录读当前数据构造 upsert 行（deleted=false）、
-     * 墓碑构造 deleted=true 行 → v3UploadRows 批量上传 → 全部成功后清空脏/墓碑标记
-     * 并落本地存档；无任何待传数据时仅更新 lastSyncTime。
+     * 墓碑构造 deleted=true 行（布尔 true / {ts} 对象两种形态都上传）→ v3UploadRows
+     * 批量上传 → 全部成功后清空脏标记；墓碑仅在上传成功后清理旧布尔形态与标记
+     * 超过 7 天的条目，7 天内的新墓碑保留并在后续同步中持续重广播；最后落本地
+     * 存档；无任何待传数据时仅更新 lastSyncTime。
      * @returns {Promise<boolean>} true=上传成功（或无待传数据）；false=存在失败批次（脏标记保留，待重试）
      */
     function syncToCloudV3(){
@@ -202,7 +204,8 @@
                 dirtyRowCount++;
                 rows.push(v3BuildUpsertRow(meta.type, rid, rec, false, nowIso));
             });
-            // 2) 删除标记：只对已存在的云端记录设置 deleted=true
+            // 2) 删除标记：只对已存在的云端记录设置 deleted=true。
+            //    遍历键集合，墓碑值为布尔或 {ts} 对象均参与上传（形态无关）。
             Object.keys(deletedSet).forEach(function(rid){
                 didAnything = true;
                 tombstoneCount++;
@@ -226,16 +229,32 @@
                     {脏记录行数: dirtyRowCount, 墓碑行数: tombstoneCount, 总行数: rows.length});
                 return false;
             }
-            // 上传成功：清除脏标记和删除标记
+            // 上传成功：清除脏标记；墓碑改为"上传成功后按龄清理"——
+            // 仅删除旧版布尔墓碑与标记超过 7 天的墓碑（含缺 ts 的异常对象）；
+            // 7 天内的新墓碑保留，后续每次同步继续随包重广播，确保晚上线设备也能
+            // 收到删除信号。安全约束：清理只发生在上传成功之后，未上传成功的墓碑
+            // 一律原样保留，任何防污染闸门均不受影响。
+            var tombPrunedCount = 0;
             V3_RECORD_TYPES.forEach(function(meta){
                 if(DB.dirtyByType && DB.dirtyByType[meta.type]) DB.dirtyByType[meta.type] = {};
-                if(DB.deletedByType && DB.deletedByType[meta.type]) DB.deletedByType[meta.type] = {};
+                var tSet = DB.deletedByType && DB.deletedByType[meta.type];
+                if(tSet){
+                    var tombCutoff = Date.now() - TOMBSTONE_RETENTION_MS;
+                    Object.keys(tSet).forEach(function(rid){
+                        var v = tSet[rid];
+                        if(v === true){ delete tSet[rid]; tombPrunedCount++; return; } // 旧版布尔：沿旧例上传后即清
+                        if(v && typeof v === 'object'){
+                            // ts 缺失/非法视同过期；ts 超过 7 天才删，未超期保留重广播
+                            if(typeof v.ts !== 'number' || v.ts < tombCutoff){ delete tSet[rid]; tombPrunedCount++; }
+                        }
+                    });
+                }
             });
             DB.lastSyncTime = Date.now();
             saveDBToLocal();
             console.log('[V3] 上传成功，共 ' + rows.length + ' 行');
             syncLog('INFO', '脏记录上传成功（脏记录 ' + dirtyRowCount + ' 条，墓碑 ' + tombstoneCount + ' 条，共 ' + rows.length + ' 行）',
-                {脏记录行数: dirtyRowCount, 墓碑行数: tombstoneCount, 总行数: rows.length});
+                {脏记录行数: dirtyRowCount, 墓碑行数: tombstoneCount, 总行数: rows.length, 本次清理墓碑: tombPrunedCount});
             return true;
         });
     }
@@ -371,7 +390,23 @@
                 if(!byType[r.record_type]) byType[r.record_type] = [];
                 byType[r.record_type].push(r);
             });
-            var result = { added:0, updated:0, removed:0, rescued:0, basicChanged:false, total:rows.length };
+            var result = { added:0, updated:0, removed:0, rescued:0, basicChanged:false, total:rows.length, conflicts:[] };
+            // ---- 同步冲突可视化：只记录冲突快照，不参与也不改变任何合并决策 ----
+            // 深拷贝（JSON 往返），因为随后本地对象会被"原地删键→重填"方式覆盖，
+            // 不提前拷贝则 localSnapshot 最终会与云端内容完全相同，失去对照意义。
+            function snapshotObj(o){
+                if(o == null) return o;
+                try { return JSON.parse(JSON.stringify(o)); } catch(e) { return o; }
+            }
+            function pushConflict(type, id, localSnapshot, cloudSnapshot, reason){
+                result.conflicts.push({
+                    type: type,
+                    id: id,
+                    localSnapshot: snapshotObj(localSnapshot),
+                    cloudSnapshot: snapshotObj(cloudSnapshot),
+                    reason: reason // 'overwritten'（云端按 updated_at 覆盖）| 'tombstoned'（云端墓碑删除）
+                });
+            }
             // 云端下行记录的数字型主键/外键归一化（防御 JSONB 或历史数据把 id 存成字符串，
             // 导致本地 getItemById 等严格相等比较失效）。仅处理核心 5 类；
             // 业务记录（deduction_record 等）id 为字符串时间戳，绝不能 parseInt。
@@ -664,6 +699,8 @@
                                 var cloudClean = {};
                                 Object.keys(cloudData).forEach(function(k){ if(k !== '_subType') cloudClean[k] = cloudData[k]; });
                                 if(JSON.stringify(item) !== JSON.stringify(cloudClean)){
+                                    // 冲突记录须在原地改写前推送（快照内部已深拷贝）
+                                    pushConflict(type, rid, item, cloudClean, 'overwritten');
                                     Object.keys(item).forEach(function(k){ delete item[k]; });
                                     Object.keys(cloudClean).forEach(function(k){ item[k] = cloudClean[k]; });
                                     result.updated++;
@@ -672,6 +709,7 @@
                             kept.push(item);
                         } else if(split.tomb[rid] && !dirtySet[rid]){
                             // 云端墓碑：本地无未上传修改时删除
+                            pushConflict(type, rid, item, (split.tomb[rid] && split.tomb[rid].data) || null, 'tombstoned');
                             result.removed++;
                         } else {
                             // 云端无任何痕迹（既无活行也无墓碑）
@@ -750,6 +788,8 @@
                     var localTime = local.lastModified || local.createdAt || 0;
                     var cloudTime = split.live[rid].updated_at ? new Date(split.live[rid].updated_at).getTime() : (cloud.lastModified || cloud.createdAt || 0);
                     if(cloudTime >= localTime && JSON.stringify(local) !== JSON.stringify(cloud)){
+                        // 冲突记录须在原地改写前推送（快照内部已深拷贝）
+                        pushConflict(type, rid, local, cloud, 'overwritten');
                         Object.keys(local).forEach(function(k){ delete local[k]; });
                         Object.keys(cloud).forEach(function(k){ local[k] = cloud[k]; });
                         normalizeCloudIds(type, local); // 覆盖后同样归一化主键/外键
@@ -767,11 +807,17 @@
                             keptArr.push(r);
                         } else {
                             result.removed++;
+                            // 仅当丢弃确由云端墓碑触发时记为冲突；陈旧/无云端痕迹等
+                            // 其他丢弃原因不记（严格匹配 split.tomb && !dirty 条件）
+                            if(split.tomb[rid] && !dirtySet[rid]){
+                                pushConflict(type, rid, r, (split.tomb[rid] && split.tomb[rid].data) || null, 'tombstoned');
+                            }
                         }
                         return;
                     }
                     // ---- 以下为基础数据（floor/dormitory/student/user）逻辑，保持不变 ----
                     if(split.tomb[rid] && !dirtySet[rid]){
+                        pushConflict(type, rid, r, (split.tomb[rid] && split.tomb[rid].data) || null, 'tombstoned');
                         result.removed++;
                         return;
                     }
@@ -1120,6 +1166,14 @@
                 // 静默等待下一次同步（syncToCloudV3 内部也有 aborted 判定，双重保险）
                 if(pulled && pulled.aborted){
                     throw new Error('云端正在重置中，跳过本次上传');
+                }
+                // 【自动同步冲突可视化】后台路径（含保存触发/online/退避重试）只做
+                // console.log + syncLog 静默记录，不弹 toast 打扰用户；手动同步入口
+                // manualSyncInner 会另行以带按钮的 toast 提示。
+                if(pulled && pulled.conflicts && pulled.conflicts.length > 0){
+                    console.log('[同步冲突] 自动拉取有 ' + pulled.conflicts.length + ' 条本地记录被云端覆盖/墓碑删除：', pulled.conflicts);
+                    syncLog('INFO', '自动同步检测到 ' + pulled.conflicts.length + ' 条同步冲突（本地记录被云端更新覆盖或墓碑删除）',
+                        {冲突数量: pulled.conflicts.length, 冲突明细: pulled.conflicts.map(function(c){ return {类型: c.type, ID: c.id, 原因: c.reason}; })});
                 }
                 // 仅在原本会触发熔断的场景下提示用户（避免每次同步都弹 toast）
                 if(mutableDirtyCount > 10){
@@ -1493,6 +1547,8 @@
         } catch(e) { console.error('[分数迁移] 执行失败：', e); }
         // 基础数据自愈：修复本地被意外清空的楼层/宿舍（无论是否启用云端同步都要执行）
         if(repairBasicData()) saveDBToLocal();
+        // 本地存储容量维护（每次启动显式执行一次）：过期错误日志清理 + 大容量明文库主动压缩
+        try{ maintainLocalStorage(); }catch(_mlE){ console.warn('[存储维护] 执行失败：', _mlE); }
         if (SUPABASE_CONFIG.enabled && SUPABASE_CONFIG.url.indexOf('YOUR_') === -1) {
             syncEnabled = true;
             try {
@@ -1712,6 +1768,16 @@
             if(added>0||updated>0||removed>0||rescued>0||basicChanged||isReset){ renderTree(); renderView(); }
             // 拉取可能带来其他设备下发的新通知，同步后刷新顶栏未读角标
             updateNotifBadge();
+            // 【手动同步冲突可视化】带"点击查看"按钮的 toast：点击弹出冲突详情模态框。
+            // 放在上传结果判定之前，确保即使后续推送失败，用户仍可查看拉取阶段发生的冲突。
+            if(pulled && pulled.conflicts && pulled.conflicts.length > 0){
+                (function(conflicts){
+                    toast('有 ' + conflicts.length + ' 条记录被云端更新覆盖', 'error', {
+                        label: '点击查看',
+                        onClick: function(){ showSyncConflicts(conflicts); }
+                    });
+                })(pulled.conflicts);
+            }
             if(pushed === false){
                 // 上传失败：明确提示，绝不误报“同步完成”；脏标记保留，加入重试队列
                 updateSyncStatus('unsynced');

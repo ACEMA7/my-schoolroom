@@ -1393,6 +1393,7 @@
     // ==================== 本地存储（含压缩回退 + 容量预警） ====================
 
     var storageWarned = false;
+    var autoCompressDone = false; // 本会话是否已完成"明文→压缩"主动转换（防止重复 toast）
     function getDBByteSize() {
         try { return new Blob([JSON.stringify(DB)]).size; } catch(e) { return 0; }
     }
@@ -1450,15 +1451,31 @@
     }
     /**
      * 将全局 DB 序列化写入 localStorage（同步）。
-     * 先写明文 JSON；触发 QuotaExceededError（约 5MB 上限）时自动回退为
-     * LZC1: 前缀的 lz-string 压缩存储；压缩仍失败则提示用户清理数据。
+     * 写入策略：明文体积超过 3MB（STORAGE_AUTO_COMPRESS_BYTES）或 forceCompress=true
+     * 时直接写 LZC1: 前缀的 lz-string 压缩串（让压缩态在后续写入中保持，避免下次
+     * 明文写入又退回明文挤占配额）；否则先写明文 JSON，触发 QuotaExceededError
+     * （约 5MB 上限）时同样自动回退为压缩存储；压缩仍失败则提示用户清理数据。
      * 注意：本函数只落本地，云端同步由调用方经 saveDB()→syncWithRetry() 触发。
+     * @param {boolean} [forceCompress] true=强制压缩写入（供 maintainLocalStorage 主动转换）
      */
-    function saveDBToLocal() {
+    function saveDBToLocal(forceCompress) {
         var json;
         try {
             json = JSON.stringify(DB);
         } catch(e) { console.error('数据序列化失败:', e); return; }
+        // 主动压缩路径：大容量库或显式要求时，直接写压缩格式
+        var byteSize = 0;
+        try { byteSize = new Blob([json]).size; } catch(e) { byteSize = json.length; }
+        if ((forceCompress || byteSize > STORAGE_AUTO_COMPRESS_BYTES) && window.LZString) {
+            try {
+                localStorage.setItem(DB_KEY, LOCAL_LZ_PREFIX + LZString.compressToUTF16(json));
+                if (forceCompress) console.log('[存储] 已主动切换为压缩存储');
+                return;
+            } catch(ce) {
+                // 主动压缩写入失败（罕见）：回落尝试明文 + 配额回退链路
+                console.warn('主动压缩写入失败，改试明文存储:', ce);
+            }
+        }
         try {
             localStorage.setItem(DB_KEY, json);
         } catch(e) {
@@ -1552,6 +1569,65 @@
                 if(r.type==='leave' && !r.startDate){ r.startDate=r.date; r.endDate=r.date; }
             });
         }
+    }
+    /**
+     * 本地存储容量维护（幂等安全；每次启动由 initializeData 显式调用一次）：
+     *   1) 错误日志 dorm_error_logs：剔除 time 超过 30 天的条目，并只保留最近 20 条；
+     *   2) 本地备份 dormitory_system_backup：本就只保留 1 份（每次写入直接覆盖），无需处理；
+     *   3) 明文 DB 体积超过 3MB 时，主动调 saveDBToLocal() 转为压缩存储，
+     *      并 toast「本地数据较大，已自动压缩存储」（压缩态不重复提示）。
+     * 三段逻辑各自 try-catch 隔离，任何一步失败都不影响其余功能。
+     */
+    function maintainLocalStorage(){
+        if(!DB) return;
+        // ---- 1) 错误日志：超 30 天剔除 + 最多保留最近 20 条 ----
+        try {
+            var mlErrorKey = 'dorm_error_logs';
+            var rawLogs = localStorage.getItem(mlErrorKey);
+            if(rawLogs){
+                var logs = [];
+                try { logs = JSON.parse(rawLogs) || []; } catch(e) { logs = []; }
+                if(Array.isArray(logs) && logs.length){
+                    var logCutoff = Date.now() - 30 * 24 * 60 * 60 * 1000;
+                    var getLogTime = function(entry){
+                        return entry && entry.time ? new Date(entry.time).getTime() : NaN;
+                    };
+                    var keptLogs = [];
+                    logs.forEach(function(entry){
+                        if(!entry) return;
+                        var t = getLogTime(entry);
+                        // time 无法解析的旧条目保留（宁可多留，不误删）
+                        if(isNaN(t) || t >= logCutoff) keptLogs.push(entry);
+                    });
+                    // 按时间倒序（新→旧），无法解析时间的排末尾，再截断为 20 条
+                    keptLogs.sort(function(a,b){
+                        var ta = getLogTime(a), tb = getLogTime(b);
+                        if(isNaN(ta) && isNaN(tb)) return 0;
+                        if(isNaN(ta)) return 1;
+                        if(isNaN(tb)) return -1;
+                        return tb - ta;
+                    });
+                    if(keptLogs.length > 20) keptLogs = keptLogs.slice(0, 20);
+                    if(keptLogs.length !== logs.length){
+                        localStorage.setItem(mlErrorKey, JSON.stringify(keptLogs));
+                    }
+                }
+            }
+        } catch(e) { console.warn('[存储维护] 错误日志清理失败:', e); }
+        // ---- 2) 本地备份 dormitory_system_backup 始终只保留 1 份（写入前直接覆盖），无需额外操作 ----
+        // ---- 3) 大容量明文存档：主动转压缩 ----
+        try {
+            if(!autoCompressDone && getDBByteSize() > STORAGE_AUTO_COMPRESS_BYTES){
+                var stored = localStorage.getItem(DB_KEY);
+                // 仅当前为明文 JSON（首字符 '{'）时才需转换；LZC1: 压缩态/无存档不处理
+                if(stored && stored.charAt(0) === '{' && window.LZString){
+                    saveDBToLocal(true);
+                    autoCompressDone = true;
+                    // 延迟弹出，避开启动加载遮罩
+                    setTimeout(function(){ toast('本地数据较大，已自动压缩存储'); }, 800);
+                }
+            }
+        } catch(e) { console.warn('[存储维护] 主动压缩失败:', e); }
     }
     /**
      * 基础数据自愈：楼层/宿舍被历史 bug（云端空数据覆盖本地）意外清空时重建。
@@ -1712,8 +1788,10 @@
     }
 
     // 脏标记：按 type 分组存储 DB.dirtyByType[type] = { recordId: true, ... }
-    // 删除标记（墓碑）：按 type 分组存储 DB.deletedByType[type] = { recordId: true, ... }
-    // 同步流程：syncToCloudV3 只上传脏记录与墓碑行；上传成功后清除对应标记；
+    // 删除标记（墓碑）：DB.deletedByType[type] = { recordId: { ts: 打标时间ms }, ... }
+    //                   （历史旧形态为 recordId: true，读取处两种形态均兼容）
+    // 同步流程：syncToCloudV3 只上传脏记录与墓碑行；上传成功后清除脏标记，
+    //           墓碑仅清理旧布尔形态与超过 7 天的条目（7 天内持续重广播）；
     //           loadFromCloudV3 按 updated_at 合并活记录、按墓碑删除本地记录。
     /**
      * 把一条记录标记为「脏」（有本地新增/修改，待上传云端）。
@@ -1728,6 +1806,7 @@
     }
     /**
      * 把一条记录标记为「已删除」（墓碑，待上传云端通知其他设备删除）。
+     * 墓碑值记录打标时间 {ts: Date.now()}，供上传成功后按 7 天保留期清理；
      * 同时清除其脏标记，避免"删除"与"修改"两类标记冲突。
      * @param {string} type - V3 记录类型
      * @param {number|string} recordId - 被删除记录的 ID
@@ -1736,7 +1815,7 @@
         if(!DB) return;
         if(!DB.deletedByType) DB.deletedByType = {};
         if(!DB.deletedByType[type]) DB.deletedByType[type] = {};
-        DB.deletedByType[type][String(recordId)] = true;
+        DB.deletedByType[type][String(recordId)] = { ts: Date.now() };
         // 已删除的记录同时从 dirty 标记中移除（避免删除标记和脏标记冲突）
         if(DB.dirtyByType && DB.dirtyByType[type]){
             delete DB.dirtyByType[type][String(recordId)];
@@ -1746,7 +1825,9 @@
         return DB && DB.dirtyByType && DB.dirtyByType[type] && DB.dirtyByType[type][String(recordId)];
     }
     function v3IsDeleted(type, recordId){
-        return DB && DB.deletedByType && DB.deletedByType[type] && DB.deletedByType[type][String(recordId)];
+        var v = DB && DB.deletedByType && DB.deletedByType[type] && DB.deletedByType[type][String(recordId)];
+        // 兼容两种墓碑形态：旧版布尔 true / 新版 {ts:number}，统一归一为布尔
+        return !!v;
     }
     // 将本地某类型的所有现有记录标记为脏（用于云端缺失该类型数据时的补种上传）
     function v3MarkTypeDirty(type){
