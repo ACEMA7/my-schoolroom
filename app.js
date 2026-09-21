@@ -40,6 +40,10 @@
     var selectedFloorId = null;
     var selectedDormitoryId = null;
 
+    // ==================== PWA 安装引导状态 ====================
+    var deferredPrompt = null;         // beforeinstallprompt 事件缓存（安卓/桌面 Chrome/Edge）
+    var pwaInstalled = false;          // 是否已以独立应用（standalone）方式安装
+
     // ==================== 移动端历史栈 ====================
     var viewHistory = [];
 
@@ -77,6 +81,8 @@
                     // 会话恢复：同样刷新通知角标并确保 60 秒定时轮询已启动
                     updateNotifBadge();
                     startNotifBadgeTimer();
+                    // 会话恢复进入主应用后也评估一次 PWA 安装引导（不限于首次登录）
+                    maybeShowInstallBanner();
                 }
             } catch(e) {}
         }
@@ -498,6 +504,8 @@
         // 登录成功：立即刷新通知未读角标，并启动 60 秒定时轮询（仅启动一次）
         updateNotifBadge();
         startNotifBadgeTimer();
+        // 登录成功后评估一次 PWA 安装引导（每次登录都检查，不仅限首次）
+        maybeShowInstallBanner();
         // 登录成功后清理陈旧脏标记：业务记录中，记录已不存在 或 最后修改时间超过 3 天的脏标记直接清除，
         // 防止离线恢复后历史废弃数据被误上传到云端。
         if(DB && DB.dirtyByType){
@@ -630,6 +638,8 @@
         currentView = view;
         updateNavActive(view);
         renderView();
+        // 回到首页时再给一次 PWA 安装引导机会（已安装/7 天免打扰/已在显示等条件内部判断）
+        if (view === 'home') maybeShowInstallBanner();
         // 视图切换时顺手刷新通知未读角标（未登录态内部自动隐藏）
         updateNotifBadge();
         // 内容区滚动回顶部
@@ -1079,6 +1089,16 @@
         pending.push(stuRecord);
         savePendingReviewRecords(pending);
         console.warn('[登记防错] 检测到孤儿派生记录，已隔离为待核查记录（不上传云端）：', stuRecord.id);
+        // 同步日志可观测性：仅记录隔离事件，不改变隔离/防污染逻辑
+        if(typeof syncLog === 'function'){
+            syncLog('WARN', '隔离孤儿派生记录：未找到同批次宿舍集体记录，已转入待核查区（不上传云端）', {
+                id: String(stuRecord.id == null ? '' : stuRecord.id),
+                studentId: (stuRecord.studentId == null) ? null : String(stuRecord.studentId),
+                dormitoryId: String(stuRecord.dormitoryId == null ? '' : stuRecord.dormitoryId),
+                recordDate: stuRecord.recordDate || '',
+                recordMode: stuRecord.recordMode || 'deduct'
+            });
+        }
         return true;
     }
 
@@ -4735,6 +4755,55 @@
         }
     }
 
+    /**
+     * 一键复制全部云端同步日志为纯文本（数据管理 → 🔄 同步日志）。
+     * 读取 sync.js 的环形缓冲区（最多 500 条，时间正序），格式化为
+     * [YYYY-MM-DD HH:mm:ss] [LEVEL] 消息 + 缩进详情的纯文本。
+     * 优先 navigator.clipboard.writeText，不支持/失败时回退 execCommand('copy')。
+     */
+    function copySyncLogs(){
+        var logs = (typeof getSyncLogs === 'function') ? getSyncLogs() : [];
+        if(!logs.length){ toast('暂无同步日志可复制'); return; }
+        function syncLogPad2(n){ return (n < 10 ? '0' : '') + n; }
+        function syncLogFullTime(ts){
+            var d = new Date(ts);
+            return d.getFullYear() + '-' + syncLogPad2(d.getMonth()+1) + '-' + syncLogPad2(d.getDate())
+                + ' ' + syncLogPad2(d.getHours()) + ':' + syncLogPad2(d.getMinutes()) + ':' + syncLogPad2(d.getSeconds());
+        }
+        var lines = [];
+        lines.push('云端同步日志（共 ' + logs.length + ' 条，最多保留 500 条）');
+        lines.push('导出时间：' + syncLogFullTime(Date.now()));
+        lines.push('========================================');
+        logs.forEach(function(e){
+            lines.push('[' + syncLogFullTime(e.time) + '] [' + e.level + '] ' + e.message);
+            if(e.detail) lines.push('    详情: ' + e.detail);
+        });
+        var text = lines.join('\n');
+        if(navigator.clipboard && navigator.clipboard.writeText){
+            navigator.clipboard.writeText(text).then(function(){
+                toast('全部同步日志已复制（' + logs.length + ' 条），可直接粘贴发送');
+            }).catch(function(){
+                copySyncLogsFallback(text, logs.length);
+            });
+        }else{
+            copySyncLogsFallback(text, logs.length);
+        }
+    }
+    /** copySyncLogs 的 execCommand 回退实现 */
+    function copySyncLogsFallback(text, count){
+        try{
+            var ta = document.createElement('textarea');
+            ta.value = text; ta.style.position = 'fixed'; ta.style.left = '-9999px';
+            ta.setAttribute('readonly', '');
+            document.body.appendChild(ta); ta.select();
+            document.execCommand('copy');
+            document.body.removeChild(ta);
+            toast('全部同步日志已复制（' + count + ' 条），可直接粘贴发送');
+        }catch(e){
+            toast('复制失败，请手动选择日志文本复制', 'error');
+        }
+    }
+
     // ==================== 账号管理（仅管理员） ====================
     /**
      * 打开账号新增/编辑模态框（userId 为 0/空=新增）。
@@ -6397,22 +6466,207 @@
         });
     });
 
+    // ==================== PWA 安装引导 ====================
+    // 纯 UI 引导层：不修改数据层/同步层，不触碰任何防污染闸门。
+    // 用户点"暂不/我知道了"后写入关闭时间戳，7 天内不再自动弹出。
+    var PWA_BANNER_DISMISS_KEY = 'dorm_pwa_banner_dismissed';
+    var PWA_DISMISS_MS = 7 * 24 * 60 * 60 * 1000;
+
+    // 初始化（脚本加载即执行）：判定独立运行状态 + 安装相关事件监听
+    (function initPwaInstallGuards(){
+        try {
+            if(window.matchMedia && window.matchMedia('(display-mode: standalone)').matches){
+                pwaInstalled = true;
+            }
+            // 旧版 iOS Safari 兜底：navigator.standalone === true 表示已从主屏幕启动
+            if(!pwaInstalled && navigator.standalone === true){
+                pwaInstalled = true;
+            }
+        } catch(e) {}
+        // Chromium 系（安卓 Chrome/Edge、桌面 Chrome/Edge）：阻止浏览器默认迷你提示条，缓存事件
+        window.addEventListener('beforeinstallprompt', function(e){
+            e.preventDefault();
+            deferredPrompt = e;
+            console.log('[PWA] 当前环境可安装，beforeinstallprompt 事件已缓存');
+            if(typeof syncLog === 'function'){
+                syncLog('INFO', 'PWA 可安装：浏览器已触发 beforeinstallprompt，等待用户确认安装');
+            }
+        });
+        // 用户完成安装（无论从引导条还是浏览器菜单触发）：更新状态并关闭引导条
+        window.addEventListener('appinstalled', function(){
+            pwaInstalled = true;
+            deferredPrompt = null;
+            hideInstallBanner();
+            console.log('[PWA] 应用已安装（appinstalled），安装引导条已关闭');
+            if(typeof syncLog === 'function'){
+                syncLog('INFO', 'PWA 已安装：appinstalled 事件触发，安装引导已关闭');
+            }
+        });
+    })();
+
+    /**
+     * 识别当前安装环境：
+     *  'prompt' = Chromium 系，已缓存 beforeinstallprompt，可调 prompt() 直接安装；
+     *  'inapp'  = 微信/QQ/钉钉等内置浏览器，需先"在浏览器中打开"；
+     *  'ios'    = iOS Safari（iPhone/iPad，非第三方内核），需走"分享 → 添加到主屏幕"；
+     *  'other'  = 其他环境（如桌面 Firefox），不弹引导。
+     * 注意：iPhone 上的微信同时命中 iPhone 与 MicroMessenger，内置浏览器优先，
+     * 否则给出的"分享→添加到主屏幕"引导在微信内无效。
+     */
+    function getPwaInstallEnv(){
+        var ua = navigator.userAgent || '';
+        var isInApp = /MicroMessenger|QQ|DingTalk/i.test(ua);
+        var isIOS = /iPhone|iPad|iPod/i.test(ua) && !/CriOS|FxiOS|EdgiOS/i.test(ua);
+        if(deferredPrompt) return 'prompt';
+        if(isInApp) return 'inapp';
+        if(isIOS) return 'ios';
+        return 'other';
+    }
+
+    /** 隐藏并清空安装引导条（安装完成/取消/appinstalled 时调用） */
+    function hideInstallBanner(){
+        var box = document.getElementById('pwaInstallBanner');
+        if(!box) return;
+        box.style.display = 'none';
+        box.dataset.showing = '';
+        box.innerHTML = '';
+    }
+
+    /** 用户主动关闭引导条：记录关闭时间戳，7 天内不再自动弹出 */
+    function dismissInstallBannerFor7Days(){
+        try { localStorage.setItem(PWA_BANNER_DISMISS_KEY, String(Date.now())); } catch(e) {}
+        hideInstallBanner();
+    }
+
+    /**
+     * 在合适时机（会话恢复进入主应用/登录成功/回到首页）评估并展示安装引导条。
+     * 条件：未安装 + 7 天免打扰未过期 + 当前无引导条在显示 + 环境可给出有效引导。
+     */
+    function maybeShowInstallBanner(){
+        if(pwaInstalled) return;
+        try {
+            var dismissedAt = parseInt(localStorage.getItem(PWA_BANNER_DISMISS_KEY) || '0', 10);
+            if(dismissedAt > 0 && (Date.now() - dismissedAt) < PWA_DISMISS_MS) return;
+        } catch(e) {}
+        var box = document.getElementById('pwaInstallBanner');
+        if(!box || box.dataset.showing === '1') return;
+        var env = getPwaInstallEnv();
+        if(env === 'other') return;
+        renderInstallBanner(box, env);
+    }
+
+    /**
+     * 按环境渲染引导条内容。
+     * 所有文案一律 textContent 写入（静态文案，杜绝注入）；按钮复用现有 .btn 样式。
+     */
+    function renderInstallBanner(box, env){
+        box.innerHTML = '';
+        var card = document.createElement('div');
+        card.className = 'pwa-install-card';
+        var msg = document.createElement('div');
+        msg.className = 'pwa-install-msg';
+        var actions = document.createElement('div');
+        actions.className = 'pwa-install-actions';
+        var primaryBtn = document.createElement('button');
+        primaryBtn.className = 'btn btn-primary btn-sm';
+        var closeBtn = document.createElement('button');
+        closeBtn.className = 'btn btn-outline btn-sm';
+
+        if(env === 'prompt'){
+            msg.textContent = '📲 把「宿舍管理」添加到主屏幕/桌面，打开更快、支持离线';
+            primaryBtn.textContent = '立即安装';
+            closeBtn.textContent = '暂不';
+            primaryBtn.addEventListener('click', triggerPwaInstall);
+            closeBtn.addEventListener('click', dismissInstallBannerFor7Days);
+            actions.appendChild(primaryBtn);
+            actions.appendChild(closeBtn);
+        } else if(env === 'ios'){
+            msg.textContent = '📲 点击底部「分享」按钮 → 选择「添加到主屏幕」即可安装';
+            closeBtn.textContent = '我知道了';
+            closeBtn.addEventListener('click', dismissInstallBannerFor7Days);
+            actions.appendChild(closeBtn);
+        } else {
+            // inapp：微信/QQ/钉钉内置浏览器
+            msg.textContent = '📲 请点击右上角「···」→ 在浏览器中打开，再添加到主屏幕';
+            closeBtn.textContent = '我知道了';
+            closeBtn.addEventListener('click', dismissInstallBannerFor7Days);
+            actions.appendChild(closeBtn);
+        }
+        card.appendChild(msg);
+        card.appendChild(actions);
+        box.appendChild(card);
+        box.dataset.showing = '1';
+        box.style.display = 'block';
+    }
+
+    /** 点击【立即安装】：调起浏览器安装弹窗，按 userChoice 结果收尾 */
+    function triggerPwaInstall(){
+        if(!deferredPrompt){ hideInstallBanner(); return; }
+        var promptEvent = deferredPrompt;
+        promptEvent.prompt();
+        promptEvent.userChoice.then(function(choice){
+            if(choice && choice.outcome === 'accepted'){
+                toast('安装成功');
+                hideInstallBanner();
+            } else {
+                toast('已取消安装');
+                dismissInstallBannerFor7Days();
+            }
+            deferredPrompt = null;
+        }).catch(function(){
+            deferredPrompt = null;
+            hideInstallBanner();
+        });
+    }
+
     // ==================== 网络状态提示 ====================
     // 断网/恢复均给出即时反馈（数据同步的自动重试由 sync.js 的 online 监听另行处理）
+    var _offlineBannerShown = false;  // 同一离线周期只插入一次横幅；恢复联网后复位
+    /** 在 #contentArea 顶部插入可关闭的离线横幅（视图重绘后随内容自然清空） */
+    function showOfflineBanner(){
+        if(_offlineBannerShown) return;
+        var content = document.getElementById('contentArea');
+        if(!content || document.getElementById('offlineNoticeBanner')) return;
+        var bar = document.createElement('div');
+        bar.id = 'offlineNoticeBanner';
+        bar.className = 'offline-notice-banner';
+        var span = document.createElement('span');
+        span.textContent = '当前处于离线模式，数据已保存本地，联网后自动同步';
+        var closeBtn = document.createElement('button');
+        closeBtn.className = 'offline-notice-close';
+        closeBtn.textContent = '✕';
+        closeBtn.title = '关闭提示';
+        closeBtn.setAttribute('aria-label', '关闭离线提示');
+        closeBtn.addEventListener('click', removeOfflineBanner);
+        bar.appendChild(span);
+        bar.appendChild(closeBtn);
+        content.insertBefore(bar, content.firstChild);
+        _offlineBannerShown = true;
+    }
+    /** 移除离线横幅（手动关闭或恢复联网时调用） */
+    function removeOfflineBanner(){
+        var bar = document.getElementById('offlineNoticeBanner');
+        if(bar && bar.parentNode) bar.parentNode.removeChild(bar);
+    }
     window.addEventListener('online', function(){
         // 云端同步启用时，恢复提示由 sync.js 的 online 监听统一展示（“网络已恢复，正在同步…”），
         // 此处仅在纯本地模式（无云同步）下兜底提示，避免两条 toast 同时弹出
         var cloudOn = (typeof SUPABASE_CONFIG!=='undefined' && SUPABASE_CONFIG.enabled
             && String(SUPABASE_CONFIG.url).indexOf('YOUR_')===-1);
         if(!cloudOn) toast('网络已恢复');
+        // 移除离线横幅并复位"已显示"标志，下次断网可再次提示
+        removeOfflineBanner();
+        _offlineBannerShown = false;
     });
     window.addEventListener('offline', function(){
         toast('当前网络已断开，部分功能（云端同步）可能受限，本地记录不受影响', 'error');
+        showOfflineBanner();
     });
     // 页面加载时本就离线（如直接以离线状态打开 PWA）：待 DOM 就绪后提示一次
     if (typeof navigator !== 'undefined' && navigator.onLine === false) {
         window.addEventListener('load', function(){
             toast('当前网络已断开，部分功能（云端同步）可能受限，本地记录不受影响', 'error');
+            showOfflineBanner();
         });
     }
 

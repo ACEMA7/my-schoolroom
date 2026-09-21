@@ -33,6 +33,49 @@
     var supabaseClient = null;   // Supabase 客户端实例（initializeData 中创建）
     var syncEnabled = false;     // 云端同步是否启用（配置开启且 URL 有效时为 true）
 
+    // ==================== 云端同步日志（内存环形缓冲区，最多 500 条） ====================
+    // 仅做可观测性记录：不参与任何同步/防污染闸门判断，不持久化（页面刷新清空）。
+    // 数据管理页"🔄 同步日志"折叠卡片与 copySyncLogs() 读取本缓冲区展示/导出。
+    var SYNC_LOG_MAX = 500;
+    var syncLogBuffer = [];
+    /**
+     * 记录一条云端同步日志（全局函数，ui.js / app.js 均可调用）。
+     * 同时镜像到控制台；任何异常都被吞掉，绝不影响同步主流程。
+     * @param {string} level - 'INFO' | 'WARN' | 'ERROR'（其他值归一化为 INFO）
+     * @param {string} message - 日志主消息
+     * @param {*} [detail] - 可选详情（对象自动 JSON 序列化，字符串原样保留）
+     */
+    function syncLog(level, message, detail){
+        try {
+            var lv = (level === 'WARN' || level === 'ERROR') ? level : 'INFO';
+            var entry = {
+                time: Date.now(),
+                level: lv,
+                message: String(message == null ? '' : message)
+            };
+            if(detail !== undefined && detail !== null){
+                try { entry.detail = (typeof detail === 'string') ? detail : JSON.stringify(detail); }
+                catch(e2){ entry.detail = String(detail); }
+                if(entry.detail === '{}') delete entry.detail;
+            }
+            syncLogBuffer.push(entry);
+            // 环形裁剪：超出上限丢弃最旧的日志
+            if(syncLogBuffer.length > SYNC_LOG_MAX){
+                syncLogBuffer.splice(0, syncLogBuffer.length - SYNC_LOG_MAX);
+            }
+            var args = ['[同步日志][' + lv + ']', entry.message];
+            if(entry.detail !== undefined) args.push(detail);
+            if(lv === 'ERROR') console.error.apply(console, args);
+            else if(lv === 'WARN') console.warn.apply(console, args);
+            else console.log.apply(console, args);
+        } catch(e) { /* 日志记录失败不得影响同步逻辑 */ }
+    }
+    /**
+     * 获取同步日志缓冲区的浅拷贝（按时间正序，最新在最后）。
+     * @returns {Array<{time:number,level:string,message:string,detail?:string}>}
+     */
+    function getSyncLogs(){ return syncLogBuffer.slice(); }
+
     /**
      * 探测云端 sync_store 表的结构版本（结果缓存到 _detectedSchemaVersion）。
      * 尝试查询 V3 专属字段 record_type：成功 → V3（按行存储）；查询报错 →
@@ -120,6 +163,8 @@
         var nowIso = new Date().toISOString();
         var didAnything = false;
         var staleFilteredCount = 0;
+        var dirtyRowCount = 0;      // 本次实际上传的脏记录行数
+        var tombstoneCount = 0;     // 本次实际上传的墓碑行数
         // 遍历所有记录类型，收集脏记录和删除标记
         V3_RECORD_TYPES.forEach(function(meta){
             // 【主控设备锁定·防污染】基础数据仅允许管理员的主控设备上传
@@ -154,16 +199,19 @@
                     }
                 }
                 didAnything = true;
+                dirtyRowCount++;
                 rows.push(v3BuildUpsertRow(meta.type, rid, rec, false, nowIso));
             });
             // 2) 删除标记：只对已存在的云端记录设置 deleted=true
             Object.keys(deletedSet).forEach(function(rid){
                 didAnything = true;
+                tombstoneCount++;
                 rows.push(v3BuildUpsertRow(meta.type, rid, null, true, nowIso));
             });
         });
         if(staleFilteredCount > 0){
             console.log('已过滤掉 ' + staleFilteredCount + ' 条陈旧废弃数据，未上传云端');
+            syncLog('INFO', '陈旧数据过滤：' + staleFilteredCount + ' 条历史遗留记录早于上次同步时间，已跳过不上传', {过滤数量: staleFilteredCount});
         }
         if(!didAnything){
             console.log('[V3] 无脏记录需要上传');
@@ -172,7 +220,12 @@
         }
         // 批量 upsert 上传（依赖 UNIQUE(record_type,record_id)）：成功后清除脏标记由调用方处理
         return v3UploadRows(rows).then(function(ok){
-            if(!ok) return false;
+            if(!ok){
+                // 上传失败：脏标记/墓碑原样保留，交由上层退避重试（不改动任何闸门逻辑）
+                syncLog('ERROR', '脏记录上传失败：存在批次 upsert 未成功，脏标记与墓碑已保留，等待退避重试',
+                    {脏记录行数: dirtyRowCount, 墓碑行数: tombstoneCount, 总行数: rows.length});
+                return false;
+            }
             // 上传成功：清除脏标记和删除标记
             V3_RECORD_TYPES.forEach(function(meta){
                 if(DB.dirtyByType && DB.dirtyByType[meta.type]) DB.dirtyByType[meta.type] = {};
@@ -181,6 +234,8 @@
             DB.lastSyncTime = Date.now();
             saveDBToLocal();
             console.log('[V3] 上传成功，共 ' + rows.length + ' 行');
+            syncLog('INFO', '脏记录上传成功（脏记录 ' + dirtyRowCount + ' 条，墓碑 ' + tombstoneCount + ' 条，共 ' + rows.length + ' 行）',
+                {脏记录行数: dirtyRowCount, 墓碑行数: tombstoneCount, 总行数: rows.length});
             return true;
         });
     }
@@ -355,11 +410,15 @@
                 // 本机曾同步过、云端却被整体清空 → 大概率是管理员正在执行"重置云端数据"，
                 // 处于"已清空、尚未回传"的短暂窗口。本次不改动本地、不标脏补种，防止旧数据回灌。
                 console.warn('[V3] 云端为空但本机已同步过（epoch='+localEpoch+'），判定为重置窗口，跳过本次拉取，不改动本地、不补种');
+                syncLog('WARN', '检测到云端重置窗口（云端整表为空但本机曾同步过），本次拉取 aborted：不改动本地、不补种，防止旧数据回灌',
+                    {localEpoch: localEpoch, cloudEpoch: cloudEpoch});
                 return { aborted:true, total:0, added:0, updated:0, removed:0, rescued:0, basicChanged:false };
             }
             // 情形B：云端带 epoch 且与本机不同（含本机从未同步 epoch=0、以及管理员重置后所有旧设备）
             if(cloudEpoch > 0 && cloudEpoch !== localEpoch){
                 // 【二次确认】整体覆盖前弹出 confirm，防止管理员误重置导致普通设备数据被意外抹掉
+                syncLog('WARN', '检测到云端数据版本（epoch）变化：本机 ' + localEpoch + ' → 云端 ' + cloudEpoch + '，需整体重建（等待用户确认）',
+                    {localEpoch: localEpoch, cloudEpoch: cloudEpoch});
                 var confirmMsg = '检测到云端数据版本更新（本机epoch='+localEpoch+'，云端epoch='+cloudEpoch+'）。云端可能被重置或更正。是否确认以云端数据覆盖本地？\n\n点击【确定】覆盖本地，点击【取消】保留本地并重新同步。';
                 if(!window.confirm(confirmMsg)){
                     // 用户取消：清空本地脏标记，将本地 epoch 对齐云端（假装已是最新，避免死循环触发确认）
@@ -369,12 +428,16 @@
                     });
                     DB.syncEpoch = cloudEpoch;
                     console.warn('[V3] 用户拒绝云端覆盖，已清空脏标记并对齐 epoch='+cloudEpoch+'，保留本地数据');
+                    syncLog('WARN', '用户取消云端覆盖确认，本次拉取 aborted：已清空脏标记并对齐 epoch=' + cloudEpoch + '，本地数据保留',
+                        {localEpoch: localEpoch, cloudEpoch: cloudEpoch});
                     return { aborted:true, total:0, added:0, updated:0, removed:0, rescued:0, basicChanged:false };
                 }
                 console.warn('[V3] 检测到数据版本变化（本机 epoch='+localEpoch+' → 云端 epoch='+cloudEpoch+'），整体丢弃本地并以下发数据为准重建');
                 var resetOk = hardResetFromCloud(byType, cloudEpoch);
                 if(!resetOk){
-                    // 健康检查失败（云端数据为空），已阻断覆盖，直接中止本次拉取
+                    // 健康检查失败（云端数据为空/数量级异常/符号异常），已阻断覆盖，直接中止本次拉取
+                    syncLog('ERROR', '云端整体重建被数据健康检查阻断，本次拉取 aborted：本地数据安全保留（具体阻断原因见上一条错误日志）',
+                        {localEpoch: localEpoch, cloudEpoch: cloudEpoch});
                     return { aborted:true, total:0, added:0, updated:0, removed:0, rescued:0, basicChanged:false };
                 }
                 DB.lastSyncTime = Date.now();
@@ -387,6 +450,8 @@
                 result.basicChanged = true;
                 result.reset = true;
                 console.log('[V3] 整体重建完成（epoch='+cloudEpoch+'）：共 '+result.total+' 行下发数据');
+                syncLog('INFO', '云端整体重建完成：本地已按云端下发数据重建（epoch=' + cloudEpoch + '，共 ' + result.total + ' 行）',
+                    {epoch: cloudEpoch, 下发行数: result.total});
                 return result;
             }
             // 整体重置：丢弃本地全部数据，完全以云端活行重建（墓碑不恢复）
@@ -403,6 +468,8 @@
                 if(cloudStudents.length === 0 || cloudFloors.length === 0){
                     toast('警告：云端数据异常为空，已阻断覆盖，本地数据安全保留！', 'error');
                     console.warn('[V3] 数据健康检查失败：云端 students='+cloudStudents.length+', floors='+cloudFloors.length+'，已阻断覆盖');
+                    syncLog('ERROR', '健康检查阻断：云端 students 或 floors 为空，已阻断整体覆盖（本地数据安全保留）',
+                        {云端students: cloudStudents.length, 云端floors: cloudFloors.length});
                     return false;
                 }
 
@@ -413,12 +480,16 @@
                 if(localStudentCount > 20 && cloudStudents.length < localStudentCount * 0.3){
                     toast('警告：云端学生数量异常偏少（云端 '+cloudStudents.length+' / 本地 '+localStudentCount+'），疑似数据被篡改或损坏，已阻断覆盖，本地数据安全保留！如需强制覆盖，请联系技术人员。', 'error');
                     console.warn('[V3] 健康检查失败：云端学生数远少于本地（云端 '+cloudStudents.length+' / 本地 '+localStudentCount+'），已阻断覆盖');
+                    syncLog('ERROR', '数量级检查阻断：云端学生数不足本地 30%，疑似数据被篡改或损坏，已阻断整体覆盖（本地数据安全保留）',
+                        {云端students: cloudStudents.length, 本地students: localStudentCount});
                     return false;
                 }
                 var cloudDormitories = (grouped['dormitory'] || []).filter(function(r){ return !r.deleted; });
                 if(localDormCount > 10 && cloudDormitories.length < localDormCount * 0.3){
                     toast('警告：云端宿舍数量异常偏少（云端 '+cloudDormitories.length+' / 本地 '+localDormCount+'），疑似数据被篡改或损坏，已阻断覆盖，本地数据安全保留！如需强制覆盖，请联系技术人员。', 'error');
                     console.warn('[V3] 健康检查失败：云端宿舍数远少于本地（云端 '+cloudDormitories.length+' / 本地 '+localDormCount+'），已阻断覆盖');
+                    syncLog('ERROR', '数量级检查阻断：云端宿舍数不足本地 30%，疑似数据被篡改或损坏，已阻断整体覆盖（本地数据安全保留）',
+                        {云端dormitories: cloudDormitories.length, 本地dormitories: localDormCount});
                     return false;
                 }
 
@@ -446,6 +517,8 @@
                 if(signAnomaly || itemSignAnomaly){
                     toast('警告：云端扣分记录符号异常，已阻断覆盖，本地数据安全保留！', 'error');
                     console.warn('[V3] 符号一致性校验失败（记录异常=' + signAnomaly + '，项目异常=' + itemSignAnomaly + '），已阻断整体重建');
+                    syncLog('ERROR', '符号一致性校验阻断：云端存在符号相反的扣分记录或扣分项目，已阻断整体覆盖（本地数据安全保留）',
+                        {记录符号异常: !!signAnomaly, 项目符号异常: !!itemSignAnomaly});
                     return false;
                 }
 
@@ -1082,23 +1155,30 @@
                 if(_retryState.attempt>=5){
                     updateSyncStatus('unsynced');
                     _retryState.running=false;
+                    syncLog('ERROR', '同步重试已达上限（5 次）：上传持续返回失败，停止自动退避重试，等待下次触发', {最大重试次数: 5, 原因: '上传返回失败'});
                     return false;
                 }
                 var delay=Math.min(60000, 5000*Math.pow(2, _retryState.attempt-1));
                 updateSyncStatus('unsynced');
+                syncLog('WARN', '同步未成功，安排指数退避重试（第 ' + _retryState.attempt + ' 次，' + Math.round(delay/1000) + ' 秒后执行）',
+                    {重试序号: _retryState.attempt, 退避毫秒: delay, 原因: '上传返回失败'});
                 _retryState.timer=setTimeout(function(){ doAttempt(); }, delay);
                 return false;
             }).catch(function(e){
                 // 后台自动重试：静默记录到控制台与错误日志，不打扰用户（重试由下方指数退避接管）
-                handleError(e, '后台同步', { silent: true });
+                var errDetail=handleError(e, '后台同步', { silent: true });
                 _retryState.attempt++;
                 if(_retryState.attempt>=5){
                     updateSyncStatus('unsynced');
                     _retryState.running=false;
+                    syncLog('ERROR', '同步重试已达上限（5 次）：拉取/上传持续异常，停止自动退避重试，等待下次触发',
+                        {最大重试次数: 5, 原因: errDetail || ((e && e.message) ? e.message : String(e))});
                     return false;
                 }
                 var delay=Math.min(60000, 5000*Math.pow(2, _retryState.attempt-1));
                 updateSyncStatus('unsynced');
+                syncLog('WARN', '同步异常，安排指数退避重试（第 ' + _retryState.attempt + ' 次，' + Math.round(delay/1000) + ' 秒后执行）',
+                    {重试序号: _retryState.attempt, 退避毫秒: delay, 原因: errDetail || ((e && e.message) ? e.message : String(e))});
                 _retryState.timer=setTimeout(function(){ doAttempt(); }, delay);
                 return false;
             });

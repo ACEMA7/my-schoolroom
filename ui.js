@@ -2452,6 +2452,60 @@
      * 床号/日期范围等筛选器、结果预览表（分片渲染）与导出按钮。
      * @param {HTMLElement} container - contentArea 容器
      */
+    /**
+     * 构建"🔄 同步日志"折叠卡片 HTML（数据管理页顶部）。
+     * 只读渲染 sync.js 内存环形缓冲区中的最近 500 条日志（最新在最上方）：
+     * 每条显示 时间(HH:mm:ss)、级别彩色标签、消息、可折叠详情（<details>）。
+     * 不写任何数据、不触碰同步/防污染闸门逻辑。
+     * @returns {string}
+     */
+    function buildSyncLogCardHtml(){
+        var logs = (typeof getSyncLogs === 'function') ? getSyncLogs() : [];
+        // 级别标签配色（INFO 蓝 / WARN 橙 / ERROR 红）
+        var levelStyle = {
+            INFO:  'color:#1d4ed8;background:#dbeafe',
+            WARN:  'color:#b45309;background:#fef3c7',
+            ERROR: 'color:#b91c1c;background:#fee2e2'
+        };
+        function hhmmss(ts){
+            var d = new Date(ts);
+            function p2(n){ return (n < 10 ? '0' : '') + n; }
+            return p2(d.getHours()) + ':' + p2(d.getMinutes()) + ':' + p2(d.getSeconds());
+        }
+        var bodyInner;
+        if(!logs.length){
+            bodyInner = '<div class="empty-state" style="padding:18px">暂无同步日志，触发云端同步后将在此显示</div>';
+        }else{
+            // 最新一条排在最上方，便于直接查看近期事件
+            var rowsHtml = '';
+            for(var i = logs.length - 1; i >= 0; i--){
+                var e = logs[i];
+                var lv = (e.level === 'WARN' || e.level === 'ERROR') ? e.level : 'INFO';
+                var detailHtml = e.detail
+                    ? '<details style="margin-top:2px"><summary style="display:inline-block;cursor:pointer;color:#2563eb;font-size:0.78rem">详情</summary>'
+                        + '<pre style="margin:4px 0 2px;padding:6px 8px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:6px;white-space:pre-wrap;word-break:break-all;font-size:0.75rem;font-family:Consolas,Menlo,monospace;color:#475569">'
+                        + escapeHtmlAttr(e.detail) + '</pre></details>'
+                    : '';
+                rowsHtml += '<div style="display:flex;gap:8px;padding:6px;border-bottom:1px solid #f1f5f9;font-size:0.82rem;line-height:1.5;align-items:flex-start">'
+                    + '<span style="flex:0 0 62px;font-family:Consolas,Menlo,monospace;color:#64748b;padding-top:1px">' + hhmmss(e.time) + '</span>'
+                    + '<span style="flex:0 0 46px;text-align:center;border-radius:4px;padding:1px 0;font-size:0.72rem;font-weight:700;' + (levelStyle[lv] || levelStyle.INFO) + '">' + lv + '</span>'
+                    + '<div style="flex:1;min-width:0;word-break:break-word;color:#1e293b">'
+                    + '<div>' + escapeHtmlAttr(e.message) + '</div>' + detailHtml
+                    + '</div></div>';
+            }
+            bodyInner = '<div id="syncLogList" style="max-height:460px;overflow-y:auto;border:1px solid var(--gray-200);border-radius:8px;background:#fff">' + rowsHtml + '</div>';
+        }
+        return '<div class="fold-block'+(foldState['fold-sync-log']?' open':'')+'" id="fold-sync-log">'
+            + '<div class="fold-header" onclick="toggleFold(\'fold-sync-log\')">🔄 同步日志<span class="fold-sub">（' + logs.length + ' 条，最多保留 500 条）</span><span class="fold-arrow">▶</span></div>'
+            + '<div class="fold-body"><div class="card-body">'
+            + '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px">'
+            + '<button class="btn btn-outline btn-sm" onclick="copySyncLogs()">📋 一键复制全部日志</button>'
+            + '<span style="color:var(--gray-500);font-size:0.8571rem">日志仅存于本机内存，刷新页面后清空；重新进入本页可查看最新内容</span>'
+            + '</div>'
+            + bodyInner
+            + '</div></div></div>';
+    }
+
     function renderExportView(container) {
         if (!isAdmin() && currentUser.role !== 'CLASS_ADMIN') {
             container.innerHTML = '<div class="empty-state">无权限</div>';
@@ -2478,6 +2532,7 @@
         var summaryOption = isAdminRole ? '<option value="inspection_summary">巡查核实总结</option>' : '';
         var floorChangeOption = isAdminRole ? '<option value="floor_change">楼层调整记录</option>' : '';
         var html = '<div class="content-header"><h2>📊 数据管理</h2></div>'
+            + buildSyncLogCardHtml()
             + '<div class="card"><div class="card-header">筛选导出条件</div><div class="card-body"><div class="filter-section">'
             + '<div class="form-group"><label>数据类型</label><select id="exportDataType" onchange="onExportDataTypeChange()"><option value="deduction">扣分记录</option><option value="leave">退宿记录</option><option value="stop">停宿记录</option><option value="absence">请假记录</option>'+summaryOption+floorChangeOption+'</select></div>'
             + '<div class="form-group"><label>开始日期</label><input type="text" class="date-picker" id="exportStartDate" value="'+today+'"></div>'

@@ -322,6 +322,24 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
         .toast-item.error{background:var(--danger)}
         .toast-action-btn{margin-left:10px;padding:4px 12px;border:none;border-radius:6px;background:rgba(255,255,255,.25);color:#fff;font-weight:600;cursor:pointer;font-size:.9rem}
         .toast-action-btn:hover{background:rgba(255,255,255,.4)}
+        /* PWA 安装引导条：层级 1300 高于普通内容/底栏(1200)，低于模态框(2000) */
+        #pwaInstallBanner{position:fixed;z-index:1300}
+        .pwa-install-card{background:#fff;border:1px solid var(--gray-200);border-radius:14px 14px 0 0;box-shadow:0 -4px 20px rgba(0,0,0,.14);padding:14px 16px calc(14px + var(--sab));display:flex;align-items:center;gap:12px;justify-content:space-between;flex-wrap:wrap}
+        .pwa-install-msg{flex:1;min-width:180px;font-size:0.9286rem;font-weight:600;color:var(--gray-800);line-height:1.5}
+        .pwa-install-actions{display:flex;gap:8px;flex-shrink:0}
+        /* 离线提示横幅（插入在 #contentArea 顶部，随视图重绘自然清空） */
+        .offline-notice-banner{display:flex;align-items:center;justify-content:space-between;gap:10px;background:#fff7ed;border-bottom:1px solid #fed7aa;color:#9a3412;padding:10px 14px;font-size:0.88rem;font-weight:600;flex-wrap:wrap}
+        .offline-notice-close{flex-shrink:0;border:none;background:transparent;color:#9a3412;font-size:1rem;line-height:1;cursor:pointer;padding:4px 8px;border-radius:6px}
+        .offline-notice-close:active{background:#fed7aa}
+        /* 移动端（≤768px）：底部全宽；桌面端：右下角 360px 浮窗 */
+        @media(max-width:768px){
+            #pwaInstallBanner{left:0;right:0;bottom:0;width:100%}
+        }
+        @media(min-width:769px){
+            #pwaInstallBanner{right:24px;bottom:24px;width:360px}
+            .pwa-install-card{border-radius:14px;box-shadow:0 10px 30px rgba(0,0,0,.16);padding:16px;flex-direction:column;align-items:stretch;gap:12px}
+            .pwa-install-actions{justify-content:flex-end}
+        }
         .toast-action-btn:active{background:rgba(255,255,255,.55)}
         .highlight-red{color:var(--danger);font-weight:700}
         .highlight-green{color:#34c759;font-weight:700}
@@ -992,6 +1010,8 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
     <script src="ui.js"></script>
     <!-- 拖拽框选：半透明蓝色矩形（默认隐藏，PC 端鼠标拖拽时显示） -->
     <div id="dragSelectBox" style="position:fixed;display:none;border:1.5px solid #4f6ef7;background:rgba(79,110,247,0.15);pointer-events:none;z-index:9000;border-radius:2px"></div>
+    <!-- PWA 安装引导条容器（内容由 app.js 动态生成；默认隐藏，移动端底部全宽、桌面端右下角 360px） -->
+    <div id="pwaInstallBanner" style="display:none"></div>
     <script src="app.js"></script>
 </body>
 </html>
