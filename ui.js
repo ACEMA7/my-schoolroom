@@ -663,6 +663,16 @@
         // 2) 班级账号过滤：仅本班学生 / 本班宿舍
         if(classMode) todayRecords = filterRecordsByClass(todayRecords);
 
+        // 2.5) 管理员楼层筛选：按全局 todayFloorFilter 过滤记录；
+        //      仅 ADMIN 才会写入该变量，其他角色恒为空字符串，不产生副作用。
+        if(todayFloorFilter !== '' && todayFloorFilter != null){
+            var targetFloorId = parseInt(todayFloorFilter, 10);
+            todayRecords = todayRecords.filter(function(r){
+                var dorm = getDormitoryById(r.dormitoryId);
+                return !!dorm && dorm.floorId === targetFloorId;
+            });
+        }
+
         // 3) 按 楼层 → 宿舍 分组
         var floorMap = {};
         todayRecords.forEach(function(r){
@@ -747,12 +757,27 @@
             + '<div class="stat-card warning"><div class="number">'+totalDorms+'</div><div class="label">🚪 涉及宿舍数</div></div>'
             + '<div class="stat-card '+netCardCls+'"><div class="number '+netCls+'">'+formatScoreText(totalNet,'net')+'</div><div class="label">📊 今日净分</div></div>'
             + '</div>';
-        // 【新增】管理员专属工具栏（全选 + 批量删除）；其他角色不显示
+        // 【新增】管理员专属工具栏（全选 + 批量删除 + 楼层筛选）；其他角色不显示
         if(isAdminUser){
-            html += '<div style="display:flex;align-items:center;gap:12px;padding:10px 14px;background:#fff;border:1px solid var(--gray-200);border-radius:8px;margin-bottom:14px">'
+            // 楼层选项：按 sortOrder 升序；第一项"全部楼层"默认选中
+            var sortedFloors = (DB.floors || []).slice().sort(function(a, b){
+                return (a.sortOrder || 0) - (b.sortOrder || 0);
+            });
+            var floorOptions = '<option value="">全部楼层</option>';
+            sortedFloors.forEach(function(f){
+                floorOptions += '<option value="'+f.id+'"'+(String(todayFloorFilter)===String(f.id)?' selected':'')+'>'+escapeHtmlAttr(f.name)+'</option>';
+            });
+            // flex-wrap 让移动端自然换行到下方；PC 端与批量操作同一行右对齐
+            html += '<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:10px 14px;background:#fff;border:1px solid var(--gray-200);border-radius:8px;margin-bottom:14px">'
                 + '<label style="display:inline-flex;align-items:center;gap:6px;font-weight:400;cursor:pointer"><input type="checkbox" id="todaySelectAll" onchange="toggleAllTodayRecords(this.checked)"> 全选</label>'
                 + '<button class="btn btn-danger btn-sm" onclick="deleteSelectedTodayRecords()">🗑️ 批量删除</button>'
                 + '<span id="todaySelectedCount" style="color:var(--gray-500);font-size:0.9286rem">未选中</span>'
+                + '<div style="margin-left:auto;display:inline-flex;align-items:center;gap:6px">'
+                + '<label for="todayFloorFilter" style="font-size:0.9rem;color:var(--gray-600);font-weight:600">楼层</label>'
+                + '<select id="todayFloorFilter" onchange="onTodayFloorFilterChange(this.value)" style="height:38px;padding:0 10px;font-size:0.9rem;border:1.5px solid var(--gray-200);border-radius:6px;background:#fff;outline:none;font-family:inherit">'
+                + floorOptions
+                + '</select>'
+                + '</div>'
                 + '</div>';
         }
 

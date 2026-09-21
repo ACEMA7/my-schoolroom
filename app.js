@@ -44,6 +44,9 @@
     var deferredPrompt = null;         // beforeinstallprompt 事件缓存（安卓/桌面 Chrome/Edge）
     var pwaInstalled = false;          // 是否已以独立应用（standalone）方式安装
 
+    // ==================== 今日明细 · 楼层筛选（仅 ADMIN） ====================
+    var todayFloorFilter = '';         // 当前选中的楼层 id（空字符串=全部楼层）
+
     // ==================== 移动端历史栈 ====================
     var viewHistory = [];
 
@@ -6149,6 +6152,16 @@
         saveDB();
         toast('已删除全部楼层调整记录');
         if(currentView === 'export') renderExportView(document.getElementById('contentArea'));
+    }
+
+    /**
+     * 今日明细页：楼层筛选下拉框变化时触发（仅 ADMIN 渲染此下拉框）。
+     * 更新全局筛选楼层并重绘视图；"全部楼层"传入空字符串。
+     * @param {string} value - 选中楼层的 id（空字符串=全部楼层）
+     */
+    function onTodayFloorFilterChange(value){
+        todayFloorFilter = (value == null) ? '' : String(value);
+        renderTodayView(document.getElementById('contentArea'));
     }
 
     /**
