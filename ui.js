@@ -65,8 +65,7 @@
     }
 
     // ==================== 统一错误处理（handleError / safeAsync） ====================
-    var ERROR_LOG_KEY = 'dorm_error_logs';
-    var ERROR_LOG_LIMIT = 20; // 只保留最近 20 条，避免日志本身撑爆本地存储
+    // ERROR_LOG_KEY / ERROR_LOG_LIMIT 已迁移至 constants.js
 
     // 错误分类：返回面向用户的提示文案
     function categorizeError(error) {
@@ -1236,14 +1235,7 @@
         // 【删除】历史记录分片渲染调用已移除（tbody#historyTbody 已不存在于页面中）
     }
 
-    /**
-     * 转义 HTML 属性值中的特殊字符（用于内联 onclick 参数等拼接场景）。
-     * @param {string} s - 原始文本
-     * @returns {string} 转义后的安全文本
-     */
-    function escapeHtmlAttr(s){
-        return String(s==null?'':s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-    }
+    // escapeHtmlAttr 已迁移至 utils.js
 
     // ==================== 扣分登记视图 ====================
     var addFormState={floorId:null,dormitoryId:null,studentId:null,hygieneItemIds:[],disciplineItemIds:[],hygieneScore:0,disciplineScore:0,recordDate:getTodayLocalStr(),remark:'',recordMode:'deduct',hygieneBonusItemIds:[],disciplineBonusItemIds:[],hygieneBonusScore:0,disciplineBonusScore:0};
@@ -1503,36 +1495,11 @@
     }
 
     // ==================== 巡查核实视图 ====================
-    /**
-     * 将 YYYY-MM-DD 格式化为总结标题用中文日期（如 "9月9号 周三晚"）。
-     * @param {string} dateStr - 日期字符串
-     * @returns {string}
-     */
-    function formatInspectionDateTitle(dateStr){
-        try{
-            var parts=String(dateStr).split('-');
-            var d=new Date(parseInt(parts[0],10), parseInt(parts[1],10)-1, parseInt(parts[2],10));
-            var week='日一二三四五六'.charAt(d.getDay());
-            return (d.getMonth()+1)+'月'+d.getDate()+'号 周'+week+'晚';
-        }catch(e){ return dateStr; }
-    }
+    // formatInspectionDateTitle 已迁移至 utils.js
     // 巡查类型标签样式
     var INSPECTION_TAG_CLS = { leave:'status-tag status-orange', stop:'status-tag status-blue', absence:'status-tag status-blue', picked_up:'status-tag status-orange', no_note:'status-tag status-orange' };
     function inspectionTagCls(t){ return INSPECTION_TAG_CLS[t] || 'status-tag'; }
-    /**
-     * 将时间戳格式化为 HH:mm（用于巡查确认时间显示）。
-     * 非法/缺失时间戳返回空字符串，兼容历史无 confirmedAt 的旧数据。
-     * @param {number|string} ts - 毫秒时间戳
-     * @returns {string} HH:mm 或 ''
-     */
-    function formatConfirmedTime(ts){
-        if(!ts) return '';
-        var d = new Date(ts);
-        if(isNaN(d.getTime())) return '';
-        var h = String(d.getHours()).padStart(2,'0');
-        var m = String(d.getMinutes()).padStart(2,'0');
-        return h + ':' + m;
-    }
+    // formatConfirmedTime 已迁移至 utils.js
 
     /**
      * 渲染「巡查核实」视图（仅 STAFF/ADMIN）：

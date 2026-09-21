@@ -26,7 +26,7 @@
  *     外层函数保留 _busy 防重入，异常由 handleError 分类处理；
  *   - HTML 内联 onclick 调用的函数全部声明在本文件（全局函数）。
  *
- * 主要依赖：config.js、data.js（DB/查询/哈希/saveDBToLocal）、sync.js
+ * 主要依赖：constants.js、utils.js、data.js（DB/查询/哈希/saveDBToLocal）、sync.js
  *   （initializeData/saveDB/manualSync/resetCloudData）、ui.js（全部 renderXxxView/
  *   toast/handleError）、index.html 的 DOM 元素。
  *
@@ -252,8 +252,7 @@
     var _verCheckLastPass = 0; // 最近一次"版本一致"通过的时间戳（30 秒内免重复网络检查，syncWithRetry 高频触发）
     // 【防线 A】页面存活时间锚点：页面加载那一刻记录，用于识别"长期挂起的旧页面"
     var _pageLoadedAt = Date.now();
-    // 页面最长存活时间：超过即视为"可能携带过期 JS"，同步前强制刷新（2 小时）
-    var PAGE_MAX_AGE_MS = 2 * 60 * 60 * 1000;
+    // 页面最长存活时间常量 PAGE_MAX_AGE_MS 已迁移至 constants.js
     // 【防线 B】页面加载后首次通过版本检查时记录的服务器版本号；
     // 后续每次检查若发现服务器版本已变，说明后台推送过新版本，页面 JS 已过期，必须刷新
     var _pageLoadedNetVersion = null;
@@ -567,9 +566,7 @@
     }
 
     // ==================== 字体缩放（全部角色移动端） ====================
-    var FONT_SCALE_KEY='dorm_font_scale_staff';
-    var FONT_BASE=14; // 基准字号 14px
-    var FONT_MIN=100, FONT_MAX=160, FONT_STEP=5; // 可调范围 100%~160%，步进 5%
+    // FONT_SCALE_KEY / FONT_BASE / FONT_MIN / FONT_MAX / FONT_STEP 已迁移至 constants.js
 
     function applyFontScale(scale){
         scale=Math.max(FONT_MIN,Math.min(FONT_MAX,scale));
@@ -3090,7 +3087,7 @@
         renderView();
     }
     // 删除全部巡查核实总结（每日晚检总结 DB.dailyInspectionSummaries）
-    // 注意：V3 同步类型名为 'daily_summary'（见 config.js V3_RECORD_TYPES）
+    // 注意：V3 同步类型名为 'daily_summary'（见 constants.js V3_RECORD_TYPES）
     function deleteAllInspectionSummaries(){
         if(!isAdmin()){toast('无权限','error');return;}
         if(!confirm('确认删除全部巡查核实总结吗？此操作不可恢复！')) return;
@@ -4158,8 +4155,7 @@
     }
 
     // ==================== 扣分预警自动触发 ====================
-    // 七档预警阈值（与 DEFAULT_NOTIFICATION_TEMPLATES 的 warn_* 一一对应）
-    var NOTIF_WARNING_THRESHOLDS = [3, 5, 6, 11, 12, 17, 18];
+    // 七档预警阈值常量 NOTIF_WARNING_THRESHOLDS 已迁移至 constants.js（与 DEFAULT_NOTIFICATION_TEMPLATES 的 warn_* 一一对应）
     /**
      * 对一批学生执行扣分预警检查（入参自动去重）。
      *
@@ -6580,8 +6576,7 @@
     // ==================== PWA 安装引导 ====================
     // 纯 UI 引导层：不修改数据层/同步层，不触碰任何防污染闸门。
     // 用户点"暂不/我知道了"后写入关闭时间戳，7 天内不再自动弹出。
-    var PWA_BANNER_DISMISS_KEY = 'dorm_pwa_banner_dismissed';
-    var PWA_DISMISS_MS = 7 * 24 * 60 * 60 * 1000;
+    // PWA_BANNER_DISMISS_KEY / PWA_DISMISS_MS 已迁移至 constants.js
 
     // 初始化（脚本加载即执行）：判定独立运行状态 + 安装相关事件监听
     (function initPwaInstallGuards(){

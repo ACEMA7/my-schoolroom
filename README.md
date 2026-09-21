@@ -19,7 +19,8 @@
 
 ```
 index.html      页面结构 + CSS + 内联 flatpickr（日期选择器）
-config.js       全局配置：Supabase 连接、存储键、V3 同步架构常量
+constants.js    全局常量：Supabase 连接、存储键、V3 同步架构常量、各模块阈值/键名/默认模板
+utils.js        公共纯工具函数：本地日期/分数/床号格式化、HTML 转义、时间格式化
 data.js         数据层：内存库 DB、数据查询、本地持久化、密码哈希、数据自愈
 sync.js         同步层：Supabase 客户端、V3 按行同步、重试队列、重置云端、初始化入口
 ui.js           视图层：toast/错误处理、分片渲染、各业务视图 HTML 渲染
@@ -101,7 +102,7 @@ powershell -ExecutionPolicy Bypass -File .\_server.ps1
    alter table sync_store enable row level security;
    create policy "anon all" on sync_store for all to anon using (true) with check (true);
    ```
-2. 把项目 URL 与 anon key 填入 [config.js](config.js) 的 `SUPABASE_CONFIG`；`enabled:false` 可切换为纯本地单机模式。
+2. 把项目 URL 与 anon key 填入 [constants.js](constants.js) 的 `SUPABASE_CONFIG`；`enabled:false` 可切换为纯本地单机模式。
 3. CDN 依赖（supabase-js/xlsx/lz-string）已被 Service Worker 预缓存，首次联网打开后离线可用。
 
 ### PWA

@@ -12,8 +12,10 @@
  *      管理与记录 ID 生成——供 sync.js 增量同步使用。
  *
  * 主要依赖（全局共享变量）：
- *   config.js：DB_KEY / DEVICE_ID / LOCAL_LZ_PREFIX / STORAGE_WARN_BYTES /
+ *   constants.js：DB_KEY / DEVICE_ID / LOCAL_LZ_PREFIX / STORAGE_WARN_BYTES /
  *              V3_RECORD_TYPES / V3_BASIC_TYPES 等常量；
+ *   utils.js：formatLocalDate / getTodayLocalStr / roundScore1 /
+ *              formatScoreText / formatStudentBedName 等工具函数；
  *   app.js：currentUser（当前登录用户，权限判断用）；
  *   第三方：window.LZString（压缩）、window.crypto.subtle（哈希）。
  *
@@ -34,30 +36,7 @@
     // 全局内存数据库：所有业务数据的唯一事实来源（localStorage 是其持久化镜像）
     var DB = null;
 
-    // ==================== 日期工具函数（本地时区） ====================
-    /**
-     * 将日期格式化为本地时区的 YYYY-MM-DD 字符串。
-     * 注意：禁止使用 toISOString().split('T')[0]——它按 UTC 取日期，
-     * 东八区晚间（00:00-08:00）会把"今天"错位成前一天。
-     * @param {Date|string|number} date - Date 对象、可被 new Date() 解析的日期字符串/时间戳
-     * @returns {string} 形如 '2026-09-10' 的本地日期；入参无效时返回 ''
-     */
-    function formatLocalDate(date) {
-        if (!date) return '';
-        if (typeof date === 'string') date = new Date(date);
-        if (isNaN(date.getTime())) return '';
-        var year = date.getFullYear();
-        var month = String(date.getMonth() + 1).padStart(2, '0');
-        var day = String(date.getDate()).padStart(2, '0');
-        return year + '-' + month + '-' + day;
-    }
-    /**
-     * 获取今日本地日期字符串（YYYY-MM-DD）。
-     * @returns {string} 今日日期，如 '2026-09-10'
-     */
-    function getTodayLocalStr() {
-        return formatLocalDate(new Date());
-    }
+    // 日期工具函数 formatLocalDate / getTodayLocalStr 已迁移至 utils.js
 
     // ==================== 数据访问辅助函数 ====================
     // 以下 getXxx 系列为纯查询函数：只读 DB、不修改数据；DB 未初始化时
@@ -249,42 +228,7 @@
         return DB.deductionRecords.filter(function(r) { return dormIds.indexOf(r.dormitoryId) !== -1; });
     }
 
-    /**
-     * 分数统一取整：保留 1 位小数，消除 0.2 等小数累加产生的浮点尾差
-     * （如 0.2+0.2+0.2=0.6000000000000001 → 0.6）。
-     * 全系统所有扣/加分合计均通过本函数处理，保证显示与入库口径一致。
-     * @param {number} v - 原始分数
-     * @returns {number} 取整后的分数（1 位小数）
-     */
-    function roundScore1(v) {
-        return Math.round((Number(v) || 0) * 10) / 10;
-    }
-
-    /**
-     * 统一分值文本格式化（新口径·符号版本 2）：
-     * 底层已是「扣分负数、加分正数」，显示层不再取反，直接按底层符号呈现：
-     *   - deduct：底层负数，直接显示（如 -2）
-     *   - bonus：底层正数，显示 +N（如 +4）
-     *   - net：底层正数=净加、负数=净扣，直接按符号显示（净扣 -3 / 净加 +3 / 0 → 0）
-     * 仅用于展示与导出，不改变任何底层数值。
-     * @param {number} value - 分值（底层已带符号）
-     * @param {string} kind - 'deduct' | 'bonus' | 'net'
-     * @returns {string} 带符号的文本，如 '-4' / '+4' / '0'
-     */
-    function formatScoreText(value, kind){
-        var v = roundScore1(Number(value) || 0);
-        if(v === 0) return '0';
-        if(kind === 'bonus'){
-            // 加分：底层正数，显示 +N
-            return '+' + Math.abs(v);
-        }
-        if(kind === 'net'){
-            // 净分：底层正数=净加、负数=净扣，直接按符号显示
-            return v > 0 ? ('+' + v) : String(v);
-        }
-        // deduct（默认）：底层负数，直接显示（如 -2）
-        return String(v);
-    }
+    // 分数工具 roundScore1 / formatScoreText 已迁移至 utils.js
 
     /**
      * 计算一组扣分记录的累计扣分（卫生分 + 纪律分）。
@@ -773,21 +717,7 @@
         return keys.length > 0 ? keys.join('/') : '-';
     }
 
-    /**
-     * 格式化"学生"为"床号·姓名"显示文本，便于生活老师按床号识别。
-     * 规则：
-     *   - 有床号：返回 "N号·姓名"（如 "1号·蔡冠宇"）
-     *   - 无床号：返回 "未知·姓名"（如 "未知·蔡冠宇"）
-     *   - 学生对象为空：返回空串
-     * 用途：移动端扣分对象芯片、今日明细页对象列等需要按床号辨识学生的位置。
-     * @param {object} student - 学生对象（需含 name、bedNumber 字段）
-     * @returns {string}
-     */
-    function formatStudentBedName(student) {
-        if (!student) return '';
-        var bed = (student.bedNumber !== null && student.bedNumber !== undefined && String(student.bedNumber).trim() !== '') ? String(student.bedNumber).trim() : '未知';
-        return bed + '号·' + (student.name || '');
-    }
+    // formatStudentBedName 已迁移至 utils.js
 
     /**
      * 判断一条扣分记录是否存在"学生当前宿舍与记录宿舍不一致"的错误。
@@ -1211,30 +1141,7 @@
         saveDBToLocal();
     }
 
-    // ==================== 站内通知子系统：默认模板常量 ====================
-    // 系统内置 13 条通知模板的出厂默认值：7 条扣分预警（warn_*，含 threshold/level）
-    // + 6 条审核结果通知（approval_*/reject_*）。
-    // initDatabase 初始化 DB.notificationTemplates 与 getDefaultNotificationTemplate
-    // （管理员"重置"模板）共用本常量，保证两处默认值永远一致。
-    // 扣分预警内容变量：{studentName} {className} {score}，由 renderNotificationTemplate 替换。
-    var DEFAULT_NOTIFICATION_TEMPLATES = [
-        { id:'warn_3',  threshold:3,  level:'yellow', title:'⚠️ 扣分预警通知', content:'{studentName}（{className}）当前累计净分已达 {score} 分，请班主任及时关注并教育。', enabled:true },
-        { id:'warn_5',  threshold:5,  level:'orange', title:'🟠 扣分预警升级', content:'{studentName}（{className}）当前累计净分已达 {score} 分，即将达到 6 分（停宿一周）标准，请班主任尽快与家长沟通。', enabled:true },
-        { id:'warn_6',  threshold:6,  level:'orange', title:'🟠 停宿一周告知', content:'{studentName}（{className}）当前累计净分已达 {score} 分，按校规将停宿一周，请班主任通知家长并做好后续安排。', enabled:true },
-        { id:'warn_11', threshold:11, level:'red',    title:'🔴 扣分预警升级', content:'{studentName}（{className}）当前累计净分已达 {score} 分，即将达到 12 分（停宿两周）标准，请班主任尽快约谈家长。', enabled:true },
-        { id:'warn_12', threshold:12, level:'red',    title:'🔴 停宿两周告知', content:'{studentName}（{className}）当前累计净分已达 {score} 分，按校规将停宿两周，请班主任约谈家长并做好记录。', enabled:true },
-        { id:'warn_17', threshold:17, level:'dark',   title:'🚨 扣分预警升级', content:'{studentName}（{className}）当前累计净分已达 {score} 分，即将达到 18 分（退宿）标准，请班主任立即联系家长并上报德育处。', enabled:true },
-        { id:'warn_18', threshold:18, level:'dark',   title:'🚨 退宿处理告知', content:'{studentName}（{className}）当前累计净分已达 {score} 分，按校规将作退宿处理，请班主任配合德育处完成后续流程。', enabled:true },
-        { id:'approval_leave',   title:'✅ 退宿申请已通过', content:'你提交的退宿申请已通过审核。', enabled:true },
-        { id:'approval_stop',    title:'✅ 停宿申请已通过', content:'你提交的停宿申请已通过审核。', enabled:true },
-        { id:'approval_absence', title:'✅ 请假申请已通过', content:'你提交的请假申请已通过审核。', enabled:true },
-        { id:'reject_leave',     title:'❌ 退宿申请被驳回', content:'你提交的退宿申请未通过审核，请查看详情或重新提交。', enabled:true },
-        { id:'reject_stop',      title:'❌ 停宿申请被驳回', content:'你提交的停宿申请未通过审核，请查看详情或重新提交。', enabled:true },
-        { id:'reject_absence',   title:'❌ 请假申请被驳回', content:'你提交的请假申请未通过审核，请查看详情或重新提交。', enabled:true },
-        { id:'floor_change_request',  title:'📝 新的楼层调整申请', content:'{staffName} 申请将负责楼层由 {fromFloors} 调整为 {toFloors}，原因：{reason}，请及时审核。', enabled:true },
-        { id:'approval_floor_change', title:'✅ 楼层调整申请已通过', content:'你申请的楼层调整已通过审核，当前负责楼层已更新为 {toFloors}。', enabled:true },
-        { id:'reject_floor_change',   title:'❌ 楼层调整申请被驳回', content:'你申请的楼层调整未通过审核。{reviewRemark}', enabled:true }
-    ];
+    // 站内通知默认模板常量 DEFAULT_NOTIFICATION_TEMPLATES 已迁移至 constants.js
 
     /**
      * 首次使用时创建默认数据库（localStorage 无存档才调用）。

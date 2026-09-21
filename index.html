@@ -1010,8 +1010,9 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
         <div class="edit-modal" id="batchEditQueryModalBox" role="dialog" aria-label="批量修改扣分记录"></div>
     </div>
 
-    <!-- 业务逻辑模块化拆分：config -> data -> sync -> ui -> app（经典脚本，全局作用域） -->
-    <script src="config.js"></script>
+    <!-- 业务逻辑模块化拆分：constants -> utils -> data -> sync -> ui -> app（经典脚本，全局作用域） -->
+    <script src="constants.js"></script>
+    <script src="utils.js"></script>
     <script src="data.js"></script>
     <script src="sync.js"></script>
     <script src="ui.js"></script>

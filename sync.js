@@ -19,7 +19,7 @@
  *   - 基础数据（floor/dormitory/student/user/deduction_item/meta）云端为权威；
  *     业务记录（deduction/leave/absence）多设备并发，按 updated_at 最新者胜。
  *
- * 主要依赖：config.js（SUPABASE_CONFIG/V3_* 常量）、data.js（DB、v3MarkDirty
+ * 主要依赖：constants.js（SUPABASE_CONFIG/V3_* 常量）、data.js（DB、v3MarkDirty
  *   等全部数据函数）、ui.js（toast/handleError）、app.js（currentUser/
  *   selectedDormitoryId/renderTree/renderView）、window.supabase（supabase-js）。
  *
@@ -149,10 +149,114 @@
         });
     }
 
+    // 云端状态预检查询：每个 record_type 按 record_id 分批 IN 查询的批大小
+    // （IN 列表走 URL query string，按 100 分批控制 URL 长度，比上传批更保守）
+    var V3_PRECHECK_QUERY_CHUNK = 100;
+    /**
+     * 云端状态预检（syncToCloudV3 调用 v3UploadRows 之前执行）。
+     * 对本次待传的「脏记录活行」（row.deleted !== true）按 (record_type, record_id)
+     * 批量查询云端最新状态，拦截两类失效上行并清除对应脏标记：
+     *   a) 云端同键记录 deleted=true（云端已删除），且本地并非「删除后重建」
+     *      （本地记录无 createdAt，或 createdAt 不晚于云端 updated_at）→ 移除该行；
+     *      本地 createdAt 晚于云端墓碑 updated_at 时视为删除后重建，允许上行覆盖；
+     *   b) 云端同键记录 updated_at 晚于本地 lastModified（或 createdAt）→ 移除该行，
+     *      交由后续拉取流程按云端合并；本地无任何时间戳的记录（如楼层/宿舍/学生/
+     *      账号/扣分项目等基础数据）无法判定新旧，一律保守放行，绝不拦截。
+     * 本地墓碑行（row.deleted === true）不参与预检、一律保留，删除信号必须照常
+     * 上传与 7 天重广播；预检不触碰 DB.deletedByType。
+     * 任何查询失败（网络错误/服务端错误）都不阻断上传：返回原始 rows（skipped=true），
+     * 保持预检前的原有行为。本预检为纯增量防护，不改动任何既有防污染闸门。
+     * @param {Array} rows - v3BuildUpsertRow 构造的待传行数组
+     * @returns {Promise<{rows:Array, droppedTomb:number, droppedNewer:number, skipped:boolean}>}
+     *          rows=过滤后的待传行；droppedTomb=被云端墓碑拦截条数；
+     *          droppedNewer=云端更新被拦截条数；skipped=true 表示预检未生效（失败或无活行）
+     */
+    function v3PrecheckCloudRows(rows){
+        var liveRows = rows.filter(function(r){ return r.deleted !== true; });
+        var fallback = { rows: rows, droppedTomb: 0, droppedNewer: 0, skipped: true };
+        if(!supabaseClient || liveRows.length === 0) return Promise.resolve(fallback);
+        // 按 record_type 分组、record_id 去重，构建查询条件
+        var idsByType = {};
+        liveRows.forEach(function(r){
+            if(!idsByType[r.record_type]) idsByType[r.record_type] = {};
+            idsByType[r.record_type][r.record_id] = true;
+        });
+        // 两级映射：cloudMap[type][record_id] = 云端行（避免拼接键的分隔符冲突）
+        var cloudMap = {};
+        var queries = [];
+        Object.keys(idsByType).forEach(function(type){
+            var ids = Object.keys(idsByType[type]);
+            for(var i = 0; i < ids.length; i += V3_PRECHECK_QUERY_CHUNK){
+                // 闭包固定每批的 type 与 id 分片
+                (function(t, chunk){
+                    queries.push(
+                        supabaseClient.from('sync_store')
+                            .select('record_type,record_id,deleted,updated_at')
+                            .eq('record_type', t)
+                            .in('record_id', chunk)
+                            .then(function(res){
+                                if(res.error) throw res.error;
+                                if(!cloudMap[t]) cloudMap[t] = {};
+                                (res.data || []).forEach(function(c){
+                                    cloudMap[t][String(c.record_id)] = c;
+                                });
+                            })
+                    );
+                })(type, ids.slice(i, i + V3_PRECHECK_QUERY_CHUNK));
+            }
+        });
+        return Promise.all(queries).then(function(){
+            var droppedTomb = 0;
+            var droppedNewer = 0;
+            var kept = [];
+            rows.forEach(function(r){
+                // 本地墓碑行一律保留（删除信号照常上传/重广播，预检不拦截）
+                if(r.deleted === true){ kept.push(r); return; }
+                var c = cloudMap[r.record_type] ? cloudMap[r.record_type][r.record_id] : null;
+                if(!c){ kept.push(r); return; } // 云端无同键记录（首次上传），放行
+                var cloudMs = Date.parse(c.updated_at);
+                if(isNaN(cloudMs)){ kept.push(r); return; } // 云端时间无法解析：保守放行
+                var rec = r.data || {};
+                // 规则 a：云端已删除（墓碑）。本地 createdAt 晚于云端 updated_at = 删除后重建，放行
+                if(c.deleted === true){
+                    var localCreated = rec.createdAt != null ? Number(rec.createdAt) : NaN;
+                    if(!isNaN(localCreated) && localCreated > cloudMs){
+                        kept.push(r);
+                        return;
+                    }
+                    droppedTomb++;
+                    if(DB.dirtyByType && DB.dirtyByType[r.record_type]){
+                        delete DB.dirtyByType[r.record_type][r.record_id];
+                    }
+                    return;
+                }
+                // 规则 b：云端更新（本地必须确实携带时间戳才比较；无时间戳的基础数据保守放行）
+                var localMs = (rec.lastModified != null || rec.createdAt != null)
+                    ? Number(rec.lastModified || rec.createdAt || 0) : NaN;
+                if(!isNaN(localMs) && cloudMs > localMs){
+                    droppedNewer++;
+                    if(DB.dirtyByType && DB.dirtyByType[r.record_type]){
+                        delete DB.dirtyByType[r.record_type][r.record_id];
+                    }
+                    return;
+                }
+                kept.push(r);
+            });
+            return { rows: kept, droppedTomb: droppedTomb, droppedNewer: droppedNewer, skipped: false };
+        }).catch(function(e){
+            // 预检失败（网络错误等）不阻断上传：记录日志后返回原始 rows，保持原有行为
+            console.warn('[V3] 云端状态预检查询失败，跳过预检直接上传:', (e && e.message) ? e.message : e);
+            syncLog('WARN', '云端状态预检查询失败，已跳过预检直接上传（不阻断原有上传流程）',
+                {错误: (e && e.message) ? e.message : String(e || '')});
+            return fallback;
+        });
+    }
+
     /**
      * V3 增量上行：收集本地全部脏记录与墓碑行，批量 upsert 到 sync_store。
      * 流程：遍历 V3_RECORD_TYPES → 脏记录读当前数据构造 upsert 行（deleted=false）、
-     * 墓碑构造 deleted=true 行（布尔 true / {ts} 对象两种形态都上传）→ v3UploadRows
+     * 墓碑构造 deleted=true 行（布尔 true / {ts} 对象两种形态都上传）→ v3PrecheckCloudRows
+     * 云端状态预检（仅拦截失效活行，查询失败自动放行）→ v3UploadRows
      * 批量上传 → 全部成功后清空脏标记；墓碑仅在上传成功后清理旧布尔形态与标记
      * 超过 7 天的条目，7 天内的新墓碑保留并在后续同步中持续重广播；最后落本地
      * 存档；无任何待传数据时仅更新 lastSyncTime。
@@ -221,8 +325,26 @@
             DB.lastSyncTime = Date.now();
             return Promise.resolve(true);
         }
-        // 批量 upsert 上传（依赖 UNIQUE(record_type,record_id)）：成功后清除脏标记由调用方处理
-        return v3UploadRows(rows).then(function(ok){
+        // 【云端状态预检】上传前先查云端最新状态，移除"云端已删除（本地非重建）"
+        // 与"云端更新"两类失效上行并清其脏标记；预检失败自动放行，不阻断上传。
+        // 仅作用于本次 rows 过滤与脏标记清理，不触碰主控锁定/孤儿隔离/陈旧过滤/
+        // epoch 检测/健康检查等任何既有防污染闸门。
+        var precheckDroppedTomb = 0;
+        var precheckDroppedNewer = 0;
+        return v3PrecheckCloudRows(rows).then(function(pre){
+            rows = pre.rows;
+            precheckDroppedTomb = pre.droppedTomb;
+            precheckDroppedNewer = pre.droppedNewer;
+            if(!pre.skipped && (precheckDroppedTomb > 0 || precheckDroppedNewer > 0)){
+                console.log('[V3] 云端状态预检：拦截 ' + precheckDroppedTomb + ' 条云端已删除（本地非重建）、'
+                    + precheckDroppedNewer + ' 条云端更新的上行，剩余 ' + rows.length + ' 行待上传');
+                syncLog('INFO', '云端状态预检：' + precheckDroppedTomb + ' 条云端已删除（本地非删除后重建）、'
+                    + precheckDroppedNewer + ' 条云端 updated_at 更新的脏记录已拦截并清除脏标记，交由后续拉取处理',
+                    {云端墓碑拦截: precheckDroppedTomb, 云端更新拦截: precheckDroppedNewer, 剩余待传行数: rows.length});
+            }
+            // 批量 upsert 上传（依赖 UNIQUE(record_type,record_id)）：成功后清除脏标记由调用方处理
+            return v3UploadRows(rows);
+        }).then(function(ok){
             if(!ok){
                 // 上传失败：脏标记/墓碑原样保留，交由上层退避重试（不改动任何闸门逻辑）
                 syncLog('ERROR', '脏记录上传失败：存在批次 upsert 未成功，脏标记与墓碑已保留，等待退避重试',

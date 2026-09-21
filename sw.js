@@ -11,9 +11,9 @@
 // 会导致顶栏版本号显示旧值）。浏览器据此检测新版本并自动推送更新，
 // Service Worker 对同源 JS 为 cache-first，不升版本则设备持续加载旧缓存。
 // ============================================================
-var CACHE_NAME = 'dormitory-cache-2026-09-21-2305';
+var CACHE_NAME = 'dormitory-cache-2026-09-22-0022';
 // 页面通过 postMessage({type:'GET_VERSION'}) 读取，用于顶栏版本号显示（由脚本保证与 CACHE_NAME 同值）
-self.APP_VERSION = '2026-09-21-2305';
+self.APP_VERSION = '2026-09-22-0022';
 
 // 同源核心资源（任一失败都会阻断安装，保证离线可用的最小集合）
 var LOCAL_ASSETS = [
@@ -23,7 +23,8 @@ var LOCAL_ASSETS = [
     './icon-192.png',
     './icon-512.png',
     // 业务逻辑已模块化拆分为外部 JS，必须预缓存才能保证离线可用
-    './config.js',
+    './constants.js',
+    './utils.js',
     './data.js',
     './sync.js',
     './ui.js',
