@@ -233,6 +233,12 @@
                 // 规则 b：云端更新（本地必须确实携带时间戳才比较；无时间戳的基础数据保守放行）
                 var localMs = (rec.lastModified != null || rec.createdAt != null)
                     ? Number(rec.lastModified || rec.createdAt || 0) : NaN;
+                // 容错：本地脏记录若 lastModified 缺失/为 0（历史数据），用当前时间兜底，
+                // 避免误判云端更新而丢弃本地审核结果（如退宿/停宿审核状态被云端旧 pending 覆盖）
+                var isDirtyLocal = DB.dirtyByType && DB.dirtyByType[r.record_type] && DB.dirtyByType[r.record_type][r.record_id];
+                if(isDirtyLocal && (rec.lastModified == null || Number(rec.lastModified) === 0)){
+                    localMs = Date.now();
+                }
                 if(!isNaN(localMs) && cloudMs > localMs){
                     droppedNewer++;
                     if(DB.dirtyByType && DB.dirtyByType[r.record_type]){

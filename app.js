@@ -786,6 +786,62 @@
         var actChip=document.querySelector('.chip-dorms .chip.active');
         if(actChip&&actChip.scrollIntoView){try{actChip.scrollIntoView({inline:'center',block:'nearest'});}catch(e){}}
     }
+
+    // ==================== 系统操作日志 ====================
+    /**
+     * 写入一条系统操作日志到 localStorage（dorm_operation_logs，最多保留 200 条，最新在前）。
+     * 日志写入失败静默忽略，不影响主流程。
+     * @param {string} action - 操作类型（如"删除扣分记录"/"修改扣分记录"）
+     * @param {string} recordType - 记录类型（如 deduction_record）
+     * @param {string|number} recordId - 记录 ID
+     * @param {string} [detail] - 详情描述
+     */
+    function logOperation(action, recordType, recordId, detail){
+        try{
+            var logs = [];
+            try { logs = JSON.parse(localStorage.getItem('dorm_operation_logs') || '[]'); } catch(e){ logs = []; }
+            if(!Array.isArray(logs)) logs = [];
+            var userName = currentUser ? (currentUser.username + '/' + (currentUser.realName || '')) : 'unknown';
+            logs.unshift({ time: Date.now(), user: userName, action: action, recordType: recordType, recordId: recordId, detail: detail || '' });
+            if(logs.length > 200) logs = logs.slice(0, 200);
+            localStorage.setItem('dorm_operation_logs', JSON.stringify(logs));
+        } catch(e){ /* 日志写入失败不影响主流程 */ }
+    }
+    /** 复制全部操作日志到剪贴板（仅管理员） */
+    function copyOperationLogs(){
+        if(!isAdmin()){ toast('无权限','error'); return; }
+        var logs = [];
+        try { logs = JSON.parse(localStorage.getItem('dorm_operation_logs') || '[]'); } catch(e){ logs = []; }
+        function p2(n){ return String(n).padStart(2,'0'); }
+        var text = logs.map(function(l){
+            var d = new Date(l.time || 0);
+            var ts = isNaN(d.getTime()) ? '-' : (formatLocalDate(d) + ' ' + p2(d.getHours()) + ':' + p2(d.getMinutes()));
+            return ts + ' | ' + (l.user||'') + ' | ' + (l.action||'') + ' | ID:' + (l.recordId||'') + ' | ' + (l.detail||'');
+        }).join('\n');
+        function fallback(){
+            try{
+                var ta = document.createElement('textarea');
+                ta.value = text; document.body.appendChild(ta); ta.select();
+                document.execCommand('copy'); document.body.removeChild(ta);
+                toast('已复制 ' + logs.length + ' 条日志');
+            } catch(e){ toast('复制失败','error'); }
+        }
+        try{
+            if(navigator.clipboard && navigator.clipboard.writeText){
+                navigator.clipboard.writeText(text).then(function(){ toast('已复制 ' + logs.length + ' 条日志'); }, fallback);
+            } else { fallback(); }
+        } catch(e){ fallback(); }
+    }
+    /** 清空全部操作日志（仅管理员），清空后刷新数据管理视图 */
+    function clearOperationLogs(){
+        if(!isAdmin()){ toast('无权限','error'); return; }
+        if(!confirm('确认清空全部操作日志？此操作不可恢复。')) return;
+        localStorage.setItem('dorm_operation_logs', '[]');
+        toast('已清空操作日志');
+        var ca = document.getElementById('contentArea');
+        if(ca && typeof renderExportView === 'function') renderExportView(ca);
+    }
+
     /**
      * 删除一条扣分记录（仅管理员，confirm 确认）：打 V3 墓碑标记、
      * saveDB 落库同步、重绘住宿信息视图。
@@ -795,11 +851,18 @@
      * @param {string|number} id - 扣分记录 ID
      */
     function deleteRecord(id){
-        if(!isAdmin()){toast('无权限操作','error');return;}
+        if(!isAdmin() && !isStaff()){toast('无权限操作','error');return;}
         if(!confirm('确认删除？\n（若为宿舍集体记录，其派生的个人加减分记录将一并删除）')) return;
         // 1) 找到待删除的记录
         var target = DB.deductionRecords.find(function(r){ return String(r.id) === String(id); });
         if(!target){ toast('记录不存在或已被删除','error'); return; }
+        // 生活老师权限校验：仅允许删除当天 + 负责楼层的记录
+        if(isStaff()){
+            if(target.recordDate !== getTodayLocalStr()){ toast('只能删除当天的记录','error'); return; }
+            var dorm = getDormitoryById(target.dormitoryId);
+            var allowedFloors = getAssignedFloorIds();
+            if(!dorm || allowedFloors.indexOf(dorm.floorId) === -1){ toast('无权删除非负责楼层的记录','error'); return; }
+        }
         // 2) 若为宿舍集体记录，先找出它派生的全部个人记录
         var derivedList = findDerivedRecords(target);
         // 3) 收集所有要删除的 id（集体本身 + 派生的个人记录），用 Set 去重
@@ -819,6 +882,8 @@
             return true;
         });
         saveDB();
+        // 写入操作日志
+        logOperation('删除扣分记录', 'deduction_record', id, derivedList.length > 0 ? ('含派生记录 ' + derivedList.length + ' 条') : '');
         // 5) 提示
         if(derivedList.length > 0){
             toast('已删除记录（含 ' + derivedList.length + ' 条派生的个人加减分记录）');
@@ -836,7 +901,7 @@
      * @param {string|number} id - 扣分记录 ID
      */
     function deleteRecordWithoutRender(id){
-        if(!isAdmin()) return;
+        if(!isAdmin() && !isStaff()) return;
         var target = DB.deductionRecords.find(function(r){ return String(r.id) === String(id); });
         if(!target) return;
         var derivedList = findDerivedRecords(target);
@@ -863,12 +928,18 @@
      * @param {string|number} id - 扣分记录 ID
      */
     function deleteRecordAndRefreshQuery(id){
-        if(!isAdmin()){ toast('无权限操作','error'); return; }
+        if(!isAdmin() && !isStaff()){ toast('无权限操作','error'); return; }
         if(!confirm('确认删除？\n（若为宿舍集体记录，其派生的个人加减分记录将一并删除）')) return;
         var target = DB.deductionRecords.find(function(r){ return String(r.id) === String(id); });
         if(!target){ toast('记录不存在或已被删除','error'); return; }
+        // 生活老师：仅允许删除负责楼层的记录
+        if(isStaff()){
+            var dormQ = getDormitoryById(target.dormitoryId);
+            if(!dormQ || getAssignedFloorIds().indexOf(dormQ.floorId) === -1){ toast('无权删除非负责楼层的记录','error'); return; }
+        }
         var derivedCount = findDerivedRecords(target).length;
         deleteRecordWithoutRender(id);
+        logOperation('删除扣分记录', 'deduction_record', id, derivedCount > 0 ? ('含派生记录 ' + derivedCount + ' 条') : '');
         if(derivedCount > 0){
             toast('已删除记录（含 ' + derivedCount + ' 条派生的个人加减分记录）');
         } else {
@@ -1791,6 +1862,11 @@
         var r=null;
         for(var i=0;i<DB.deductionRecords.length;i++){if(String(DB.deductionRecords[i].id)===String(editRecordId)){r=DB.deductionRecords[i];break;}}
         if(!r){toast('记录不存在','error');closeEditModal();return;}
+        // 生活老师楼层校验：仅允许修改负责楼层的记录
+        var editDorm = getDormitoryById(r.dormitoryId);
+        if(!editDorm || getAssignedFloorIds().indexOf(editDorm.floorId) === -1){ toast('无权修改非负责楼层的记录','error'); closeEditModal(); return; }
+        // 记录修改前快照（用于操作日志 diff）
+        var _oldSnap = { date: r.recordDate, remark: r.remark || '', hyScore: r.hygieneScore, disScore: r.disciplineScore };
         // 【新增】读取"扣分对象"下拉框：空串=宿舍集体，非空=学生 ID
         var targetEl = document.getElementById('emTargetStudent');
         if(!targetEl){toast('扣分对象字段缺失，请刷新页面','error');return;}
@@ -1859,6 +1935,13 @@
         // V3 按行存储：修改扣分记录 → 脏标记
         v3MarkDirty('deduction_record', r.id);
         saveDB();
+        // 写入操作日志（记录修改前后关键字段差异）
+        var _diffParts = [];
+        if(_oldSnap.date !== r.recordDate) _diffParts.push('日期:' + _oldSnap.date + '→' + r.recordDate);
+        if(_oldSnap.remark !== (r.remark || '')) _diffParts.push('备注变更');
+        if(_oldSnap.hyScore !== r.hygieneScore) _diffParts.push('卫生分:' + _oldSnap.hyScore + '→' + r.hygieneScore);
+        if(_oldSnap.disScore !== r.disciplineScore) _diffParts.push('纪律分:' + _oldSnap.disScore + '→' + r.disciplineScore);
+        logOperation('修改扣分记录', 'deduction_record', r.id, _diffParts.join('；') || '无字段变化');
         // 扣分预警：修改可能抬高净分跨过阈值。个人记录检查本人，集体记录检查同宿舍全体。
         // 【新增】若本次修改变更了 studentId，同时检查"原对象"与"新对象"，
         // 确保双方净分变化都能被正确评估（避免改走后原学生账上净分还降着但没更新通知）。
@@ -3630,6 +3713,7 @@
         var r=DB.leaveRecords.find(function(x){return String(x.id)===String(id);});
         if(!r){toast('记录不存在（ID:'+id+'），请刷新页面','error');return;}
         r.status='approved';
+        r.lastModified = Date.now();
         // V3 按行存储：审核状态变更 → 脏
         v3MarkDirty('leave_record', id);
         saveDB();
@@ -3650,6 +3734,7 @@
         var r=DB.leaveRecords.find(function(x){return String(x.id)===String(id);});
         if(!r){toast('记录不存在（ID:'+id+'），请刷新页面','error');return;}
         r.status='rejected';
+        r.lastModified = Date.now();
         // V3 按行存储：审核状态变更 → 脏
         v3MarkDirty('leave_record', id);
         saveDB();
@@ -6290,7 +6375,7 @@
      * 二次确认后逐条打 V3 墓碑 + 落库同步，完成后重绘视图并提示删除条数。
      */
     function deleteSelectedTodayRecords(){
-        if(!isAdmin()){ toast('无权限','error'); return; }
+        if(!isAdmin() && !isStaff()){ toast('无权限','error'); return; }
         var checked = document.querySelectorAll('.today-record-checkbox:checked');
         if(checked.length === 0){ toast('请先勾选要删除的记录','error'); return; }
         if(!confirm('确认删除选中的 ' + checked.length + ' 条记录？\n（若含宿舍集体记录，其派生的个人加减分记录将一并删除）\n此操作不可撤销！')) return;
@@ -6299,6 +6384,25 @@
         for(var i = 0; i < checked.length; i++){
             var id = checked[i].getAttribute('data-record-id');
             if(id) selectedIds.push(String(id));
+        }
+        // 生活老师：逐条校验日期与楼层，剔除不满足条件的记录
+        if(isStaff()){
+            var todayStr = getTodayLocalStr();
+            var allowedFloorSet = {};
+            getAssignedFloorIds().forEach(function(fid){ allowedFloorSet[fid] = true; });
+            var validIds = [];
+            var skipped = 0;
+            selectedIds.forEach(function(sid){
+                var rec = DB.deductionRecords.find(function(r){ return String(r.id) === sid; });
+                if(!rec){ skipped++; return; }
+                if(rec.recordDate !== todayStr){ skipped++; return; }
+                var d = getDormitoryById(rec.dormitoryId);
+                if(!d || !allowedFloorSet[d.floorId]){ skipped++; return; }
+                validIds.push(sid);
+            });
+            if(skipped > 0){ toast('已跳过 ' + skipped + ' 条非当天或非负责楼层的记录'); }
+            selectedIds = validIds;
+            if(selectedIds.length === 0){ return; }
         }
         // 2) 对待删的每条集体记录，找出其派生的个人记录，合并成待删集合（Set 去重）
         var idsToDelete = {};
@@ -6326,6 +6430,8 @@
             return true;
         });
         saveDB();
+        // 写入操作日志（批量删除记录第一条 ID 与条数）
+        logOperation('删除扣分记录', 'deduction_record', selectedIds.join(','), '批量删除 ' + selectedIds.length + ' 条' + (derivedTotal > 0 ? ' + 派生 ' + derivedTotal + ' 条' : ''));
         // 4) 提示（区分"直接勾选"与"级联删除"的条数）
         if(derivedTotal > 0){
             toast('已删除 ' + selectedIds.length + ' 条选中记录 + ' + derivedTotal + ' 条派生的个人加减分记录');

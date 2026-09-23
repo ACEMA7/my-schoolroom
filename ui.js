@@ -956,10 +956,10 @@
             if(isAdminUser){
                 actionHtml = '<td data-label="操作"><button class="btn btn-danger btn-xs delete-btn" onclick="deleteRecord(\''+r.id+'\')">删除</button></td>';
             } else if(staffMode){
-                actionHtml = '<td data-label="操作"><button class="btn btn-primary btn-xs" onclick="editRecord(\''+r.id+'\')">修改</button></td>';
+                actionHtml = '<td data-label="操作"><button class="btn btn-primary btn-xs" onclick="editRecord(\''+r.id+'\')">修改</button> <button class="btn btn-danger btn-xs delete-btn" onclick="deleteRecord(\''+r.id+'\')">删除</button></td>';
             }
             // 【新增】管理员额外显示复选框列；其他角色该列为空（保持表格列数一致）
-            var checkHtml = isAdminUser
+            var checkHtml = (isAdminUser || staffMode)
                 ? '<td data-label="选择" style="width:30px;text-align:center"><input type="checkbox" class="today-record-checkbox" data-record-id="'+escapeHtmlAttr(r.id)+'"></td>'
                 : '<td data-label="选择" style="width:0;padding:0;border:none"></td>';
             return '<tr>'+checkHtml+actionHtml
@@ -983,28 +983,30 @@
             + '<div class="stat-card warning"><div class="number">'+totalDorms+'</div><div class="label">🚪 涉及宿舍数</div></div>'
             + '<div class="stat-card '+netCardCls+'"><div class="number '+netCls+'">'+formatScoreText(totalNet,'net')+'</div><div class="label">📊 今日净分</div></div>'
             + '</div>';
-        // 【新增】管理员专属工具栏（全选 + 批量删除 + 楼层筛选）；其他角色不显示
-        if(isAdminUser){
-            // 楼层选项：按 sortOrder 升序；第一项"全部楼层"默认选中
-            var sortedFloors = (DB.floors || []).slice().sort(function(a, b){
-                return (a.sortOrder || 0) - (b.sortOrder || 0);
-            });
-            var floorOptions = '<option value="">全部楼层</option>';
-            sortedFloors.forEach(function(f){
-                floorOptions += '<option value="'+f.id+'"'+(String(todayFloorFilter)===String(f.id)?' selected':'')+'>'+escapeHtmlAttr(f.name)+'</option>';
-            });
+        // 工具栏（全选 + 批量删除）：管理员 / 生活老师可见；楼层筛选仅管理员可见
+        if(isAdminUser || staffMode){
             // flex-wrap 让移动端自然换行到下方；PC 端与批量操作同一行右对齐
             html += '<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:10px 14px;background:#fff;border:1px solid var(--gray-200);border-radius:8px;margin-bottom:14px">'
                 + '<label style="display:inline-flex;align-items:center;gap:6px;font-weight:400;cursor:pointer"><input type="checkbox" id="todaySelectAll" onchange="toggleAllTodayRecords(this.checked)"> 全选</label>'
                 + '<button class="btn btn-danger btn-sm" onclick="deleteSelectedTodayRecords()">🗑️ 批量删除</button>'
-                + '<span id="todaySelectedCount" style="color:var(--gray-500);font-size:0.9286rem">未选中</span>'
-                + '<div style="margin-left:auto;display:inline-flex;align-items:center;gap:6px">'
-                + '<label for="todayFloorFilter" style="font-size:0.9rem;color:var(--gray-600);font-weight:600">楼层</label>'
-                + '<select id="todayFloorFilter" onchange="onTodayFloorFilterChange(this.value)" style="height:38px;padding:0 10px;font-size:0.9rem;border:1.5px solid var(--gray-200);border-radius:6px;background:#fff;outline:none;font-family:inherit">'
-                + floorOptions
-                + '</select>'
-                + '</div>'
-                + '</div>';
+                + '<span id="todaySelectedCount" style="color:var(--gray-500);font-size:0.9286rem">未选中</span>';
+            if(isAdminUser){
+                // 楼层选项：按 sortOrder 升序；第一项"全部楼层"默认选中
+                var sortedFloors = (DB.floors || []).slice().sort(function(a, b){
+                    return (a.sortOrder || 0) - (b.sortOrder || 0);
+                });
+                var floorOptions = '<option value="">全部楼层</option>';
+                sortedFloors.forEach(function(f){
+                    floorOptions += '<option value="'+f.id+'"'+(String(todayFloorFilter)===String(f.id)?' selected':'')+'>'+escapeHtmlAttr(f.name)+'</option>';
+                });
+                html += '<div style="margin-left:auto;display:inline-flex;align-items:center;gap:6px">'
+                    + '<label for="todayFloorFilter" style="font-size:0.9rem;color:var(--gray-600);font-weight:600">楼层</label>'
+                    + '<select id="todayFloorFilter" onchange="onTodayFloorFilterChange(this.value)" style="height:38px;padding:0 10px;font-size:0.9rem;border:1.5px solid var(--gray-200);border-radius:6px;background:#fff;outline:none;font-family:inherit">'
+                    + floorOptions
+                    + '</select>'
+                    + '</div>';
+            }
+            html += '</div>';
         }
 
         // 楼层 → 宿舍 → 记录
@@ -1021,7 +1023,7 @@
                 fg.sortedRoomIds.forEach(function(rid){
                     var bucket = fg.rooms[rid];
                     // 【新增】管理员显示复选框列头；其他角色显示空列（保持列数一致）
-                    var checkTh = isAdminUser ? '<th style="width:30px"></th>' : '<th style="width:0;padding:0;border:none"></th>';
+                    var checkTh = (isAdminUser || staffMode) ? '<th style="width:30px"></th>' : '<th style="width:0;padding:0;border:none"></th>';
                     floorHtml += '<div style="padding:12px 14px;border-bottom:1px dashed var(--gray-200)">'
                         + '<div style="font-weight:700;font-size:1rem;margin-bottom:8px;color:var(--primary)">🚪 '+escapeHtmlAttr(bucket.dorm.roomNumber)+' 宿舍</div>'
                         + '<div style="overflow-x:auto"><table class="mobile-h-table"><thead><tr>'+checkTh+'<th>操作</th><th>日期</th><th>对象</th><th>卫生项目</th><th>分值</th><th>纪律项目</th><th>分值</th><th>备注</th></tr></thead><tbody id="todayTbody-'+bucket.dorm.id+'"></tbody></table></div>'
@@ -2749,7 +2751,7 @@
     }
 
     function renderExportView(container) {
-        if (!isAdmin() && currentUser.role !== 'CLASS_ADMIN') {
+        if (!isAdmin() && currentUser.role !== 'CLASS_ADMIN' && currentUser.role !== 'STAFF') {
             container.innerHTML = '<div class="empty-state">无权限</div>';
             return;
         }
@@ -2808,11 +2810,13 @@
             + '<p style="margin:8px 0 0;color:var(--text-light);font-size:0.8571rem">勾选的列将按此顺序写入扣分记录导出文件，默认全部勾选；配置仅保存在本机，不影响请假/退宿/停宿/巡查总结导出。</p>'
             + '</div></div></div>';
 
-        // 批量导入请假/退宿/停宿：粘贴文本或 Excel 两种方式，解析预览确认后落库（管理员与班主任均可用）
-        html += '<div class="card"><div class="card-header">📥 批量导入请假/退宿/停宿记录</div><div class="card-body">'
-            + '<p style="margin:0 0 10px;color:var(--text-light);font-size:0.9rem">支持粘贴文本或 Excel 批量导入请假（absence）、退宿（leave）、停宿（stop）记录；自动按"班级+姓名"匹配学生，重复记录自动跳过，导入前可预览确认。</p>'
-            + '<button class="btn btn-primary" onclick="openLeaveImportModal()">📥 批量导入请假/退宿/停宿记录</button>'
-            + '</div></div>';
+        // 批量导入请假/退宿/停宿：粘贴文本或 Excel 两种方式（管理员与班主任可用，生活老师隐藏）
+        if(currentUser.role !== 'STAFF'){
+            html += '<div class="card"><div class="card-header">📥 批量导入请假/退宿/停宿记录</div><div class="card-body">'
+                + '<p style="margin:0 0 10px;color:var(--text-light);font-size:0.9rem">支持粘贴文本或 Excel 批量导入请假（absence）、退宿（leave）、停宿（stop）记录；自动按"班级+姓名"匹配学生，重复记录自动跳过，导入前可预览确认。</p>'
+                + '<button class="btn btn-primary" onclick="openLeaveImportModal()">📥 批量导入请假/退宿/停宿记录</button>'
+                + '</div></div>';
+        }
         // 异常记录扫描卡片（仅管理员可见）：扫描学生当前宿舍与记录宿舍不一致的扣分记录
         if(isAdmin()){
             html += '<div class="card"><div class="card-header">🔍 异常记录扫描</div><div class="card-body">'
@@ -2855,7 +2859,7 @@
                 + '</div></div>';
         }
 
-        if (!isClassAdmin) {
+        if (isAdmin()) {
             // 主控设备绑定入口：管理员可将当前设备设为主控（非主控设备可见，主控设备也显示但点击提示已绑定）
             if (isAdmin()) {
                 html += '<div class="card"><div class="card-header">🔑 主控设备管理</div><div class="card-body">'
@@ -2906,6 +2910,11 @@
             }
         }
 
+        // 操作日志卡片（仅管理员）：最近 100 条修改/删除记录，可复制/清空
+        if(isAdmin()){
+            html += buildOperationLogCardHtml();
+        }
+
         html += '<div id="queryResultArea" style="margin-top:16px;"></div>';
         container.innerHTML = html;
 
@@ -2915,6 +2924,42 @@
         restoreExportColumns(); // 回显已保存的扣分记录导出列配置（dorm_export_columns）
         // 渲染完成后启用拖拽框选（PC 端）
         if(typeof initDragSelectForAllTables === 'function') initDragSelectForAllTables();
+    }
+
+    // ==================== 操作日志卡片（仅管理员） ====================
+    /**
+     * 构建操作日志卡片 HTML：读取 localStorage 的 dorm_operation_logs，
+     * 显示最近 100 条（时间倒序），提供复制全部 / 清空按钮。
+     * @returns {string}
+     */
+    function buildOperationLogCardHtml(){
+        var logs = [];
+        try { logs = JSON.parse(localStorage.getItem('dorm_operation_logs') || '[]'); } catch(e){ logs = []; }
+        if(!Array.isArray(logs)) logs = [];
+        var recent = logs.slice(0, 100);
+        function p2(n){ return String(n).padStart(2, '0'); }
+        var rows = recent.map(function(l){
+            var d = new Date(l.time || 0);
+            var ts = isNaN(d.getTime()) ? '-' : (formatLocalDate(d) + ' ' + p2(d.getHours()) + ':' + p2(d.getMinutes()));
+            return '<tr>'
+                + '<td data-label="时间">'+ts+'</td>'
+                + '<td data-label="操作人">'+escapeHtmlAttr(l.user || '-')+'</td>'
+                + '<td data-label="操作">'+escapeHtmlAttr(l.action || '-')+'</td>'
+                + '<td data-label="记录ID">'+escapeHtmlAttr(String(l.recordId == null ? '-' : l.recordId))+'</td>'
+                + '<td data-label="详情">'+escapeHtmlAttr(l.detail || '-')+'</td></tr>';
+        }).join('');
+        var body = rows
+            ? '<div style="overflow-x:auto;max-height:360px;overflow-y:auto"><table class="mobile-h-table"><thead><tr><th>时间</th><th>操作人</th><th>操作</th><th>记录ID</th><th>详情</th></tr></thead><tbody>'+rows+'</tbody></table></div>'
+            : '<div class="empty-state" style="padding:16px">暂无操作日志</div>';
+        return '<div class="fold-block'+(foldState['fold-op-logs'] === false ? '' : ' open')+'" id="fold-op-logs">'
+            + '<div class="fold-header" onclick="toggleFold(\'fold-op-logs\')">📝 操作日志（最近 ' + recent.length + ' 条）<span class="fold-arrow">▶</span></div>'
+            + '<div class="fold-body"><div class="card-body">'
+            + '<div style="margin-bottom:10px;display:flex;gap:8px;flex-wrap:wrap">'
+            + '<button class="btn btn-outline btn-xs" onclick="copyOperationLogs()">📋 复制全部日志</button>'
+            + '<button class="btn btn-danger btn-xs" onclick="clearOperationLogs()">🗑️ 清空日志</button>'
+            + '</div>'
+            + body
+            + '</div></div></div>';
     }
 
     // ==================== 账号管理（仅管理员，数据管理视图内卡片） ====================
@@ -3175,15 +3220,29 @@
         var stuVal=stuEl?stuEl.value.trim():'';
 
         // 宿舍号：班级→该班学生入住宿舍；未选班级（全部班级）→全部生效宿舍
+        // 生活老师（STAFF）：仅显示其负责楼层内的宿舍
+        var staffFloorSet = null;
+        if(currentUser && currentUser.role === 'STAFF'){
+            staffFloorSet = {};
+            getAssignedFloorIds().forEach(function(fid){ staffFloorSet[fid] = true; });
+        }
         var dormSet={};
         if(className){
             DB.students.forEach(function(s){
                 if(s.className!==className) return;
                 var d=getDormitoryById(s.dormitoryId);
-                if(d && !isDormitoryDeleted(d.roomNumber)) dormSet[d.roomNumber]=true;
+                if(d && !isDormitoryDeleted(d.roomNumber)) {
+                    if(staffFloorSet && !staffFloorSet[d.floorId]) return;
+                    dormSet[d.roomNumber]=true;
+                }
             });
         } else {
-            DB.dormitories.forEach(function(d){ if(!isDormitoryDeleted(d.roomNumber)) dormSet[d.roomNumber]=true; });
+            DB.dormitories.forEach(function(d){
+                if(!isDormitoryDeleted(d.roomNumber)) {
+                    if(staffFloorSet && !staffFloorSet[d.floorId]) return;
+                    dormSet[d.roomNumber]=true;
+                }
+            });
         }
         if(dormEl){
             dormEl.innerHTML='<option value="">全部宿舍</option>'+Object.keys(dormSet).sort().map(function(r){return '<option value="'+r+'">'+r+'</option>';}).join('');
@@ -3276,7 +3335,7 @@
      * 空结果显示"暂无符合条件"占位。
      */
     function queryFilteredData() {
-        if(!isAdmin() && currentUser.role !== 'CLASS_ADMIN'){toast('无权限','error');return;}
+        if(!isAdmin() && currentUser.role !== 'CLASS_ADMIN' && currentUser.role !== 'STAFF'){toast('无权限','error');return;}
         var f=getExportFilterValues();
         if(!f.startDate || !f.endDate){toast('请选择日期范围','error');return;}
         if(f.startDate > f.endDate){toast('开始日期不能晚于结束日期','error');return;}
@@ -3412,6 +3471,14 @@
             var typeLabel=f.dataType==='leave'?'退宿':'停宿';
             var dateLabel=f.dataType==='leave'?'退宿时间':'停宿时间段';
             var leaveRecords=getFilteredLeaveRecords(f);
+            // 生活老师：仅可见负责楼层的退宿/停宿记录（按宿舍快照房号匹配楼层）
+            if (currentUser && currentUser.role === 'STAFF') {
+                var _afLeave = getAssignedFloorIds();
+                leaveRecords = leaveRecords.filter(function(r){
+                    var d = DB.dormitories.find(function(x){ return x.roomNumber === r.dormitory; });
+                    return !!d && _afLeave.indexOf(d.floorId) !== -1;
+                });
+            }
             if(leaveRecords.length===0){
                 resultArea.innerHTML='<div class="card"><div class="card-header">查询结果</div><div class="card-body"><div class="empty-state">暂无符合条件的'+typeLabel+'记录</div></div></div>';
                 return;
@@ -3440,6 +3507,16 @@
         // ===== 请假记录 =====
         if(f.dataType==='absence'){
             var absRecords=getFilteredAbsenceRecords(f);
+            // 生活老师：仅可见负责楼层的请假记录（按姓名+班级匹配学生当前宿舍楼层）
+            if (currentUser && currentUser.role === 'STAFF') {
+                var _afAbs = getAssignedFloorIds();
+                absRecords = absRecords.filter(function(r){
+                    var stu = DB.students.find(function(s){ return s.name === r.name && s.className === r.className; });
+                    if (!stu) return false;
+                    var d = getDormitoryById(stu.dormitoryId);
+                    return !!d && _afAbs.indexOf(d.floorId) !== -1;
+                });
+            }
             if(absRecords.length===0){
                 resultArea.innerHTML='<div class="card"><div class="card-header">查询结果</div><div class="card-body"><div class="empty-state">暂无符合条件的请假记录</div></div></div>';
                 return;
@@ -3477,6 +3554,11 @@
             if (r.recordDate < startDate || r.recordDate > endDate) return false;
             var student = r.studentId ? getStudentById(r.studentId) : null;
             var dorm = getDormitoryById(r.dormitoryId);
+            // 生活老师：仅可见负责楼层的扣分记录
+            if (currentUser && currentUser.role === 'STAFF') {
+                var _af = getAssignedFloorIds();
+                if (!dorm || _af.indexOf(dorm.floorId) === -1) return false;
+            }
             if (className && getClassNameForRecord(r) !== className) return false;
             if (dormRoom && (!dorm || dorm.roomNumber !== dormRoom)) return false;
             if (bed && (!student || student.bedNumber !== bed)) return false;
@@ -3532,7 +3614,7 @@
                 + '<td data-label="纪律项目">' + (disNames || '-') + '</td>'
                 + '<td data-label="纪律分值" class="' + scoreCls + '">' + formatScoreText(r.disciplineScore || 0, kind) + '</td>'
                 + '<td data-label="备注">' + escapeHtmlAttr(r.remark || '-') + '</td>'
-                + (isAdmin()
+                + ((isAdmin() || (currentUser && currentUser.role === 'STAFF'))
                     ? '<td data-label="操作"><button class="btn btn-primary btn-xs" onclick="editRecord(\'' + r.id + '\')">修改</button> <button class="btn btn-danger btn-xs" onclick="deleteRecordAndRefreshQuery(\'' + r.id + '\')">删除</button></td>'
                     : '<td data-label="操作" style="display:none"></td>')
                 + '</tr>';
@@ -3542,7 +3624,7 @@
             + '<div class="card-header">查询结果（' + records.length + '条记录）</div>'
             + buildBatchToolbar(f.dataType)
             + '<div style="overflow-x:auto;"><table class="mobile-h-table">'
-            + '<thead><tr>'+checkTh()+'<th>日期</th><th>宿舍号</th><th>床号</th><th>班级</th><th>学生</th><th>类型</th><th>卫生项目</th><th>卫生分值</th><th>纪律项目</th><th>纪律分值</th><th>备注</th>' + (isAdmin() ? '<th>操作</th>' : '<th style="display:none"></th>') + '</tr></thead>'
+            + '<thead><tr>'+checkTh()+'<th>日期</th><th>宿舍号</th><th>床号</th><th>班级</th><th>学生</th><th>类型</th><th>卫生项目</th><th>卫生分值</th><th>纪律项目</th><th>纪律分值</th><th>备注</th>' + ((isAdmin() || (currentUser && currentUser.role === 'STAFF')) ? '<th>操作</th>' : '<th style="display:none"></th>') + '</tr></thead>'
             + '<tbody id="queryDeductionTbody"></tbody>'
             + '</table></div></div>';
         renderListInChunks(document.getElementById('queryDeductionTbody'), records, queryDeductionRowHtml, 50, null, { preserveScroll:true });
