@@ -371,11 +371,15 @@
             // 收到删除信号。安全约束：清理只发生在上传成功之后，未上传成功的墓碑
             // 一律原样保留，任何防污染闸门均不受影响。
             var tombPrunedCount = 0;
+            if(!Array.isArray(DB.syncedRecordIds)) DB.syncedRecordIds = [];
             V3_RECORD_TYPES.forEach(function(meta){
                 // 仅清理本次实际上传成功的脏记录对应的脏标记，避免无关脏标记被误清
                 if(DB.dirtyByType && DB.dirtyByType[meta.type] && uploadedKeys[meta.type]){
                     Object.keys(uploadedKeys[meta.type]).forEach(function(rid){
                         delete DB.dirtyByType[meta.type][rid];
+                        // 记录"该记录已成功上传过"痕迹，供后续合并时判定云端暂未落行场景
+                        var key = String(rid);
+                        if(DB.syncedRecordIds.indexOf(key) === -1) DB.syncedRecordIds.push(key);
                     });
                 }
                 var tSet = DB.deletedByType && DB.deletedByType[meta.type];
@@ -469,6 +473,9 @@
             if(dirtySet[rid]){
                 var recTime = r.lastModified || r.createdAt || 0;
                 if(!lastSyncTime) return true;
+                var isSynced = Array.isArray(DB.syncedRecordIds) && DB.syncedRecordIds.indexOf(rid) !== -1;
+                var recentlyModified = recTime > ((lastSyncTime || 0) - 5 * 60 * 1000);
+                if(isSynced && !recentlyModified) return false; // 已上传但云端暂未落行，丢弃不重传
                 return recTime > lastSyncTime;
             }
             return false;
@@ -974,8 +981,16 @@
                             return; // 不 push 到 keptArr，强制云端覆盖本地
                         }
                         // 非基础数据 或 主控设备：保留原有补种逻辑，下次同步上传
-                        v3MarkDirty(type, r.id);
-                        result.rescued++;
+                        var isSynced = Array.isArray(DB.syncedRecordIds) && DB.syncedRecordIds.indexOf(rid) !== -1;
+                        var recModified = r.lastModified || r.createdAt || 0;
+                        var recentlyModified = recModified > ((DB.lastSyncTime || 0) - 5 * 60 * 1000);
+                        if(isSynced && !recentlyModified){
+                            // 已成功上传过且非近期修改：视为云端暂未落行，不标脏，仅计入 rescued
+                            result.rescued++;
+                        } else {
+                            v3MarkDirty(type, r.id);
+                            result.rescued++;
+                        }
                     }
                     keptArr.push(r);
                 });
@@ -990,6 +1005,23 @@
             });
             V3_MUTABLE_TYPES.forEach(function(type){ mergeArrayType(type); });
             DB.lastSyncTime = Date.now();
+            // 清理 syncedRecordIds：只保留当前本地仍存活的记录 id，避免已删除记录的痕迹残留
+            var aliveIds = {};
+            V3_RECORD_TYPES.forEach(function(m){
+                if(m.specialMeta) return; // meta 固定 id='main'，不入存活集合
+                if(m.specialItems){
+                    var di = DB.deductionItems || {};
+                    ['hygiene','discipline','hygieneBonus','disciplineBonus'].forEach(function(sub){
+                        (di[sub]||[]).forEach(function(it){ if(it && it.id != null) aliveIds[String(it.id)] = true; });
+                    });
+                    return;
+                }
+                var a = DB[m.dbPath[0]] || [];
+                a.forEach(function(it){ if(it && it[m.idField] != null) aliveIds[String(it[m.idField])] = true; });
+            });
+            if(Array.isArray(DB.syncedRecordIds) && DB.syncedRecordIds.length > 0){
+                DB.syncedRecordIds = DB.syncedRecordIds.filter(function(id){ return !!aliveIds[String(id)]; });
+            }
             // 合并后先按 username 去重账号（跨设备同名不同 id 的重复账号，
             // 保留最小 id 并打墓碑上行），再重新校准账号
             dedupeUsersByUsername();
