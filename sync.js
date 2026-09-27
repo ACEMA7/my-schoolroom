@@ -348,6 +348,14 @@
                     + precheckDroppedNewer + ' 条云端 updated_at 更新的脏记录已拦截并清除脏标记，交由后续拉取处理',
                     {云端墓碑拦截: precheckDroppedTomb, 云端更新拦截: precheckDroppedNewer, 剩余待传行数: rows.length});
             }
+            // 构建本次实际上传的脏记录键集合（跳过 deleted===true 的墓碑行），
+            // 供上传成功后精准清理对应脏标记使用，避免无关脏标记被误清。
+            var uploadedKeys = {};
+            rows.forEach(function(row){
+                if(row.deleted === true) return;
+                if(!uploadedKeys[row.record_type]) uploadedKeys[row.record_type] = {};
+                uploadedKeys[row.record_type][String(row.record_id)] = true;
+            });
             // 批量 upsert 上传（依赖 UNIQUE(record_type,record_id)）：成功后清除脏标记由调用方处理
             return v3UploadRows(rows);
         }).then(function(ok){
@@ -364,7 +372,12 @@
             // 一律原样保留，任何防污染闸门均不受影响。
             var tombPrunedCount = 0;
             V3_RECORD_TYPES.forEach(function(meta){
-                if(DB.dirtyByType && DB.dirtyByType[meta.type]) DB.dirtyByType[meta.type] = {};
+                // 仅清理本次实际上传成功的脏记录对应的脏标记，避免无关脏标记被误清
+                if(DB.dirtyByType && DB.dirtyByType[meta.type] && uploadedKeys[meta.type]){
+                    Object.keys(uploadedKeys[meta.type]).forEach(function(rid){
+                        delete DB.dirtyByType[meta.type][rid];
+                    });
+                }
                 var tSet = DB.deletedByType && DB.deletedByType[meta.type];
                 if(tSet){
                     var tombCutoff = Date.now() - TOMBSTONE_RETENTION_MS;
@@ -451,9 +464,14 @@
         var rid = String(r.id);
         // 规则1：墓碑删除（本地有未上传修改时除外，由 dirtySet[rid] 保护）
         if(inCloudTomb && !dirtySet[rid]) return false;
-        // 规则2：云端不存在 → 仅新登记（脏标记 + createdAt > lastSyncTime）保留
+        // 规则2：云端不存在 → 有脏标记时用 lastModified 优先判定，无脏标记时丢弃
         if(!inCloudLive && !inCloudTomb){
-            return !!(dirtySet[rid] && (r.createdAt || 0) > (lastSyncTime || 0));
+            if(dirtySet[rid]){
+                var recTime = r.lastModified || r.createdAt || 0;
+                if(!lastSyncTime) return true;
+                return recTime > lastSyncTime;
+            }
+            return false;
         }
         // 规则3：云端有活行 → 保留
         return true;

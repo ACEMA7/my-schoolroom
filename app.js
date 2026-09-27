@@ -6000,6 +6000,7 @@
         u.buildingName=buildingName;
         u.lastModified=Date.now();
         v3MarkDirty('user', u.id);
+        if((DB.lastSyncTime || 0) > u.lastModified){ DB.lastSyncTime = u.lastModified - 1; }
         saveDB();
         toast('分工已保存：'+u.username+' → '+(floors.length?floors.slice().sort(function(a,b){return a-b;}).join('、')+'楼':'全部楼层'));
         var box=document.getElementById('floorAssignBody');
@@ -6124,6 +6125,7 @@
         if(!Array.isArray(DB.floorChangeRequests)) DB.floorChangeRequests = [];
         DB.floorChangeRequests.push(rec);
         v3MarkDirty('floor_change_request', rec.id);
+        if((DB.lastSyncTime || 0) > rec.lastModified){ DB.lastSyncTime = rec.lastModified - 1; }
         // 通知所有管理员
         function floorsText(arr){
             if(!Array.isArray(arr) || arr.length === 0) return '全部楼层';
@@ -6220,6 +6222,7 @@
         r.applied = true;
         r.lastModified = Date.now();
         v3MarkDirty('floor_change_request', r.id);
+        if((DB.lastSyncTime || 0) > r.lastModified){ DB.lastSyncTime = r.lastModified - 1; }
         saveDB();
         // 通知发起人
         function floorsText(arr){
@@ -6297,6 +6300,7 @@
         r.reviewRemark = remark;
         r.lastModified = Date.now();
         v3MarkDirty('floor_change_request', r.id);
+        if((DB.lastSyncTime || 0) > r.lastModified){ DB.lastSyncTime = r.lastModified - 1; }
         saveDB();
         // 通知发起人（reviewRemark 有原因时传"驳回原因：xxx"，无则传空串）
         var vars = {
