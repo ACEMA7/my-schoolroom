@@ -2889,7 +2889,7 @@
             }
             // 数据备份与恢复：导出当前完整 DB 为 JSON，或从 JSON 恢复（覆盖全部数据）
             html += '<div class="card"><div class="card-header">📦 数据备份与恢复</div><div class="card-body">'
-                + '<p style="margin:0 0 10px;color:var(--text-light);font-size:0.9rem">备份将导出当前全部数据（含账号、学生、宿舍、扣分/请假/退宿记录、同步元数据等）为 JSON 文件；恢复会用备份文件覆盖当前全部数据，请谨慎操作。</p>'
+                + '<p style="margin:0 0 10px;color:var(--text-light);font-size:0.9rem">备份将导出当前全部数据（含账号、学生、宿舍、扣分/请假/退宿记录、同步元数据等）为 JSON 文件；恢复会用备份文件覆盖当前全部数据，请谨慎操作。<br>恢复前请先确认：① 备份文件已由外部清洗脚本处理过（清空脏标记/墓碑/同步痕迹）；② 当前设备是主控设备；③ 导入成功后，系统会提示"立即重置云端"，请务必点击，否则云端不会被整体覆盖。</p>'
                 + '<button class="btn btn-primary" onclick="backupAllData()">📦 备份全部数据</button>'
                 + '<div style="margin-top:12px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">'
                 + '<span class="file-upload-wrapper"><span class="file-upload-btn">📂 选择备份文件</span><input type="file" id="backupFileInput" accept=".json" onchange="onBackupFileChange(this.files[0])"></span>'

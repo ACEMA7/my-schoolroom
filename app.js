@@ -3261,11 +3261,25 @@
                 // 双重确认
                 if(!confirm('恢复将覆盖当前全部数据，确定继续？')) return;
                 if(!confirm('此操作不可撤销，确定要覆盖当前全部数据吗？')) return;
+                // 导入前询问是否清空本机"待核查记录隔离区"，避免旧隔离数据以后被误操作上传
+                if(confirm('导入前是否清空本机"待核查记录隔离区"？\n（若本机没有重要待核查数据，建议清空）')){
+                    try{ localStorage.removeItem(PENDING_REVIEW_KEY); }catch(e){}
+                }
                 // 保持 DB 引用不变：逐个字段赋值（Object.assign 只做浅拷贝顶层字段）
                 Object.keys(parsed).forEach(function(k){
                     DB[k] = parsed[k];
                 });
                 // 清理可能存在的残留字段（备份中没有的旧字段不主动删除，避免破坏向后兼容）
+                // 导入后无条件再清一次隔离区：防止用户上一步没点确定、隔离区残留旧数据的隐患
+                try{ localStorage.removeItem(PENDING_REVIEW_KEY); }catch(e){}
+                // 防御性补丁：外部清洗脚本可能未输出同步元数据字段，若脏标记/墓碑不是对象
+                // 则重建为空对象，避免后续 v3MarkAllLocalDirty() 遍历时报错
+                if(!DB.dirtyByType || typeof DB.dirtyByType !== 'object') DB.dirtyByType = {};
+                if(!DB.deletedByType || typeof DB.deletedByType !== 'object') DB.deletedByType = {};
+                V3_RECORD_TYPES.forEach(function(m){
+                    if(!DB.dirtyByType[m.type]) DB.dirtyByType[m.type] = {};
+                    if(!DB.deletedByType[m.type]) DB.deletedByType[m.type] = {};
+                });
                 // 全量标脏：备份数据本身不带任何脏标记，不标脏则增量同步认为无变更，
                 // 云端不会更新，下次 loadFromCloudV3 会把云端旧数据写回、覆盖恢复结果。
                 v3MarkAllLocalDirty();
@@ -3280,6 +3294,11 @@
                 renderTree();
                 renderView();
                 toast('数据恢复完成');
+                // 引导管理员以本机为准全量覆盖云端（不依赖脏标记增量上传）
+                toast('数据已导入。若要覆盖云端，请立即执行"重置云端数据"。', 'error', {
+                    label: '立即重置云端',
+                    onClick: function(){ resetCloudData(); }
+                });
             }catch(err){
                 handleError(err, '从备份恢复');
             }
