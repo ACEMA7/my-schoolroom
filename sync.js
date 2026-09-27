@@ -277,6 +277,7 @@
         var staleFilteredCount = 0;
         var dirtyRowCount = 0;      // 本次实际上传的脏记录行数
         var tombstoneCount = 0;     // 本次实际上传的墓碑行数
+        var uploadedKeys = {};      // 本次实际上传的脏记录键集合（供上传成功后精准清脏，跳过墓碑行）
         // 遍历所有记录类型，收集脏记录和删除标记
         V3_RECORD_TYPES.forEach(function(meta){
             // 【主控设备锁定·防污染】基础数据仅允许管理员的主控设备上传
@@ -350,7 +351,7 @@
             }
             // 构建本次实际上传的脏记录键集合（跳过 deleted===true 的墓碑行），
             // 供上传成功后精准清理对应脏标记使用，避免无关脏标记被误清。
-            var uploadedKeys = {};
+            // 注意：uploadedKeys 声明在 syncToCloudV3 外层作用域，确保后续 .then(ok) 闭包可见。
             rows.forEach(function(row){
                 if(row.deleted === true) return;
                 if(!uploadedKeys[row.record_type]) uploadedKeys[row.record_type] = {};
