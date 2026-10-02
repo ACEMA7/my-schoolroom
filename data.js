@@ -160,6 +160,66 @@
     }
 
     /**
+     * 按学号查询学生（学号为稳定唯一身份标识，10 位数字）。
+     * @param {string} studentNo - 学号
+     * @returns {object|null} 学生对象；未找到返回 null
+     */
+    function getStudentByNo(studentNo){
+        if(!DB || !Array.isArray(DB.students) || !studentNo) return null;
+        var no = String(studentNo).trim();
+        return DB.students.find(function(s){ return s && String(s.studentNo || '') === no; }) || null;
+    }
+
+    /**
+     * 校验学号格式与全局唯一性。
+     * @param {string} no - 待校验学号
+     * @param {Array} [existingInBatch] - 本次导入批次内已见学号集合（可选，用于批次内去重）
+     * @returns {{ok:boolean, error?:string}} 校验结果
+     */
+    function validateStudentNo(no, existingInBatch){
+        if(no === undefined || no === null || String(no).trim() === ''){
+            return { ok:false, error:'学号不能为空' };
+        }
+        var v = String(no).trim();
+        if(!STUDENT_NO_REGEX.test(v)){
+            return { ok:false, error:'学号格式错误（须为 10 位数字，如 2024092001）' };
+        }
+        // 批次内重复
+        if(existingInBatch && existingInBatch[v]){
+            return { ok:false, error:'学号在本批次内重复（' + v + '）' };
+        }
+        // 全局重复（DB 中已存在相同学号）
+        if(getStudentByNo(v)){
+            return { ok:false, error:'学号已存在（' + v + '）' };
+        }
+        return { ok:true };
+    }
+
+    /**
+     * 解析学生时按学号优先匹配，其次按 id，最后按姓名+班级兜底。
+     * 用于业务记录关联学生的统一入口。
+     * @param {object} opts - { studentNo, studentId, name, className }
+     * @returns {object|null} 匹配到的学生
+     */
+    function resolveStudent(opts){
+        if(!opts) return null;
+        if(opts.studentNo){
+            var byNo = getStudentByNo(opts.studentNo);
+            if(byNo) return byNo;
+        }
+        if(opts.studentId != null){
+            var byId = getStudentById(opts.studentId);
+            if(byId) return byId;
+        }
+        if(opts.name && opts.className){
+            return (DB.students || []).find(function(s){
+                return s.name === opts.name && s.className === opts.className;
+            }) || null;
+        }
+        return null;
+    }
+
+    /**
      * 查询某宿舍的全部在住学生（不含已退宿/走读），并按床号升序排序。
      *
      * 排序效果（一处改，全局生效）：
@@ -1459,6 +1519,36 @@
                 if(DB.dormitoryList.indexOf(rn) === -1) DB.dormitoryList.push(rn);
             }
         });
+        // === 学号方案迁移（2026-10）===
+        // 1) 确保所有学生记录都有 studentNo 字段（老数据缺失则补 null，待管理员 Excel 补填）
+        if(Array.isArray(DB.students)){
+            DB.students.forEach(function(s){
+                if(s.studentNo === undefined) s.studentNo = null;
+            });
+        }
+        // 2) 业务记录回填 studentNo：能用 studentId / 姓名+班级 匹配到学生的，回填其学号
+        //    （幂等，可重复执行；匹配不到的记录保留 null，不降级为集体）
+        try {
+            var _backfillNo = function(records){
+                if(!Array.isArray(records)) return;
+                records.forEach(function(r){
+                    if(r.studentNo) return;   // 已有学号，跳过
+                    var stu = null;
+                    if(r.studentId != null) stu = getStudentById(r.studentId);
+                    if(!stu && r.name && r.className){
+                        stu = (DB.students || []).find(function(s){
+                            return s.name === r.name && s.className === r.className;
+                        }) || null;
+                    }
+                    if(stu && stu.studentNo){
+                        r.studentNo = stu.studentNo;
+                    }
+                });
+            };
+            _backfillNo(DB.deductionRecords);
+            _backfillNo(DB.absenceRecords);
+            _backfillNo(DB.leaveRecords);
+        } catch(e) { console.warn('[学号迁移] 回填失败，已跳过：', e); }
         // 退宿停宿记录字段迁移：补齐 status / studentId / startDate / endDate（兼容历史数据）
         if(Array.isArray(DB.leaveRecords)){
             var todayStr=getTodayLocalStr();
@@ -1617,16 +1707,28 @@
         }
         return repaired;
     }
-    // 通过 班级+姓名+宿舍号+床号 快照匹配学生（用于给旧记录补 studentId）
+    // 通过 班级+姓名 快照匹配学生（宿舍号/床号仅作辅助校验，不作为强制条件）
+    // 修复 BUG-20260930-001：学生调床后床号快照易错位，导致匹配失败 → studentId=null → 巡查核实看不到
     function matchStudentBySnapshot(className,name,dormitory,bed){
         if(!DB||!Array.isArray(DB.students)) return null;
-        return DB.students.find(function(s){
-            if(s.className!==className||s.name!==name) return false;
-            var d=getDormitoryById(s.dormitoryId);
-            if(dormitory && (!d||d.roomNumber!==dormitory)) return false;
-            if(bed && String(s.bedNumber)!==String(bed)) return false;
-            return true;
-        })||null;
+        // 1) 优先：班级 + 姓名 精确匹配
+        var byName = DB.students.filter(function(s){
+            return s.className === className && s.name === name;
+        });
+        if(byName.length === 1) return byName[0];
+        // 2) 同名多条时，再叠加宿舍/床号辅助筛选；仍无法唯一确定则返回 null
+        if(byName.length > 1){
+            var filtered = byName.filter(function(s){
+                var d = getDormitoryById(s.dormitoryId);
+                if(dormitory && d && d.roomNumber !== dormitory) return false;
+                if(bed && String(s.bedNumber) !== String(bed)) return false;
+                return true;
+            });
+            if(filtered.length === 1) return filtered[0];
+            // 辅助筛选仍无法唯一确定，返回 null（需人工确认）
+            return null;
+        }
+        return null;
     }
     /**
      * 生成全局唯一记录 ID（多设备并发不冲突）。
@@ -1871,9 +1973,32 @@
         if(!DB) return [];
         var fset = {};
         (floorIds || []).forEach(function(f){ fset[f] = true; });
-        function inScope(dormitoryId, room, studentId){
+        // 方案3：记录定位失败时写入诊断日志（syncLog 由 sync.js 提供，运行时已就绪）
+        function logInspectionDrop(recordType, r, reason){
+            try {
+                if(typeof syncLog === 'function'){
+                    syncLog('WARN', '[巡查核实] 记录被丢弃：定位不到楼层', {
+                        recordType: recordType,
+                        recordId: r.id,
+                        name: r.name,
+                        className: r.className,
+                        studentId: r.studentId,
+                        dormitorySnapshot: r.dormitory,
+                        bedSnapshot: r.bed,
+                        reason: reason,
+                        inspectionDate: date
+                    });
+                }
+            } catch(e) { /* 日志失败不影响主流程 */ }
+        }
+        function inScope(dormitoryId, room, studentId, recordType, r){
             var fid = resolveRecordFloorId(dormitoryId, room, studentId);
-            return fid != null && fset[fid];
+            if(fid == null){
+                // 完全无法定位楼层 → 写入诊断日志（区别于「楼层不在可见范围」的正常过滤）
+                logInspectionDrop(recordType, r, 'resolveRecordFloorId 返回 null');
+                return false;
+            }
+            return !!fset[fid];
         }
         function dormRoomOf(dormitoryId, fallbackRoom, studentId){
             // 优先：学生当前宿舍号
@@ -1895,9 +2020,10 @@
             if(r.status !== 'pending') return;
             if(!recordCoversDate(r, date)) return;
             var stuDormId = _studentDormitoryId(r.studentId);
-            if(!inScope(stuDormId, r.dormitory, r.studentId)) return;
+            var recType = r.type === 'stop' ? 'stop' : 'leave';
+            if(!inScope(stuDormId, r.dormitory, r.studentId, recType, r)) return;
             items.push({
-                recordType: r.type === 'stop' ? 'stop' : 'leave',
+                recordType: recType,
                 recordId: r.id, studentId: r.studentId || null, dormitoryId: stuDormId,
                 room: dormRoomOf(stuDormId, r.dormitory, r.studentId), name: r.name, className: r.className,
                 bed: r.bed, startDate: r.startDate || r.date, endDate: r.endDate || r.date, reason: r.reason
@@ -1908,7 +2034,7 @@
             if(r.status === 'cancelled') return;   // 已取消的记录不参与巡查核实
             if(!recordCoversDate(r, date)) return;
             var stuDormId = _studentDormitoryId(r.studentId);
-            if(!inScope(stuDormId, r.dormitory, r.studentId)) return;
+            if(!inScope(stuDormId, r.dormitory, r.studentId, 'absence', r)) return;
             items.push({
                 recordType: 'absence', recordId: r.id, studentId: r.studentId || null, dormitoryId: stuDormId,
                 room: dormRoomOf(stuDormId, r.dormitory, r.studentId), name: r.name, className: r.className,

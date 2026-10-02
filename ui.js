@@ -1883,7 +1883,7 @@
             +'<div class="card"><div class="card-header">批量导入学生</div><div class="card-body">'
             +'<p style="color:#6b7280;margin-bottom:12px">支持两种方式：</p>'
             +'<div style="margin-bottom:12px"><b>📂 Excel导入：</b> <span class="file-upload-wrapper"><span class="file-upload-btn">选择Excel文件</span><input type="file" id="excelFileInput" accept=".xlsx,.xls" onchange="handleExcelImport(this.files[0])"></span> <button class="btn btn-outline btn-sm" onclick="downloadStudentImportTemplate()">📥 下载导入模板</button></div>'
-            +'<div><b>📋 粘贴文本：</b> <textarea id="batchImportText" rows="6" style="width:100%;padding:8px;border:1.5px solid #ddd;border-radius:6px" placeholder="模板：姓名,班级,宿舍号,床号（逗号分隔）"></textarea>'
+            +'<div><b>📋 粘贴文本：</b> <textarea id="batchImportText" rows="6" style="width:100%;padding:8px;border:1.5px solid #ddd;border-radius:6px" placeholder="模板：学号,姓名,班级,宿舍号,床号（逗号分隔；学号必填，10位数字且全局唯一）"></textarea>'
             +'<button class="btn btn-primary" onclick="batchImportStudents()">📥 从文本导入</button></div>'
             +'</div></div>'
             +'</div>'
@@ -2847,7 +2847,7 @@
         // 批量导入扣分/加分记录（仅管理员在主控设备可用：写业务记录且影响全量统计）
         if(isAdmin() && IS_MASTER_DEVICE){
             html += '<div class="card"><div class="card-header">📥 批量导入扣分/加分记录</div><div class="card-body">'
-                + '<p style="margin:0 0 10px;color:var(--text-light);font-size:0.9rem">支持粘贴文本或 Excel 导入当天的扣分/加分记录。列顺序：日期、宿舍号、班级、姓名、类型(卫生/纪律/加分)、项目、分值、备注。</p>'
+                + '<p style="margin:0 0 10px;color:var(--text-light);font-size:0.9rem">支持粘贴文本或 Excel 导入当天的扣分/加分记录。列顺序：日期、宿舍号、床号、班级、姓名、学号(选填)、卫生项目、卫生分值、纪律项目、纪律分值、备注。</p>'
                 + '<button class="btn btn-primary" onclick="openDeductionImportModal()">📥 批量导入扣分/加分记录</button>'
                 + '</div></div>';
         }
@@ -4233,12 +4233,13 @@
             + '<div class="batch-tab ' + (st.importType === 'text' ? 'active' : '') + '" onclick="switchDeductionImportTab(\'text\')">📋 粘贴文本</div>'
             + '<div class="batch-tab ' + (st.importType === 'excel' ? 'active' : '') + '" onclick="switchDeductionImportTab(\'excel\')">📂 Excel导入</div>'
             + '</div>';
-        var hint = '<div class="batch-hint">每行一条记录，列顺序（逗号分隔或制表符分隔均可）：<b>日期, 宿舍号, 床号, 班级, 学生, 卫生项目, 卫生分值, 纪律项目, 纪律分值, 备注</b><br>'
-            + '示例：2026-09-15, 103, -, 三1, 宿舍集体, 卫生优秀, 0.2, -, 0, <br>'
-            + '示例：2026-09-15, 201, 1, 三10, 吴嘉乐, 厕所有杂物, -0.2, -, 0, <br>'
-            + '示例：2026-09-15, 601, -, 三3, 段凯琪, -, 0, -, -1, <br>'
+        var hint = '<div class="batch-hint">每行一条记录，列顺序（逗号分隔或制表符分隔均可）：<b>日期, 宿舍号, 床号, 班级, 学生, 学号(选填), 卫生项目, 卫生分值, 纪律项目, 纪律分值, 备注</b><br>'
+            + '示例：2026-09-15, 103, -, 三1, 宿舍集体, , 卫生优秀, 0.2, -, 0, <br>'
+            + '示例：2026-09-15, 201, 1, 三10, 吴嘉乐, 2024092001, 厕所有杂物, -0.2, -, 0, <br>'
+            + '示例：2026-09-15, 601, -, 三3, 段凯琪, , -, 0, -, -1, <br>'
             + '说明：<br>'
             + '· 宿舍集体：床号填 “-”（或留空），学生填 “宿舍集体”；<br>'
+            + '· 学号为选填列（10位数字），填写时优先按学号精确匹配学生，可避免同名/调床导致的错配；留空则按姓名+班级匹配；<br>'
             + '· 分值带符号：正数 = 加分，负数 = 扣分；<br>'
             + '· 卫生与纪律可同时有值，但两侧分值符号必须一致；<br>'
             + '· 项目列填 “-” 或留空表示该侧无分值；<br>'

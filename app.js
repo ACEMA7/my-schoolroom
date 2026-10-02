@@ -1785,10 +1785,49 @@
             return st.id !== s.id && String(st.bedNumber) === String(targetBed);
         });
         if(occupied){toast('该床位已被 '+occupied.name+' 占用，请选择其他床位','error');return;}
+        // 记录旧宿舍 ID，用于判断是否「换宿舍」（同宿舍仅换床位无需回写快照）
+        var oldDormitoryId = s.dormitoryId;
+        var isDormChange = (oldDormitoryId !== targetDormId);
         s.dormitoryId = targetDormId;
         s.bedNumber = targetBed;
         // V3 按行存储：学生调宿修改，标记脏记录
         v3MarkDirty('student', transferStudentId);
+        // === 方案2：换宿舍时同步回写该学生名下历史记录的宿舍/床号快照 ===
+        // 修复 BUG-20260930-001：调床不回写快照 → 记录 dormitory 过期 → 巡查核实定位失败 → 静默丢弃
+        if(isDormChange){
+            var today = getTodayLocalStr();
+            var newRoomNumber = targetDorm.roomNumber;
+            var newBed = targetBed;
+            // 回写请假记录（absenceRecords）：仅「进行中」（未取消 且 endDate >= 今天）
+            (DB.absenceRecords || []).forEach(function(r){
+                if(r.studentId !== s.id) return;
+                if(r.status === 'cancelled') return;
+                if(r.endDate && r.endDate < today) return;   // 已结束的请假不回写，保留历史原貌
+                r.dormitory = newRoomNumber;
+                r.bed = newBed;
+                r.lastModified = Date.now();
+                v3MarkDirty('absence_record', r.id);
+            });
+            // 回写停宿/退宿记录（leaveRecords）：仅「进行中」
+            (DB.leaveRecords || []).forEach(function(r){
+                if(r.studentId !== s.id) return;
+                if(r.status === 'cancelled') return;
+                var rEnd = r.endDate || r.date;
+                if(rEnd && rEnd < today) return;
+                r.dormitory = newRoomNumber;
+                r.bed = newBed;
+                r.lastModified = Date.now();
+                v3MarkDirty('leave_record', r.id);
+            });
+            // 回写扣分记录（deductionRecords）：仅该学生名下的记录（含 autoDerived 派生记录）
+            // 注意：studentId === null 的「宿舍集体主记录」不随学生迁移（孤儿记录保留在旧宿舍）
+            (DB.deductionRecords || []).forEach(function(r){
+                if(r.studentId !== s.id) return;   // 仅个人记录（含派生），排除集体主记录
+                r.dormitoryId = targetDormId;
+                r.lastModified = Date.now();
+                v3MarkDirty('deduction_record', r.id);
+            });
+        }
         saveDB();
         toast(s.name+' 已调至 '+targetDorm.roomNumber+' 床位 '+targetBed);
         closeTransferModal();
@@ -2313,7 +2352,7 @@
         // 加分模式：生成宿舍集体记录 + 每个学生各一条个人记录
         if(isBonus){
             // 宿舍层面记录（studentId=null，recordMode='bonus'，记录生活老师实际输入分数）
-            var dormRecord={id:generateRecordId(),createdAt:Date.now(),lastModified:Date.now(),dormitoryId:addFormState.dormitoryId,studentId:null,hygieneItemIds:hygieneItemIds,hygieneScore:hygieneScore,disciplineItemIds:disciplineItemIds,disciplineScore:disciplineScore,recordDate:addFormState.recordDate,remark:addFormState.remark||'',recordMode:mode};
+            var dormRecord={id:generateRecordId(),createdAt:Date.now(),lastModified:Date.now(),dormitoryId:addFormState.dormitoryId,studentId:null,studentNo:null,hygieneItemIds:hygieneItemIds,hygieneScore:hygieneScore,disciplineItemIds:disciplineItemIds,disciplineScore:disciplineScore,recordDate:addFormState.recordDate,remark:addFormState.remark||'',recordMode:mode};
             DB.deductionRecords.push(dormRecord);
             v3MarkDirty('deduction_record', dormRecord.id);
             // 个人层面：为该宿舍每个学生各生成一条个人加分记录
@@ -2329,7 +2368,7 @@
                 // 【关键】给派生的个人加分记录打上 autoDerived: true，
                 // 使其不计入宿舍汇总分（避免"一次集体加分被算成多人加分之和"），
                 // 但仍计入个人净分（学生个人账上确实加了分）。
-                var stuRecord={id:generateRecordId(),createdAt:Date.now(),lastModified:Date.now(),dormitoryId:addFormState.dormitoryId,studentId:s.id,hygieneItemIds:hygieneItemIds,hygieneScore:perHyScore,disciplineItemIds:disciplineItemIds,disciplineScore:perDisScore,recordDate:addFormState.recordDate,remark:addFormState.remark||'',recordMode:mode,autoDerived:true};
+                var stuRecord={id:generateRecordId(),createdAt:Date.now(),lastModified:Date.now(),dormitoryId:addFormState.dormitoryId,studentId:s.id,studentNo:s.studentNo||null,hygieneItemIds:hygieneItemIds,hygieneScore:perHyScore,disciplineItemIds:disciplineItemIds,disciplineScore:perDisScore,recordDate:addFormState.recordDate,remark:addFormState.remark||'',recordMode:mode,autoDerived:true};
                 // 【第二道防线·孤儿派生自检】命中则隔离到待核查存储（不进 DB、不标脏、不上传云端）
                 if(quarantineIfOrphanDerived(stuRecord)) return;
                 DB.deductionRecords.push(stuRecord);
@@ -2359,7 +2398,13 @@
             var isCollectiveDeduct = (addFormState.studentId === null || addFormState.studentId === undefined);
             var finalHyScore = isCollectiveDeduct ? hygieneScore : (hygieneItemIds.length > 0 ? -1 : 0);
             var finalDisScore = isCollectiveDeduct ? disciplineScore : (disciplineItemIds.length > 0 ? -1 : 0);
-            var newRecord={id:generateRecordId(),createdAt:Date.now(),lastModified:Date.now(),dormitoryId:addFormState.dormitoryId,studentId:addFormState.studentId||null,hygieneItemIds:hygieneItemIds,hygieneScore:finalHyScore,disciplineItemIds:disciplineItemIds,disciplineScore:finalDisScore,recordDate:addFormState.recordDate,remark:addFormState.remark||'',recordMode:'deduct'};
+            // 个人扣分主记录：补 studentNo（集体记录为 null）
+            var newRecStuNo = null;
+            if(!isCollectiveDeduct){
+                var _ns = getStudentById(addFormState.studentId);
+                if(_ns) newRecStuNo = _ns.studentNo || null;
+            }
+            var newRecord={id:generateRecordId(),createdAt:Date.now(),lastModified:Date.now(),dormitoryId:addFormState.dormitoryId,studentId:addFormState.studentId||null,studentNo:newRecStuNo,hygieneItemIds:hygieneItemIds,hygieneScore:finalHyScore,disciplineItemIds:disciplineItemIds,disciplineScore:finalDisScore,recordDate:addFormState.recordDate,remark:addFormState.remark||'',recordMode:'deduct'};
             DB.deductionRecords.push(newRecord);
             v3MarkDirty('deduction_record', newRecord.id);
             // 【新增】扣分模式下，如果是宿舍集体扣分，为宿舍每个学生派生一条个人扣分记录
@@ -2378,6 +2423,7 @@
                         lastModified: Date.now(),
                         dormitoryId: addFormState.dormitoryId,
                         studentId: s.id,
+                        studentNo: s.studentNo || null,
                         hygieneItemIds: hygieneItemIds,
                         hygieneScore: perHyScore,
                         disciplineItemIds: disciplineItemIds,
@@ -2518,10 +2564,17 @@
         toast('学生已添加');
         renderStudentsView(document.getElementById('contentArea'));
     }
-    // 【严格同班同名去重】学生去重判断：同班同名视为同一人，一律视为已存在。
-    // 核心防御目的：防止因换宿舍、床位变动或导入数据微小差异导致名单无限膨胀。
-    // 注意：此函数仅比对姓名和班级，绝对不比对宿舍和床号。
-    function studentAlreadyExists(name, className){
+    // 【去重判断】学生是否已存在：
+    //   1) 若提供了 studentNo：学号相同即视为同一人（学号为稳定唯一标识）；
+    //   2) 否则回退到「同班同名」判断（防止换宿舍/床位变动导致名单膨胀）。
+    // 注意：此函数不比对宿舍和床号。
+    function studentAlreadyExists(name, className, studentNo){
+        if(studentNo){
+            var no = String(studentNo).trim();
+            if((DB.students || []).some(function(s){ return String(s.studentNo || '') === no; })){
+                return true;
+            }
+        }
         if(!name || !className) return false;
         var n = String(name).trim();
         var c = String(className).trim();
@@ -2572,37 +2625,53 @@
         var skipped=0;
         var autoAdded=0;
         var nonResident=0;
+        var errors=[];          // 学号校验失败明细
+        var batchSeenNo={};     // 本批次内学号去重
         for(var i=0;i<lines.length;i++){
             var line=lines[i].trim();
             if(!line) continue;
             var parts=line.split(/[,，\t]/);
-            if(parts.length<3) continue;
-            var name=parts[0].trim();
-            var className=parts[1].trim();
-            var roomNumber=parts[2].trim();
-            var bedNumber=parts.length>3?parts[3].trim():'';
+            // 新列顺序：学号, 姓名, 班级, 宿舍号, 床号（至少需前 3 列：学号/姓名/班级）
+            if(parts.length<3){ errors.push('第'+(i+1)+'行：列数不足（须含 学号,姓名,班级）'); continue; }
+            var studentNo=parts[0].trim();
+            var name=parts[1].trim();
+            var className=parts[2].trim();
+            var roomNumber=parts.length>3?parts[3].trim():'';
+            var bedNumber=parts.length>4?parts[4].trim():'';
+            // 学号强制校验（必填 + 格式 + 批次内唯一 + 全局唯一），失败即阻断该行
+            var noCheck = validateStudentNo(studentNo, batchSeenNo);
+            if(!noCheck.ok){ errors.push('第'+(i+1)+'行：'+noCheck.error); continue; }
+            var noVal = String(studentNo).trim();
+            batchSeenNo[noVal] = true;
+            if(!name||!className){ errors.push('第'+(i+1)+'行：姓名或班级为空'); continue; }
+            // 去重：学号优先（已被 validateStudentNo 拦截全局重复），再按同班同名兜底
+            if(studentAlreadyExists(name, className, noVal)){ skipped++; continue; }
             // 非住宿生：宿舍号为 0 或空时，dormitoryId=null，标记为走读生
-            // 【严格同班同名去重】仅按班级+姓名判断，宿舍/床号不参与比对
             if(roomNumber===''||roomNumber==='0'||roomNumber.toLowerCase()==='null'){
-                if(studentAlreadyExists(name, className)){ skipped++; continue; }
                 var nonStuId = DB.nextIds.student++;
-                DB.students.push({id:nonStuId,dormitoryId:null,name:name,className:className,bedNumber:''});
+                DB.students.push({id:nonStuId,dormitoryId:null,name:name,className:className,bedNumber:'',studentNo:noVal});
                 v3MarkDirty('student', nonStuId);
                 imported++; nonResident++;
                 continue;
             }
-            // 【严格同班同名去重】同班同名即跳过（避免重复导入翻倍；不为重复学生新建宿舍）
-            if(studentAlreadyExists(name, className)){ skipped++; continue; }
             var res=ensureDormitoryRoom(roomNumber);
-            if(!res){toast('宿舍号无效或不存在：'+roomNumber,'error');continue;}
+            if(!res){ errors.push('第'+(i+1)+'行：宿舍号无效或不存在（'+roomNumber+'）'); continue; }
             if(res.autoAdded) autoAdded++;
             var impStuId = DB.nextIds.student++;
-            DB.students.push({id:impStuId,dormitoryId:res.dorm.id,name:name,className:className,bedNumber:bedNumber});
+            DB.students.push({id:impStuId,dormitoryId:res.dorm.id,name:name,className:className,bedNumber:bedNumber,studentNo:noVal});
             v3MarkDirty('student', impStuId);
             imported++;
         }
         saveDB();
-        toast('成功导入'+imported+'名学生'+(skipped>0?'（跳过重复'+skipped+'名）':'')+(autoAdded>0?'（自动新增'+autoAdded+'个宿舍号）':'')+(nonResident>0?'（含'+nonResident+'名走读生）':''));
+        var msg='成功导入'+imported+'名学生';
+        if(skipped>0) msg+='（跳过重复'+skipped+'名）';
+        if(autoAdded>0) msg+='（自动新增'+autoAdded+'个宿舍号）';
+        if(nonResident>0) msg+='（含'+nonResident+'名走读生）';
+        toast(msg);
+        if(errors.length>0){
+            // 学号等校验失败：弹出明细供管理员核对修正 Excel
+            alert('以下 '+errors.length+' 行因校验失败未导入（学号须为 10 位数字且全局唯一）：\n\n'+errors.slice(0,30).join('\n')+(errors.length>30?'\n……等共 '+errors.length+' 条':''));
+        }
         renderStudentsView(document.getElementById('contentArea'));
     }
     /**
@@ -2632,38 +2701,62 @@
                 var workbook=XLSX.read(data,{type:'array'});
                 var firstSheet=workbook.Sheets[workbook.SheetNames[0]];
                 var rows=XLSX.utils.sheet_to_json(firstSheet,{header:1});
-                var validRows=rows.filter(function(row){return row.length>=2&&row[0]&&row[1];});
+                // 新列顺序：学号(row[0]), 姓名(row[1]), 班级(row[2]), 宿舍号(row[3]), 床号(row[4])
+                // 跳过表头/说明行：第 0 列含「学号」或「姓名」字样的行视为表头跳过
+                var dataRows=rows.filter(function(row, idx){
+                    if(!row || row.length === 0) return false;
+                    var c0 = String(row[0] || '').trim();
+                    if(idx === 0 && (c0.indexOf('学号') >= 0 || c0.indexOf('姓名') >= 0)) return false;
+                    // 整行空跳过
+                    return row.some(function(c){ return c !== undefined && c !== null && String(c).trim() !== ''; });
+                });
                 var imported=0;
                 var skipped=0;
                 var autoAdded=0;
                 var nonResident=0;
-                validRows.forEach(function(row){
-                    var name=String(row[0]).trim();
-                    var className=String(row[1]).trim();
-                    var roomNumber=row.length>2?String(row[2]).trim():'';
-                    var bedNumber=row.length>3?String(row[3]).trim():'';
+                var errors=[];
+                var batchSeenNo={};
+                dataRows.forEach(function(row, rIdx){
+                    // 真实行号 = 数据行索引 + 2（Excel 从 1 开始 + 跳过表头）
+                    var excelRowNo = rIdx + 2;
+                    if(row.length < 3){ errors.push('第'+excelRowNo+'行：列数不足（须含 学号,姓名,班级）'); return; }
+                    var studentNo=String(row[0]).trim();
+                    var name=String(row[1]).trim();
+                    var className=String(row[2]).trim();
+                    var roomNumber=row.length>3?String(row[3]).trim():'';
+                    var bedNumber=row.length>4?String(row[4]).trim():'';
+                    // 学号强制校验
+                    var noCheck = validateStudentNo(studentNo, batchSeenNo);
+                    if(!noCheck.ok){ errors.push('第'+excelRowNo+'行：'+noCheck.error); return; }
+                    var noVal = String(studentNo).trim();
+                    batchSeenNo[noVal] = true;
+                    if(!name||!className){ errors.push('第'+excelRowNo+'行：姓名或班级为空'); return; }
+                    if(studentAlreadyExists(name, className, noVal)){ skipped++; return; }
                     // 非住宿生：宿舍号为 0 或空时，dormitoryId=null
-                    // 【严格同班同名去重】仅按班级+姓名判断，宿舍/床号不参与比对
                     if(roomNumber===''||roomNumber==='0'||roomNumber.toLowerCase()==='null'){
-                        if(studentAlreadyExists(name, className)){ skipped++; return; }
                         var exNonStu = DB.nextIds.student++;
-                        DB.students.push({id:exNonStu,dormitoryId:null,name:name,className:className,bedNumber:''});
+                        DB.students.push({id:exNonStu,dormitoryId:null,name:name,className:className,bedNumber:'',studentNo:noVal});
                         v3MarkDirty('student', exNonStu);
                         imported++; nonResident++;
                         return;
                     }
-                    // 【严格同班同名去重】同班同名即跳过（避免重复导入翻倍）
-                    if(studentAlreadyExists(name, className)){ skipped++; return; }
                     var res=ensureDormitoryRoom(roomNumber);
-                    if(!res){toast('宿舍号无效或不存在：'+roomNumber,'error');return;}
+                    if(!res){ errors.push('第'+excelRowNo+'行：宿舍号无效或不存在（'+roomNumber+'）'); return; }
                     if(res.autoAdded) autoAdded++;
                     var exStuId = DB.nextIds.student++;
-                    DB.students.push({id:exStuId,dormitoryId:res.dorm.id,name:name,className:className,bedNumber:bedNumber});
+                    DB.students.push({id:exStuId,dormitoryId:res.dorm.id,name:name,className:className,bedNumber:bedNumber,studentNo:noVal});
                     v3MarkDirty('student', exStuId);
                     imported++;
                 });
                 saveDB();
-                toast('成功从Excel导入'+imported+'名学生'+(skipped>0?'（跳过重复'+skipped+'名）':'')+(autoAdded>0?'（自动新增'+autoAdded+'个宿舍号）':'')+(nonResident>0?'（含'+nonResident+'名走读生）':''));
+                var msg='成功从Excel导入'+imported+'名学生';
+                if(skipped>0) msg+='（跳过重复'+skipped+'名）';
+                if(autoAdded>0) msg+='（自动新增'+autoAdded+'个宿舍号）';
+                if(nonResident>0) msg+='（含'+nonResident+'名走读生）';
+                toast(msg);
+                if(errors.length>0){
+                    alert('以下 '+errors.length+' 行因校验失败未导入（学号须为 10 位数字且全局唯一）：\n\n'+errors.slice(0,30).join('\n')+(errors.length>30?'\n……等共 '+errors.length+' 条':''));
+                }
                 renderStudentsView(document.getElementById('contentArea'));
             }catch(err){
                 // 解析失败：静默记录到错误日志，保留原有的具体提示文案
@@ -3643,6 +3736,7 @@
             id:generateRecordId(), type:type, className:className, name:name,
             dormitory:dormitory, bed:bed, date:date, reason:reason,
             status:status, studentId:stu?stu.id:null,
+            studentNo:stu?(stu.studentNo||null):null,
             startDate:startDate, endDate:endDate, createdAt:Date.now(), lastModified:Date.now(),
             localNew:true   // 本地新增标记：云端拉取合并时据此保留尚未上传的新记录
         };
@@ -3872,6 +3966,7 @@
         var stu=isNonRes?matchedStu:matchStudentBySnapshot(className,name,dormitory,bed);
         var newRec={
             id:generateRecordId(), studentId:stu?stu.id:null,
+            studentNo:stu?(stu.studentNo||null):null,
             className:className, name:name, dormitory:dormitory, bed:bed,
             type:type, reason:reason, startDate:startDate, endDate:endDate,
             status:'approved', createdAt:Date.now(), lastModified:Date.now(),
@@ -5383,10 +5478,10 @@
         if(!window.XLSX){ toast('Excel 组件未加载','error'); return; }
         var wb=XLSX.utils.book_new();
         var aoa=[
-            ['第一行表头，从第二行开始填写数据，宿舍号填写三位数字（如 101），床号填写 1-8；走读生宿舍号留空或填 0'],
-            ['姓名','班级','宿舍号','床号'],
-            ['张三','高一1班','101','1'],
-            ['李四','高一1班','101','2']
+            ['学号(必填,10位数字如2024092001),姓名,班级,宿舍号(三位数字如101),床号(1-8)；走读生宿舍号留空或填0；学号须全局唯一，重复将被拒绝导入'],
+            ['学号','姓名','班级','宿舍号','床号'],
+            ['2024092001','张三','高一1班','101','1'],
+            ['2024092002','李四','高一1班','101','2']
         ];
         XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(aoa), '学生导入模板');
         XLSX.writeFile(wb, '学生导入模板.xlsx');
@@ -5583,6 +5678,7 @@
                 // 请假记录：type 转英文枚举，reason=说明列（选填）
                 rec={
                     id:generateRecordId(), studentId:stu?stu.id:null,
+                    studentNo:stu?(stu.studentNo||null):null,
                     className:className, name:name, dormitory:dormitory, bed:bed,
                     type:recType, reason:(row.length>7)?String(row[7]||'').trim():'',
                     startDate:start, endDate:end,
@@ -5597,6 +5693,7 @@
                     dormitory:dormitory, bed:bed, date:dateText,
                     reason:(row.length>6)?String(row[6]||'').trim():'',
                     status:'approved', studentId:stu?stu.id:null,
+                    studentNo:stu?(stu.studentNo||null):null,
                     startDate:start, endDate:end, createdAt:Date.now(), lastModified:Date.now(),
                     localNew:true
                 };
@@ -5814,11 +5911,16 @@
             var bedNumber = (bedRaw === '-' || bedRaw === '' || bedRaw === '—') ? '' : bedRaw;
             var className = String(row[3] || '').trim();
             var nameRaw = String(row[4] || '').trim();
-            var hyItemName = String(row[5] || '').trim();
-            var hyScoreRaw = String(row[6] || '').trim();
-            var disItemName = String(row[7] || '').trim();
-            var disScoreRaw = String(row[8] || '').trim();
-            var remark = String(row[9] || '').trim();
+            // 学号列（row[5]，可选）：为兼容旧模板，仅当 row[5] 为空或匹配学号格式时视为学号列，
+            // 后续卫生/纪律列相应后移；否则按旧格式（无学号列）解析。
+            var c5 = String(row[5] || '').trim();
+            var hasNoCol = (c5 === '' || STUDENT_NO_REGEX.test(c5));
+            var studentNoRaw = hasNoCol ? c5 : '';
+            var hyItemName = String(hasNoCol ? (row[6] || '') : (row[5] || '')).trim();
+            var hyScoreRaw = String(hasNoCol ? (row[7] || '') : (row[6] || '')).trim();
+            var disItemName = String(hasNoCol ? (row[8] || '') : (row[7] || '')).trim();
+            var disScoreRaw = String(hasNoCol ? (row[9] || '') : (row[8] || '')).trim();
+            var remark = String(hasNoCol ? (row[10] || '') : (row[9] || '')).trim();
 
             if(!dormitoryRoom || !className || !nameRaw){
                 result.skipped.push('第' + (idx+1) + '行：缺少必填字段（日期/宿舍号/班级/学生）');
@@ -5866,12 +5968,24 @@
             var isBonus = (signs[0] > 0);
             var recordMode = isBonus ? 'bonus' : 'deduct';
 
+            // 学生匹配：学号非空时优先按学号匹配（稳定标识），否则按姓名+班级兜底
             var student = null;
+            var recStudentNo = null;
             if(!isCollective){
-                student = (DB.students || []).find(function(s){ return s.name === nameRaw && s.className === className; }) || null;
-                if(!student){
-                    result.skipped.push('第' + (idx+1) + '行：未找到学生（' + className + ' ' + nameRaw + '）');
-                    return;
+                if(studentNoRaw){
+                    student = getStudentByNo(studentNoRaw);
+                    if(!student){
+                        result.skipped.push('第' + (idx+1) + '行：学号未找到对应学生（' + studentNoRaw + '）');
+                        return;
+                    }
+                    recStudentNo = studentNoRaw;
+                } else {
+                    student = (DB.students || []).find(function(s){ return s.name === nameRaw && s.className === className; }) || null;
+                    if(!student){
+                        result.skipped.push('第' + (idx+1) + '行：未找到学生（' + className + ' ' + nameRaw + '）');
+                        return;
+                    }
+                    recStudentNo = student.studentNo || null;
                 }
             }
 
@@ -5895,6 +6009,7 @@
                 lastModified: Date.now(),
                 dormitoryId: dorm.id,
                 studentId: student ? student.id : null,
+                studentNo: recStudentNo,
                 hygieneItemIds: hasHy ? ['custom:' + hyItem] : [],
                 hygieneScore: finalHyScore,
                 disciplineItemIds: hasDis ? ['custom:' + disItem] : [],
