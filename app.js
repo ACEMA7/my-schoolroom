@@ -2602,6 +2602,36 @@
                    String(s.className || '').trim() === c;
         });
     }
+    /**
+     * 导入学生名单时：若该学生已存在（同班同名），则把学号回填到该生并标脏上传，
+     * 而不是整行跳过——否则旧库中学生 studentNo 恒为 null，学号永远进不了本地也上不了云。
+     * 注意：调用前 validateStudentNo 已保证 noVal 全局唯一（DB 中无此学号），
+     * 因此此处只会命中「同班同名但学号缺失/不同」的存量学生。
+     * @param {string} name - 姓名
+     * @param {string} className - 班级
+     * @param {string} noVal - 校验通过的学号
+     * @returns {null|{student:object, changed:boolean}} 未找到返回 null；找到返回学生与是否改动
+     */
+    function resolveExistingStudentForImport(name, className, noVal){
+        if(!name || !className) return null;
+        var n = String(name).trim();
+        var c = String(className).trim();
+        var found = (DB.students || []).find(function(s){
+            return s && !s.deleted &&
+                   String(s.name || '').trim() === n &&
+                   String(s.className || '').trim() === c;
+        });
+        if(!found) return null;
+        var curNo = String(found.studentNo || '').trim();
+        var changed = false;
+        if(curNo !== noVal){
+            found.studentNo = noVal;
+            found.lastModified = Date.now();
+            v3MarkDirty('student', found.id);
+            changed = true;
+        }
+        return { student: found, changed: changed };
+    }
     // 确保宿舍号存在（导入学生名单时自动补建）：返回 {dorm, autoAdded}，无效返回 null
     function ensureDormitoryRoom(roomNumber){
         if(!IS_MASTER_DEVICE){toast('当前设备为受限设备，无权限修改基础数据！请在主控设备操作。','error');return null;}
@@ -2644,6 +2674,7 @@
         var skipped=0;
         var autoAdded=0;
         var nonResident=0;
+        var backfilled=0;       // 已存在学生回填学号的数量
         var errors=[];          // 学号校验失败明细
         var batchSeenNo={};     // 本批次内学号去重
         for(var i=0;i<lines.length;i++){
@@ -2663,8 +2694,13 @@
             var noVal = String(studentNo).trim();
             batchSeenNo[noVal] = true;
             if(!name||!className){ errors.push('第'+(i+1)+'行：姓名或班级为空'); continue; }
-            // 去重：学号优先（已被 validateStudentNo 拦截全局重复），再按同班同名兜底
-            if(studentAlreadyExists(name, className, noVal)){ skipped++; continue; }
+            // 去重：学号优先（已被 validateStudentNo 拦截全局重复），再按同班同名兜底。
+            // 同班同名命中的存量学生不再整行跳过，而是回填学号并标脏，确保学号能同步到云端。
+            var existStu = resolveExistingStudentForImport(name, className, noVal);
+            if(existStu){
+                if(existStu.changed) backfilled++;
+                continue;
+            }
             // 非住宿生：宿舍号为 0 或空时，dormitoryId=null，标记为走读生
             if(roomNumber===''||roomNumber==='0'||roomNumber.toLowerCase()==='null'){
                 var nonStuId = DB.nextIds.student++;
@@ -2683,6 +2719,7 @@
         }
         saveDB();
         var msg='成功导入'+imported+'名学生';
+        if(backfilled>0) msg+='（回填学号'+backfilled+'名，已标脏待同步云端）';
         if(skipped>0) msg+='（跳过重复'+skipped+'名）';
         if(autoAdded>0) msg+='（自动新增'+autoAdded+'个宿舍号）';
         if(nonResident>0) msg+='（含'+nonResident+'名走读生）';
@@ -2733,6 +2770,7 @@
                 var skipped=0;
                 var autoAdded=0;
                 var nonResident=0;
+                var backfilled=0;       // 已存在学生回填学号的数量
                 var errors=[];
                 var batchSeenNo={};
                 dataRows.forEach(function(row, rIdx){
@@ -2750,7 +2788,12 @@
                     var noVal = String(studentNo).trim();
                     batchSeenNo[noVal] = true;
                     if(!name||!className){ errors.push('第'+excelRowNo+'行：姓名或班级为空'); return; }
-                    if(studentAlreadyExists(name, className, noVal)){ skipped++; return; }
+                    // 同班同名命中的存量学生不再整行跳过，回填学号并标脏，确保学号能同步到云端
+                    var existStu = resolveExistingStudentForImport(name, className, noVal);
+                    if(existStu){
+                        if(existStu.changed) backfilled++;
+                        return;
+                    }
                     // 非住宿生：宿舍号为 0 或空时，dormitoryId=null
                     if(roomNumber===''||roomNumber==='0'||roomNumber.toLowerCase()==='null'){
                         var exNonStu = DB.nextIds.student++;
@@ -2769,6 +2812,7 @@
                 });
                 saveDB();
                 var msg='成功从Excel导入'+imported+'名学生';
+                if(backfilled>0) msg+='（回填学号'+backfilled+'名，已标脏待同步云端）';
                 if(skipped>0) msg+='（跳过重复'+skipped+'名）';
                 if(autoAdded>0) msg+='（自动新增'+autoAdded+'个宿舍号）';
                 if(nonResident>0) msg+='（含'+nonResident+'名走读生）';
