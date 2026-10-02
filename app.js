@@ -238,6 +238,11 @@
                 DB.masterBindHash = h;
                 v3MarkDirty('meta', 'main');
                 saveDBToLocal();
+                // 【修复首次绑定死循环】proceedWithBind 会清空本地 DB（removeItem DB_KEY），
+                // 若不暂存，刚设置的 masterBindHash 还没上传云端就丢失；刷新后从云端拉取拿到
+                // 空值，主控判定（bindHash 为空即非主控）失败，形成"绑定→清空→拉空→非主控→重试"死循环。
+                // 这里把哈希暂存到独立键（不随 DB_KEY 清除），下次启动 initializeData 会恢复并标脏上传。
+                try { localStorage.setItem('dorm_pending_master_bind', h); } catch(e) {}
                 proceedWithBind();
             });
             return;

@@ -1709,6 +1709,17 @@
         // DB 已由 loadDBFromLocal / initDatabase 完成实例化，挂载到 window
         // 确保外部脚本与控制台访问的始终是最新数据库实例
         window.DB = DB;
+        // 【修复首次绑定死循环】恢复首次绑定时暂存的 masterBindHash：此时本地库刚被清空重建，
+        // 云端尚无该值；恢复后让主控判定能拿到非空 bindHash。注意：暂不在此删除暂存键——
+        // 下方 loadFromCloud 若走"全量重建"路径会用云端空值覆盖（line 721），故需在加载后再兜底一次。
+        try {
+            var pendingBind = localStorage.getItem('dorm_pending_master_bind');
+            if(pendingBind && !DB.masterBindHash){
+                DB.masterBindHash = pendingBind;
+                v3MarkDirty('meta', 'main');
+                saveDBToLocal();
+            }
+        } catch(e) {}
         ensureSyncMeta();
         // 【历史数据迁移】识别旧版"集体加分派生的个人记录"，补上 autoDerived: true。
         // 幂等：已标记过的记录不会重复处理。迁移后标脏，云端会自动同步新字段。
@@ -1799,6 +1810,19 @@
                     }
                     return loadFromCloud();
                 }).then(function(pullResult) {
+                    // 【修复首次绑定死循环·兜底】云端拉取（尤其全量重建路径）可能用空值覆盖掉
+                    // 本地刚恢复的 masterBindHash。这里再兜底一次：暂存仍在且本地为空则恢复、标脏，
+                    // 随后的 syncToCloud 会把它上传到云端；并重新判定主控，避免被下方"非主控刷新"分支误拦截。
+                    try {
+                        var _pendingBind = localStorage.getItem('dorm_pending_master_bind');
+                        if(_pendingBind && !DB.masterBindHash){
+                            DB.masterBindHash = _pendingBind;
+                            v3MarkDirty('meta', 'main');
+                            saveDBToLocal();
+                        }
+                        localStorage.removeItem('dorm_pending_master_bind');
+                        if(typeof window.recomputeMasterFlag === 'function') window.recomputeMasterFlag();
+                    } catch(e) {}
                     // 【步骤21·非主控兜底闸门】拉取（含 epoch 整体重建）后本机仍是旧符号
                     // 版本：说明主控尚未完成迁移上传或云端快照处于切换中途。强制刷新重试，
                     // 由 hardReset 健康检查保证本地旧数据不被污染；带次数上限防死循环，
