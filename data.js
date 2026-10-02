@@ -237,7 +237,9 @@
      */
     function getStudentsByDormitory(dormitoryId) {
         if (!DB || !DB.students) return [];
-        var list = DB.students.filter(function(s) { return s.dormitoryId === dormitoryId; });
+        // 【P1-5】软删除学生不参与宿舍成员列表/人数统计/扣分对象下拉；
+        // 历史记录归属仍由不过滤 deleted 的 getStudentById 解析，姓名不丢失。
+        var list = DB.students.filter(function(s) { return s.dormitoryId === dormitoryId && !s.deleted; });
         list.sort(function(a, b) {
             // 床号归一化为数字：空/无效值排到最后
             var ba = (a.bedNumber !== null && a.bedNumber !== undefined && String(a.bedNumber).trim() !== '')
@@ -261,6 +263,7 @@
     function getResidentStudents(className){
         if(!DB||!Array.isArray(DB.students)) return [];
         return DB.students.filter(function(s){
+            if(s.deleted) return false;      // 【P1-5】排除软删除学生
             if(s.dormitoryId == null) return false;
             if(className && s.className !== className) return false;
             return true;
@@ -1140,8 +1143,8 @@
         if (needStaff) jobs.push(hashPassword('staff123').then(function(h){ hashes.staff = h; }));
         if (missingClasses.length > 0 || missingStaff.length > 0) jobs.push(hashPassword('123456').then(function(h){ hashes.pwd123 = h; }));
         return Promise.all(jobs).then(function(){
-            if (needAdmin) { var u1={ id: DB.nextIds.user++, username: 'admin', passwordHash: hashes.admin, realName: '管理人员', role: 'ADMIN' }; DB.users.push(u1); v3MarkDirty('user', u1.id); }
-            if (needStaff) { var u2={ id: DB.nextIds.user++, username: 'staff', passwordHash: hashes.staff, realName: '生活老师', role: 'STAFF', assignedFloors: [] }; DB.users.push(u2); v3MarkDirty('user', u2.id); }
+            if (needAdmin) { var u1={ id: DB.nextIds.user++, username: 'admin', passwordHash: hashes.admin, realName: '管理人员', role: 'ADMIN', mustChangePassword: true }; DB.users.push(u1); v3MarkDirty('user', u1.id); }
+            if (needStaff) { var u2={ id: DB.nextIds.user++, username: 'staff', passwordHash: hashes.staff, realName: '生活老师', role: 'STAFF', assignedFloors: [], mustChangePassword: true }; DB.users.push(u2); v3MarkDirty('user', u2.id); }
 
             // 补充31个班级账号（如果缺失）
             missingClasses.forEach(function(className){
@@ -1151,7 +1154,8 @@
                     passwordHash: hashes.pwd123,
                     realName: className + '班班主任',
                     role: 'CLASS_ADMIN',
-                    className: className
+                    className: className,
+                    mustChangePassword: true
                 };
                 DB.users.push(u3);
                 v3MarkDirty('user', u3.id);
@@ -1165,7 +1169,8 @@
                     realName: p.realName,
                     role: 'STAFF',
                     assignedFloors: p.floors.slice(),
-                    buildingName: p.buildingName
+                    buildingName: p.buildingName,
+                    mustChangePassword: true
                 };
                 DB.users.push(u4);
                 v3MarkDirty('user', u4.id);

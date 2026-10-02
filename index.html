@@ -11,7 +11,7 @@
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="default">
     <title>宿舍管理系统</title>
-    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.49.4"></script>
     <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/lz-string@1.5.0/libs/lz-string.min.js"></script>
     <!-- flatpickr (inlined build v4.6.13 + zh locale): unified cross-browser date picker -->
@@ -900,7 +900,7 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
             <input type="password" id="loginPassword" placeholder="请输入密码" autocomplete="current-password">
             <div class="remember-row">
                 <label><input type="checkbox" id="rememberUsername" onchange="onRememberUsernameChange()"> 记住账号</label>
-                <label><input type="checkbox" id="rememberPassword" onchange="onRememberPasswordChange()"> 记住密码</label>
+                <label style="display:none"><input type="checkbox" id="rememberPassword" onchange="onRememberPasswordChange()"> 记住密码</label>
             </div>
             <button class="login-btn" onclick="handleLogin()">登 录</button>
             <div class="login-error" id="loginError">用户名或密码错误，请重试</div>

@@ -76,6 +76,7 @@
                 var found = DB.users.find(function(u){return u.id===user.id;});
                 if (found) {
                     currentUser = found;
+                    recomputeMasterFlag(); // 【P1-6】会话恢复后同样校准主控权限
                     document.getElementById('loginPage').style.display='none';
                     document.getElementById('mainApp').style.display='flex';
                     updateHeaderForUser(found);
@@ -89,7 +90,7 @@
                 }
             } catch(e) {}
         }
-        // 旧版 rememberedCredentials 一次性迁移：拆分写入 rememberedUsername / rememberedPassword
+        // 【安全修复 P0-2】旧版 rememberedCredentials 一次性迁移：只迁移账号，绝不迁移任何密码/哈希。
         var oldCred = localStorage.getItem('rememberedCredentials');
         if (oldCred) {
             try {
@@ -97,31 +98,17 @@
                 if (oc && oc.username) {
                     localStorage.setItem('rememberedUsername', oc.username);
                 }
-                var oldPw = oc ? (oc.passwordHash || oc.password || '') : '';
-                if (oldPw) {
-                    localStorage.setItem('rememberedPassword', oldPw);
-                    // 旧明文凭证：最后一次回填后后台升级为哈希，本机不再保留明文
-                    if (oc.password && typeof hashPassword === 'function') {
-                        hashPassword(oc.password).then(function(h){
-                            if (localStorage.getItem('rememberedPassword') === oc.password) {
-                                localStorage.setItem('rememberedPassword', h);
-                            }
-                        });
-                    }
-                }
             } catch(e) {}
             localStorage.removeItem('rememberedCredentials');
+            localStorage.removeItem('rememberedPassword');
         }
-        // 新格式：账号、密码分别独立存储（rememberedPassword 存的是密码哈希，回填后走哈希直比登录）
+        // 【安全修复 P0-2】仅回填"记住的账号"，不再回填任何密码/哈希；
+        // 同时清理本机可能残留的 rememberedPassword，杜绝哈希被当作密码使用。
+        localStorage.removeItem('rememberedPassword');
         var savedUsername = localStorage.getItem('rememberedUsername');
-        var savedPassword = localStorage.getItem('rememberedPassword');
         if (savedUsername) {
             document.getElementById('loginUsername').value = savedUsername;
             document.getElementById('rememberUsername').checked = true;
-        }
-        if (savedPassword) {
-            document.getElementById('loginPassword').value = savedPassword;
-            document.getElementById('rememberPassword').checked = true;
         }
     }
     // 复选框联动：密码必须与账号绑定——勾"记住密码"自动勾"记住账号"；
@@ -186,6 +173,25 @@
     }
 
     /**
+     * 【P1-6 加固】重新计算主控标志：
+     *   设备 ID 匹配只是必要条件；若管理员已设置绑定密码（DB.masterBindHash 非空），
+     *   还要求本机 localStorage 存有与之完全一致的认证标记 dorm_master_auth。
+     *   这样攻击者仅在控制台执行 localStorage.setItem('dorm_device_id', MASTER_DEVICE_ID)
+     *   无法再获得主控权限——必须知道绑定密码才能生成匹配的认证标记。
+     *   未设置绑定密码的老部署保持原行为（IS_MASTER_DEVICE 仅由设备 ID 决定），不破坏现有用户。
+     */
+    function recomputeMasterFlag(){
+        if(typeof IS_MASTER_DEVICE === 'undefined') return;
+        var devMatch = (typeof DEVICE_ID !== 'undefined' && typeof MASTER_DEVICE_ID !== 'undefined' && DEVICE_ID === MASTER_DEVICE_ID);
+        if(!devMatch){ IS_MASTER_DEVICE = false; return; }
+        var bindHash = (typeof DB !== 'undefined' && DB && typeof DB.masterBindHash === 'string') ? DB.masterBindHash : '';
+        if(!bindHash){ IS_MASTER_DEVICE = true; return; } // 未设置绑定密码：保持原行为
+        var auth = '';
+        try{ auth = localStorage.getItem('dorm_master_auth') || ''; }catch(e){ auth = ''; }
+        IS_MASTER_DEVICE = (auth === bindHash);
+    }
+
+    /**
      * 将当前设备绑定为主控设备：
      *   绑定密码哈希存于云端 meta 表 masterBindHash 字段（首次由管理员设置）。
      *   - 若本地 DB.masterBindHash 为空（云端从未设置）：prompt 让当前管理员设置绑定密码
@@ -212,6 +218,8 @@
                 try { localStorage.removeItem(DB_KEY); } catch(e) {}
                 localStorage.setItem('dorm_force_pull_from_cloud', 'true');
                 localStorage.setItem('dorm_device_id', MASTER_DEVICE_ID);
+                // 【P1-6】写入主控认证标记：刷新后 IS_MASTER_DEVICE 需凭此标记 + 设备 ID 双重校验
+                try { localStorage.setItem('dorm_master_auth', (DB && DB.masterBindHash) ? DB.masterBindHash : ''); } catch(e) {}
             }catch(e){
                 toast('绑定失败：无法写入本地存储（'+(e&&e.message||e)+'）','error');
                 return;
@@ -459,12 +467,8 @@
                 });
                 return;
             }
-            // 直比分支：密码框被"记住密码"回填的是 passwordHash 本身（64位十六进制），
-            // 此时不能再次哈希（hash(hash(p)) ≠ hash(p)），直接与存储哈希比对
-            if(hasHash && /^[0-9a-f]{64}$/i.test(password) && password === user.passwordHash){
-                completeLogin(user, username, password);
-                return;
-            }
+            // 【安全修复 P0-2】已删除"哈希直比登录"分支：任何能读到 localStorage 的人
+            // 都不能用存储的 passwordHash 当密码直接登录。密码框只能输入明文，经 hashPassword 后比对。
             // 标准路径：输入密码哈希后与存储的 passwordHash 比对
             hashPassword(password).then(function(inputHash){
                 if(hasHash && user.passwordHash === inputHash){
@@ -484,6 +488,7 @@
     // 第三参数为已计算好的密码哈希（SHA-256 十六进制），"记住密码"只存哈希，本机不落明文
     function completeLogin(user, username, passwordHash){
         currentUser=user;
+        recomputeMasterFlag(); // 【P1-6】登录后按设备ID+认证标记重新校准主控权限
         sessionStorage.setItem('currentUser', JSON.stringify({id:user.id, username:user.username, role:user.role, realName:user.realName}));
         // 账号、密码分别按复选框状态独立保存/清除（密码只存哈希，本机不落明文）
         var rememberUsername = document.getElementById('rememberUsername').checked;
@@ -493,11 +498,9 @@
         } else {
             localStorage.removeItem('rememberedUsername');
         }
-        if (rememberPassword) {
-            localStorage.setItem('rememberedPassword', passwordHash);
-        } else {
-            localStorage.removeItem('rememberedPassword');
-        }
+        // 【安全修复 P0-2】不再持久化任何密码/哈希。"记住密码"功能已下线，
+        // 仅保留"记住账号"。清理本机可能残留的旧哈希，防止被当作密码直比登录。
+        localStorage.removeItem('rememberedPassword');
         document.getElementById('loginPage').style.display='none';
         document.getElementById('mainApp').style.display='flex';
         updateHeaderForUser(user);
@@ -526,6 +529,12 @@
             });
             saveDBToLocal();
             console.log('已清理陈旧脏标记');
+        }
+        // 【P0-4】首次登录（默认弱密码）强制改密：未改密前弹出改密弹层遮挡主界面
+        if(user && user.mustChangePassword){
+            toast('首次登录，请先修改默认密码（至少8位，需含字母和数字）','warning');
+            setTimeout(function(){ openChangePasswordModal(); }, 400);
+            return;
         }
         toast('欢迎，'+user.realName+'！');
     }
@@ -557,12 +566,8 @@
         } else {
             document.getElementById('loginUsername').value = '';
         }
-        if (rememberPasswordEl && rememberPasswordEl.checked) {
-            var savedPw = localStorage.getItem('rememberedPassword');
-            if (savedPw !== null) document.getElementById('loginPassword').value = savedPw;
-        } else {
-            document.getElementById('loginPassword').value = '';
-        }
+        // 【安全修复 P0-2】登出后密码框一律清空，绝不回填任何密码/哈希。
+        document.getElementById('loginPassword').value = '';
     }
 
     // ==================== 字体缩放（全部角色移动端） ====================
@@ -2891,18 +2896,31 @@
         }, '导出学生名单', { retry: true });
     }
     /**
-     * 删除单个学生（管理员，confirm 确认）：打 V3 墓碑、落库同步并刷新名单。
+     * 删除单个学生（管理员，confirm 确认）：【安全修复 P1-5】改为软删除——
+     * 学生打 deleted 标记后从名单/下拉/统计中隐藏，但其名下历史扣分/请假记录
+     * 仍保留，且 getStudentById 仍可解析出姓名（不再误显示为"宿舍集体"）。
+     * 用 v3MarkDirty 同步到云端（其他设备同步后同样隐藏、历史记录仍正常）。
      * @param {number} id - 学生 ID
      */
     function deleteStudent(id){
         if(!IS_MASTER_DEVICE){toast('当前设备为受限设备，无权限修改基础数据！请在主控设备操作。','error');return;}
         if(!isAdmin()){toast('无权限','error');return;}
-        if(!confirm('确认删除该学生？')) return;
-        DB.students=DB.students.filter(function(s){return s.id!==id;});
-        // V3 按行存储：标记删除
-        v3MarkDeleted('student', id);
+        var stu = DB.students.find(function(s){return s.id===id;});
+        if(!stu){toast('学生不存在','error');return;}
+        // 统计该生名下个人记录数，给出明确提示
+        var recCnt = 0;
+        ['deductionRecords','leaveRecords','absenceRecords','inspectionConfirmations','anomalyReports'].forEach(function(k){
+            if(Array.isArray(DB[k])){ DB[k].forEach(function(r){ if(r && r.studentId===id) recCnt++; }); }
+        });
+        var tip = recCnt>0
+            ? ('该生名下还有 '+recCnt+' 条扣分/请假等记录。删除后该生将从名单中移除，\n但历史记录会保留并仍显示其姓名（不会变成"宿舍集体"）。')
+            : '确认删除该学生？删除后可在数据中恢复。';
+        if(!confirm(tip+'\n\n确认删除？')) return;
+        stu.deleted = true;                 // 软删除：记录仍在库中，仅供名单/统计过滤
+        stu.deletedAt = Date.now();
+        v3MarkDirty('student', id);         // 标脏同步（而非物理删除墓碑），保证云端历史记录不丢
         saveDB();
-        toast('已删除');
+        toast('已删除（历史记录已保留）');
         renderStudentsView(document.getElementById('contentArea'));
     }
 
@@ -6654,10 +6672,7 @@
      */
     function openChangePasswordModal(){
         if(!currentUser){ toast('请先登录','error'); return; }
-        if(currentUser.role !== 'STAFF' && currentUser.role !== 'CLASS_ADMIN'){
-            toast('当前角色不支持修改密码，请联系管理员','error');
-            return;
-        }
+        // 【P0-4】所有登录角色均可修改自己的密码（含管理员首次登录强制改密）
         document.getElementById('changePwdModalBox').innerHTML = buildChangePasswordModalHtml();
         document.getElementById('changePwdModal').classList.add('show');
         // 聚焦第一个输入框（移动端弹起键盘）
@@ -6669,6 +6684,11 @@
 
     /** 关闭「修改密码」弹层 */
     function closeChangePasswordModal(){
+        // 【P0-4】处于首次登录强制改密状态时，不允许关闭弹层，必须先完成改密
+        if(currentUser && currentUser.mustChangePassword){
+            toast('首次登录必须先修改密码后才能继续使用','warning');
+            return;
+        }
         var m = document.getElementById('changePwdModal');
         if(m) m.classList.remove('show');
     }
@@ -6726,10 +6746,7 @@
      */
     function saveNewPasswordImpl(){
         if(!currentUser){ toast('请先登录','error'); return Promise.resolve(); }
-        if(currentUser.role !== 'STAFF' && currentUser.role !== 'CLASS_ADMIN'){
-            toast('当前角色不支持修改密码','error');
-            return Promise.resolve();
-        }
+        // 【P0-4】所有登录角色均可修改自己的密码
         var curEl = document.getElementById('pwdCurrent');
         var newEl = document.getElementById('pwdNew');
         var cfmEl = document.getElementById('pwdConfirm');
@@ -6741,9 +6758,9 @@
         if(!curPwd){ showChangePwdError('请输入当前密码'); return Promise.resolve(); }
         if(!newPwd){ showChangePwdError('请输入新密码'); return Promise.resolve(); }
         if(!cfmPwd){ showChangePwdError('请再次输入新密码'); return Promise.resolve(); }
-        // 2) 长度 + 字母校验
-        if(newPwd.length < 6){ showChangePwdError('新密码至少 6 位'); return Promise.resolve(); }
-        if(!/[a-zA-Z]/.test(newPwd)){ showChangePwdError('新密码必须包含至少一个字母（大小写均可）'); return Promise.resolve(); }
+        // 2) 长度 + 复杂度校验（【P0-4】至少 8 位，且必须同时含字母和数字）
+        if(newPwd.length < 8){ showChangePwdError('新密码至少 8 位'); return Promise.resolve(); }
+        if(!/[A-Za-z]/.test(newPwd) || !/[0-9]/.test(newPwd)){ showChangePwdError('新密码必须同时包含字母和数字'); return Promise.resolve(); }
         // 3) 新旧不相同
         if(newPwd === curPwd){ showChangePwdError('新密码不能与当前密码相同'); return Promise.resolve(); }
         // 4) 两次一致
@@ -6770,15 +6787,13 @@
             return hashPassword(newPwd).then(function(newHash){
                 target.passwordHash = newHash;
                 delete target.password; // 兼容：清除可能残留的明文字段
+                target.mustChangePassword = false; // 【P0-4】改密成功后解除强制改密标记
                 target.lastModified = Date.now();
                 v3MarkDirty('user', target.id);
                 saveDB();
-                // 7) 同步本机"记住密码"（仅当存的就是本账号时）
+                // 7) 【安全修复 P0-2】"记住密码"已下线，改密后清理本机可能残留的旧哈希。
                 try {
-                    var savedName = localStorage.getItem('rememberedUsername');
-                    if(savedName && savedName === target.username){
-                        localStorage.setItem('rememberedPassword', newHash);
-                    }
+                    localStorage.removeItem('rememberedPassword');
                 }catch(e){}
                 // 8) 发站内通知（发送失败不影响主流程）
                 try {

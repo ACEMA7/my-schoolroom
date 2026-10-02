@@ -22,6 +22,10 @@
     var SUPABASE_CONFIG = {
         url: 'https://pburnvnfzwoyfxktqfho.supabase.co',
         anonKey: 'sb_publishable_sO8GOS5fm-k76SA7zZz0yQ_aSQkYg2u',
+        // 【P0-1】云端写入口令：对应 Supabase RLS 策略校验的请求头 x-access-key。
+        // 仅当你已在 Supabase 控制台配置了"protected write"策略后，才在这里填入相同的强口令；
+        // 留空（默认）则不附带该请求头，行为与原先一致。口令切勿写入 README 或提交到公开仓库。
+        accessKey: 'm3Tq9Zx6Lp2Vr8Nc4Wb7Kd1Hs5Jy0GfEi6A',
         enabled: true
     };
     // 本地数据库在 localStorage 中的键名（整库 JSON，经 lz-string 压缩后写入）

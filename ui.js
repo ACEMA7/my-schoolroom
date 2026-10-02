@@ -694,7 +694,7 @@
             {view:'students',   icon:'👥', name:'学生名单管理',     color:'#ff3b30', roles:['ADMIN']},
             {view:'items',      icon:'📋', name:'扣分项目管理', color:'#a855f7', roles:['ADMIN']},
             {view:'leavemanage',icon:'🏠', name:'学生管理', color:'#0891b2', roles:['ADMIN','STAFF','CLASS_ADMIN']},
-            {view:'__changepwd', icon:'🔑', name:'修改密码', color:'#0891b2', roles:['STAFF','CLASS_ADMIN'], isModal:true},
+            {view:'__changepwd', icon:'🔑', name:'修改密码', color:'#0891b2', roles:['ADMIN','STAFF','CLASS_ADMIN'], isModal:true},
             {view:'export',     icon:'📊', name:'数据管理',     color:'#eab308', roles:['ADMIN','CLASS_ADMIN']},
             {view:'notifications', icon:'📢', name:'通知管理', color:'#f43f5e', roles:['ADMIN']}
         ];
@@ -733,7 +733,7 @@
             // 新口径（符号版本 2）：净分为负=净扣（红）、为正=净加（绿）
             var floorNetCls = floorNet < 0 ? 'badge-danger' : (floorNet > 0 ? 'badge-bonus' : 'badge-primary');
             var isOpen = (f.id === selectedFloorId);
-            html+='<div class="tree-floor"><div class="tree-floor-header" onclick="toggleFloor('+f.id+',\''+p+'\')"><span id="'+p+'arrow-'+f.id+'">'+(isOpen?'▼':'▶')+'</span>📁 '+f.name+' <span class="badge-tag '+floorNetCls+'">'+formatScoreText(floorNet,'net')+'分</span></div><div class="tree-rooms'+(isOpen?' open':'')+'" id="'+p+'rooms-'+f.id+'">';
+            html+='<div class="tree-floor"><div class="tree-floor-header" onclick="toggleFloor('+f.id+',\''+p+'\')"><span id="'+p+'arrow-'+f.id+'">'+(isOpen?'▼':'▶')+'</span>📁 '+escapeHtmlAttr(f.name)+' <span class="badge-tag '+floorNetCls+'">'+formatScoreText(floorNet,'net')+'分</span></div><div class="tree-rooms'+(isOpen?' open':'')+'" id="'+p+'rooms-'+f.id+'">';
             rooms.forEach(function(r){
                 var net=getDormCumulativeNetScore(r.id, classMode ? currentUser.className : '');
                 var netCls;
@@ -743,7 +743,7 @@
                 else if(net > 0) netCls='badge-bonus';
                 else netCls='badge-primary';
                 var isActive = (r.id === selectedDormitoryId);
-                html+='<div class="tree-room'+(isActive?' active':'')+'" id="'+p+'tree-room-'+r.id+'" onclick="selectDormitory('+r.id+')">🚪 '+r.roomNumber+' <span class="badge-tag '+netCls+'">'+formatScoreText(net,'net')+'分</span></div>';
+                html+='<div class="tree-room'+(isActive?' active':'')+'" id="'+p+'tree-room-'+r.id+'" onclick="selectDormitory('+r.id+')">🚪 '+escapeHtmlAttr(r.roomNumber)+' <span class="badge-tag '+netCls+'">'+formatScoreText(net,'net')+'分</span></div>';
             });
             html+='</div></div>';
         });
@@ -1165,7 +1165,7 @@
             if(isAdmin()){
                 ops = '<td data-label="操作"><button class="btn btn-outline btn-xs" onclick="openTransferModal('+s.id+')">调宿</button> <button class="btn btn-danger btn-xs" onclick="moveOutStudent('+s.id+')">迁出</button></td>';
             }
-            return '<tr><td data-label="姓名"><b>'+s.name+'</b></td><td data-label="班级">'+(s.className||'-')+'</td><td data-label="床号">'+(s.bedNumber||'-')+'</td><td data-label="状态"><span class="status-tag '+st.cls+'">'+st.label+'</span></td><td data-label="个人净分" class="'+ssCls+'">'+formatScoreText(ss,'net')+'</td>'+ops+'</tr>';
+            return '<tr><td data-label="姓名"><b>'+escapeHtmlAttr(s.name)+'</b></td><td data-label="班级">'+escapeHtmlAttr(s.className||'-')+'</td><td data-label="床号">'+escapeHtmlAttr(s.bedNumber||'-')+'</td><td data-label="状态"><span class="status-tag '+st.cls+'">'+st.label+'</span></td><td data-label="个人净分" class="'+ssCls+'">'+formatScoreText(ss,'net')+'</td>'+ops+'</tr>';
         }).join('')||'<tr><td colspan="5" style="text-align:center;color:#aaa">该宿舍暂无成员</td></tr>';
         // 移动端成员单行紧凑列表：姓名 + 彩色圆点状态（圆点与文字同色）+ 班级·床号，右侧个人净分（底层同口径直接显示，0分灰色/净扣红色/净加绿色）
         var memberCardHtml=students.map(function(s){
@@ -1180,7 +1180,7 @@
             if(isAdmin()){
                 memOps = '<span class="mem-ops"><button class="btn btn-outline btn-xs" style="padding:2px 6px;font-size:0.7857rem" onclick="openTransferModal('+s.id+')">调宿</button><button class="btn btn-danger btn-xs" style="padding:2px 6px;font-size:0.7857rem" onclick="moveOutStudent('+s.id+')">迁出</button></span>';
             }
-            return '<div class="mem-row"><span class="mem-name">'+s.name+'</span><span class="mem-status" style="color:'+dotColor+'"><span class="mem-dot" style="background:'+dotColor+'"></span>'+st.label+'</span><span class="mem-sub">'+(s.className||'-')+'·床号'+(s.bedNumber||'-')+'</span><span class="mem-score '+ssCls+'">'+formatScoreText(ss,'net')+'分</span>'+memOps+'</div>';
+            return '<div class="mem-row"><span class="mem-name">'+escapeHtmlAttr(s.name)+'</span><span class="mem-status" style="color:'+dotColor+'"><span class="mem-dot" style="background:'+dotColor+'"></span>'+st.label+'</span><span class="mem-sub">'+escapeHtmlAttr(s.className||'-')+'·床号'+escapeHtmlAttr(s.bedNumber||'-')+'</span><span class="mem-score '+ssCls+'">'+formatScoreText(ss,'net')+'分</span>'+memOps+'</div>';
         }).join('')||'<div class="empty-state" style="padding:18px">该宿舍暂无成员</div>';
         // 注意：局部变量不可命名为 isStaff，否则会因 var 提升遮蔽 data.js 的全局
         // 函数 isStaff()，导致本函数上方第397行调用时抛 "isStaff is not a function"
@@ -1198,10 +1198,10 @@
                 dormsOfFloor=dormsOfFloor.filter(function(d){ return classDormSet[d.id]; });
             }
             var floorChips=floorsList.map(function(f){
-                return '<div class="chip'+(f.id===dorm.floorId?' active':'')+'" onclick="hierarchyPickFloor('+f.id+')">'+f.name+'</div>';
+                return '<div class="chip'+(f.id===dorm.floorId?' active':'')+'" onclick="hierarchyPickFloor('+f.id+')">'+escapeHtmlAttr(f.name)+'</div>';
             }).join('');
             var dormChips=dormsOfFloor.map(function(r){
-                return '<div class="chip'+(r.id===dorm.id?' active':'')+'" onclick="hierarchyPickDorm('+r.id+')">'+r.roomNumber+'</div>';
+                return '<div class="chip'+(r.id===dorm.id?' active':'')+'" onclick="hierarchyPickDorm('+r.id+')">'+escapeHtmlAttr(r.roomNumber)+'</div>';
             }).join('')||'<span style="color:#aaa;font-size:0.9286rem">该楼层暂无宿舍</span>';
             topCard='<div class="card"><div class="card-body">'
                 +'<div class="form-group"><label>🏢 选择楼层</label><div class="chip-floors chip-floors-left">'+floorChips+'</div></div>'
@@ -1233,7 +1233,7 @@
         // PC 端顺序：统计大卡（状态+三卡片）→ 宿舍成员表
         // 【调整】移动端三个统计卡从"宿舍成员下方"移到"状态汇总与宿舍成员之间"；
         // 【删除】历史记录卡片已整体移除，不再渲染。
-        container.innerHTML='<div class="content-header"><h2>📋 宿舍 '+dorm.roomNumber+'（'+floor.name+'）</h2></div>'+topCard+(isMobileH?(statusCard+statThreeMobile+membersCardMobile):(statsCard+membersCardPc));
+        container.innerHTML='<div class="content-header"><h2>📋 宿舍 '+escapeHtmlAttr(dorm.roomNumber)+'（'+escapeHtmlAttr(floor.name)+'）</h2></div>'+topCard+(isMobileH?(statusCard+statThreeMobile+membersCardMobile):(statsCard+membersCardPc));
         // 【删除】历史记录分片渲染调用已移除（tbody#historyTbody 已不存在于页面中）
     }
 
@@ -1388,7 +1388,7 @@
         var hySection = '';
         var disSection = '';
         if (showHygiene) {
-            var hyCheckboxes=hyItems.map(function(i){return '<label><input type="checkbox" value="'+i.id+'" class="'+hyCls+'"> '+i.name+'</label>';}).join('');
+            var hyCheckboxes=hyItems.map(function(i){return '<label><input type="checkbox" value="'+i.id+'" class="'+hyCls+'"> '+escapeHtmlAttr(i.name)+'</label>';}).join('');
             hyCheckboxes+='<label><input type="checkbox" value="custom" class="'+hyCls+' '+hyCustomCls+'"> ✏️ 自定义</label>';
             hyCheckboxes+='<span id="'+hyCustomWrapId+'" style="display:none;margin-left:8px;"><input type="text" id="'+hyCustomNameId+'" placeholder="自定义项目名称" style="padding:4px 8px;border:1px dashed #ccc;border-radius:4px;"></span>';
             var hyScoreVal = addFormState[hyScoreRestoreKey] || 0;
@@ -1396,7 +1396,7 @@
             hySection = '<div class="form-group"><label>🧹 卫生'+scoreLabel+'（可多选）</label><div class="checkbox-group">'+hyCheckboxes+'</div><div style="margin-top:5px">卫生'+scoreLabel+'合计：<input type="text" id="'+hyScoreId+'" value="'+hyScoreText+'" inputmode="decimal" style="width:80px;padding:4px" onchange="addFormChange(\''+hyScoreRestoreKey+'\')"> 分</div></div>';
         }
         if (showDiscipline) {
-            var disCheckboxes=disItems.map(function(i){return '<label><input type="checkbox" value="'+i.id+'" class="'+disCls+'"> '+i.name+'</label>';}).join('');
+            var disCheckboxes=disItems.map(function(i){return '<label><input type="checkbox" value="'+i.id+'" class="'+disCls+'"> '+escapeHtmlAttr(i.name)+'</label>';}).join('');
             disCheckboxes+='<label><input type="checkbox" value="custom" class="'+disCls+' '+disCustomCls+'"> ✏️ 自定义</label>';
             disCheckboxes+='<span id="'+disCustomWrapId+'" style="display:none;margin-left:8px;"><input type="text" id="'+disCustomNameId+'" placeholder="自定义项目名称" style="padding:4px 8px;border:1px dashed #ccc;border-radius:4px;"></span>';
             var disScoreVal = addFormState[disScoreRestoreKey] || 0;
@@ -1435,10 +1435,10 @@
         if(isMobile){
             // ===== 移动端芯片式布局：楼层4/行均布 → 宿舍横滑 → 对象（加分模式仅宿舍集体） =====
             var floorChips=allowedFloors.map(function(f){
-                return '<div class="chip'+(f.id===addFormState.floorId?' active':'')+'" onclick="mobilePickFloor('+f.id+')">'+f.name+'</div>';
+                return '<div class="chip'+(f.id===addFormState.floorId?' active':'')+'" onclick="mobilePickFloor('+f.id+')">'+escapeHtmlAttr(f.name)+'</div>';
             }).join('');
             var dormChips=dormitories.map(function(d){
-                return '<div class="chip'+(d.id===addFormState.dormitoryId?' active':'')+'" onclick="mobilePickDorm('+d.id+')">'+d.roomNumber+'</div>';
+                return '<div class="chip'+(d.id===addFormState.dormitoryId?' active':'')+'" onclick="mobilePickDorm('+d.id+')">'+escapeHtmlAttr(d.roomNumber)+'</div>';
             }).join('')||'<span style="color:#aaa;font-size:0.9286rem">该楼层暂无宿舍</span>';
             var targetChips;
             if(isBonus){
@@ -1464,15 +1464,15 @@
                 +'</div></div>';
         }else{
             // ===== 桌面端：下拉框 + 复选框布局 =====
-            var floorOpts=allowedFloors.map(function(f){return '<option value="'+f.id+'" '+(f.id===addFormState.floorId?'selected':'')+'>'+f.name+'</option>';}).join('');
-            var dormOpts=dormitories.map(function(d){return '<option value="'+d.id+'" '+(d.id===addFormState.dormitoryId?'selected':'')+'>'+d.roomNumber+'</option>';}).join('');
+            var floorOpts=allowedFloors.map(function(f){return '<option value="'+f.id+'" '+(f.id===addFormState.floorId?'selected':'')+'>'+escapeHtmlAttr(f.name)+'</option>';}).join('');
+            var dormOpts=dormitories.map(function(d){return '<option value="'+d.id+'" '+(d.id===addFormState.dormitoryId?'selected':'')+'>'+escapeHtmlAttr(d.roomNumber)+'</option>';}).join('');
             var stuOpts;
             if(isBonus){
                 var dorm=getDormitoryById(addFormState.dormitoryId);
                 var dormLabel=dorm?dorm.roomNumber:'';
                 stuOpts='<option value="" selected>🏠 '+dormLabel+'宿舍集体</option>';
             }else{
-                stuOpts='<option value="">🏠 宿舍集体</option>'+students.map(function(s){return '<option value="'+s.id+'" '+(addFormState.studentId===s.id?'selected':'')+'>'+s.name+'（'+(s.className||'')+'）床号'+(s.bedNumber||'-')+'</option>';}).join('');
+                stuOpts='<option value="">🏠 宿舍集体</option>'+students.map(function(s){return '<option value="'+s.id+'" '+(addFormState.studentId===s.id?'selected':'')+'>'+escapeHtmlAttr(s.name)+'（'+escapeHtmlAttr(s.className||'')+'）床号'+escapeHtmlAttr(s.bedNumber||'-')+'</option>';}).join('');
             }
             container.innerHTML='<div class="content-header"><h2>📝 '+(isBonus?'加分':'扣分')+'登记</h2></div><div class="card"><div class="card-header">'+modeSwitchHtml+'</div><div class="card-body"><div class="form-row"><div class="form-group"><label>楼层 *</label><select id="addFloor" onchange="addFormChange(\'floor\')">'+floorOpts+'</select></div><div class="form-group"><label>宿舍号 *</label><select id="addDormitory" onchange="addFormChange(\'dorm\')">'+dormOpts+'</select></div></div><div class="form-row"><div class="form-group"><label>'+(isBonus?'加分对象':'扣分对象 *')+'</label><select id="addStudent" onchange="addFormChange(\'student\')" '+(isBonus?'disabled':'')+'>'+stuOpts+'</select></div><div class="form-group"><label>'+(isBonus?'加分':'扣分')+'日期 *</label><input type="text" class="date-picker" id="addDate" value="'+addFormState.recordDate+'" onchange="addFormChange(\'date\')"></div></div>'+hySection+disSection+tailHtml+'</div></div>';
         }
@@ -1744,7 +1744,7 @@
 
         // 8 个楼层芯片，两行四个
         var floorChips = DB.floors.map(function(f){
-            return '<div class="chip" data-fid="'+f.id+'" onclick="toggleFloorChangeTarget('+f.id+')">'+f.name+'</div>';
+            return '<div class="chip" data-fid="'+f.id+'" onclick="toggleFloorChangeTarget('+f.id+')">'+escapeHtmlAttr(f.name)+'</div>';
         }).join('');
 
         // 表单卡片
@@ -1845,16 +1845,18 @@
         // 宿舍下拉仅显示生效宿舍号（已删除的不再出现）
         var activeDorms = (DB.dormitories||[]).filter(function(d){ return isDormitoryDeleted(d.roomNumber)===false; });
         activeDorms.sort(function(a,b){ return String(a.roomNumber).localeCompare(String(b.roomNumber),'zh-Hans-CN',{numeric:true}); });
-        var dormOpts=activeDorms.map(function(d){return '<option value="'+d.id+'">'+d.roomNumber+'（'+getFloorById(d.floorId).name+'）</option>';}).join('');
+        var dormOpts=activeDorms.map(function(d){return '<option value="'+d.id+'">'+escapeHtmlAttr(d.roomNumber)+'（'+escapeHtmlAttr(getFloorById(d.floorId).name)+'）</option>';}).join('');
         // 检索：班级下拉 + 姓名输入（datalist 按班级联动）
         var classSet={}; DB.students.forEach(function(s){ if(s.className) classSet[s.className]=true; });
         var classList=sortClassNames(Object.keys(classSet));
-        var searchClassOpts='<option value="">全部班级</option>'+classList.map(function(c){ return '<option value="'+c+'"'+(studentSearch.className===c?' selected':'')+'>'+c+'</option>'; }).join('');
-        var namePool = studentSearch.className ? DB.students.filter(function(s){ return s.className===studentSearch.className; }) : DB.students;
+        var searchClassOpts='<option value="">全部班级</option>'+classList.map(function(c){ return '<option value="'+c+'"'+(studentSearch.className===c?' selected':'')+'>'+escapeHtmlAttr(c)+'</option>'; }).join('');
+        // 【P1-5】软删除学生从名单/搜索建议中隐藏（历史记录姓名仍由 getStudentById 解析）
+        var activeStudents = DB.students.filter(function(s){ return !s.deleted; });
+        var namePool = studentSearch.className ? activeStudents.filter(function(s){ return s.className===studentSearch.className; }) : activeStudents;
         var nameSet={}; namePool.forEach(function(s){ if(s.name) nameSet[s.name]=true; });
         var nameDatalistOpts=Object.keys(nameSet).map(function(n){ return '<option value="'+n+'"></option>'; }).join('');
         // 按检索条件过滤学生
-        var filteredStudents = DB.students.filter(function(s){
+        var filteredStudents = activeStudents.filter(function(s){
             if(studentSearch.className && s.className !== studentSearch.className) return false;
             if(studentSearch.name && s.name && s.name.indexOf(studentSearch.name) === -1) return false;
             if(studentSearch.residence==='resident' && isNonResidentStudent(s)) return false;
@@ -1867,10 +1869,10 @@
             var floor=dorm?getFloorById(dorm.floorId):null;
             var dormDisplay = dorm ? (isDormitoryDeleted(dorm.roomNumber) ? dorm.roomNumber+' [已删除]' : dorm.roomNumber) : '-';
             var resideTag = isNonResidentStudent(s) ? '<span style="color:var(--info)">走读</span>' : '住宿';
-            return '<tr><td data-label="选择"><input type="checkbox" class="student-checkbox" data-student-id="'+s.id+'"></td><td data-label="姓名"><b>'+s.name+'</b></td><td data-label="班级">'+(s.className||'-')+'</td><td data-label="住宿状态">'+resideTag+'</td><td data-label="床号">'+(s.bedNumber||'-')+'</td><td data-label="宿舍">'+dormDisplay+'</td><td data-label="楼层">'+(floor?floor.name:'-')+'</td><td data-label="操作"><button class="btn btn-danger btn-xs delete-btn" onclick="deleteStudent('+s.id+')">删除</button></td></tr>';
+            return '<tr><td data-label="选择"><input type="checkbox" class="student-checkbox" data-student-id="'+s.id+'"></td><td data-label="姓名"><b>'+escapeHtmlAttr(s.name)+'</b></td><td data-label="班级">'+escapeHtmlAttr(s.className||'-')+'</td><td data-label="住宿状态">'+resideTag+'</td><td data-label="床号">'+escapeHtmlAttr(s.bedNumber||'-')+'</td><td data-label="宿舍">'+dormDisplay+'</td><td data-label="楼层">'+(floor?escapeHtmlAttr(floor.name):'-')+'</td><td data-label="操作"><button class="btn btn-danger btn-xs delete-btn" onclick="deleteStudent('+s.id+')">删除</button></td></tr>';
         }
         var isFiltered = (studentSearch.className || studentSearch.name || studentSearch.residence);
-        var listTitle = isFiltered ? ('学生列表（筛选结果 '+filteredStudents.length+' / 共 '+DB.students.length+' 人）') : ('学生列表（'+DB.students.length+'人）');
+        var listTitle = isFiltered ? ('学生列表（筛选结果 '+filteredStudents.length+' / 共 '+activeStudents.length+' 人）') : ('学生列表（'+activeStudents.length+'人）');
         container.innerHTML='<div class="content-header"><h2>👥 学生名单管理</h2><div style="margin-left:auto;display:flex;gap:8px"><button class="btn btn-primary btn-sm" onclick="exportStudentsList()">📥 导出名单</button><button class="btn btn-outline btn-sm" onclick="openDormitoryManageModal()">🏠 宿舍号管理</button></div></div>'
             +'<div class="two-col-grid">'
             +'<div class="card"><div class="card-header">单个添加学生</div><div class="card-body">'
@@ -1925,7 +1927,7 @@
         var groups = getDormitoryListByFloor();
         var groupHtml = groups.map(function(g){
             var rows = g.items.map(function(it){
-                return '<tr><td><b>'+it.roomNumber+'</b></td><td>'+it.count+'人</td><td><button class="btn btn-danger btn-xs" onclick="deleteDormitory(\''+escapeHtmlAttr(it.roomNumber)+'\')">删除</button></td></tr>';
+                return '<tr><td><b>'+escapeHtmlAttr(it.roomNumber)+'</b></td><td>'+it.count+'人</td><td><button class="btn btn-danger btn-xs" onclick="deleteDormitory(\''+escapeHtmlAttr(it.roomNumber)+'\')">删除</button></td></tr>';
             }).join('') || '<tr><td colspan="3" style="text-align:center;color:#aaa">该楼层暂无生效宿舍号</td></tr>';
             return '<div class="card" style="margin-bottom:12px"><div class="card-header">'+g.floorName+'（'+g.items.length+'间）</div><div style="overflow-x:auto"><table><thead><tr><th>宿舍号</th><th>入住人数</th><th>操作</th></tr></thead><tbody>'+rows+'</tbody></table></div></div>';
         }).join('') || '<div class="empty-state">暂无宿舍号数据</div>';
@@ -1957,7 +1959,7 @@
         function itemRows(items,delFn,prefix,category){
             var kind = (prefix === '+') ? 'bonus' : 'deduct';
             var badgeCls = (prefix === '+') ? 'badge-bonus' : 'badge-danger';
-            return items.map(function(i){return '<div class="item-row"><span style="display:inline-flex;align-items:center;gap:8px;flex:1;min-width:0"><input type="checkbox" class="item-checkbox" data-item-category="'+category+'" data-item-id="'+i.id+'" style="flex-shrink:0"><span><b>'+i.name+'</b> <span class="badge-tag '+badgeCls+'">'+formatScoreText(i.defaultScore, kind)+'分</span></span></span><button class="btn btn-danger btn-xs" onclick="'+delFn+'('+i.id+')">删除</button></div>';}).join('');
+            return items.map(function(i){return '<div class="item-row"><span style="display:inline-flex;align-items:center;gap:8px;flex:1;min-width:0"><input type="checkbox" class="item-checkbox" data-item-category="'+category+'" data-item-id="'+i.id+'" style="flex-shrink:0"><span><b>'+escapeHtmlAttr(i.name)+'</b> <span class="badge-tag '+badgeCls+'">'+formatScoreText(i.defaultScore, kind)+'分</span></span></span><button class="btn btn-danger btn-xs" onclick="'+delFn+'('+i.id+')">删除</button></div>';}).join('');
         }
         function addForm(opts){
             return '<div style="display:flex;gap:8px;margin-top:12px"><input type="text" id="'+opts.nameId+'" placeholder="新项目名称" style="flex:1;padding:8px;border:1.5px solid #ddd;border-radius:6px"><input type="number" id="'+opts.scoreId+'" value="'+opts.defaultScore+'" min="0.1" step="0.1" style="width:70px;padding:8px;border:1.5px solid #ddd;border-radius:6px"><button class="btn btn-primary btn-sm" onclick="'+opts.addFn+'()">添加</button></div>'
@@ -2270,10 +2272,10 @@
         var classSet={}; DB.students.forEach(function(s){ if(s.className) classSet[s.className]=true; });
         var classList=sortClassNames(Object.keys(classSet));
         var classOptions='<option value="">全部班级</option>';
-        classList.forEach(function(c){ classOptions+='<option value="'+c+'">'+c+'</option>'; });
+        classList.forEach(function(c){ classOptions+='<option value="'+c+'">'+escapeHtmlAttr(c)+'</option>'; });
         // 表单用班级下拉选项（含"请选择班级"提示项）
         var classSelectOpts='<option value="">请选择班级</option>';
-        classList.forEach(function(c){ classSelectOpts+='<option value="'+c+'">'+c+'</option>'; });
+        classList.forEach(function(c){ classSelectOpts+='<option value="'+c+'">'+escapeHtmlAttr(c)+'</option>'; });
         var today=getTodayLocalStr();
         // 班级账号（移动端）：姓名改为原生 <select> 下拉框，选项 = 本班级当前全部学生姓名
         // （原生 select 选择后选项列表始终完整保留，可随时切换其他学生；名单为空时显示提示项）
@@ -2281,7 +2283,7 @@
         if(mEnhance){
             var classStus=DB.students.filter(function(s){ return s.className===classAccountClassName; });
             studentSelectOpts = classStus.length
-                ? '<option value="">请选择学生</option>'+classStus.map(function(s){ return '<option value="'+s.name+'">'+s.name+'</option>'; }).join('')
+                ? '<option value="">请选择学生</option>'+classStus.map(function(s){ return '<option value="'+s.name+'">'+escapeHtmlAttr(s.name)+'</option>'; }).join('')
                 : '<option value="" disabled>本班暂无学生</option>';
         }
         // PC 端联动下拉（与移动端一致，统一使用原生 <select>，体验与"班级"字段完全相同）：
@@ -2378,7 +2380,7 @@
         } else {
             var cs={}; DB.students.forEach(function(s){ if(s.className) cs[s.className]=true; });
             var clsOpts='<option value="">请选择班级</option>';
-            sortClassNames(Object.keys(cs)).forEach(function(c){ clsOpts+='<option value="'+c+'">'+c+'</option>'; });
+            sortClassNames(Object.keys(cs)).forEach(function(c){ clsOpts+='<option value="'+c+'">'+escapeHtmlAttr(c)+'</option>'; });
             classFieldLeave='<label>班级 *</label><select id="leaveClass" onchange="onAccClassChange(this.value,\'leaveName\')">'+clsOpts+'</select>';
             classFieldStop='<label>班级 *</label><select id="stopClass" onchange="onAccClassChange(this.value,\'stopName\')">'+clsOpts+'</select>';
             classFieldAbs='<label>班级 *</label><select id="absClass" onchange="onAccClassChange(this.value,\'absName\')">'+clsOpts+'</select>';
@@ -2387,7 +2389,7 @@
         var nameOpts;
         if(isClassAdmin){
             var classStus=DB.students.filter(function(s){ return s.className===classAccountClassName; });
-            nameOpts=classStus.length?'<option value="">请选择学生</option>'+classStus.map(function(s){ return '<option value="'+s.name+'">'+s.name+(isNonResidentStudent(s)?'（走读）':'')+'</option>'; }).join(''):'<option value="" disabled>本班暂无学生</option>';
+            nameOpts=classStus.length?'<option value="">请选择学生</option>'+classStus.map(function(s){ return '<option value="'+s.name+'">'+escapeHtmlAttr(s.name)+(isNonResidentStudent(s)?'（走读）':'')+'</option>'; }).join(''):'<option value="" disabled>本班暂无学生</option>';
         } else {
             nameOpts='<option value="">请先选择班级</option>';
         }
@@ -2445,7 +2447,7 @@
     function classOptionsLeaveFilter(){
         var cs={}; DB.students.forEach(function(s){ if(s.className) cs[s.className]=true; });
         var opts='<option value="">全部班级</option>';
-        sortClassNames(Object.keys(cs)).forEach(function(c){ opts+='<option value="'+c+'">'+c+'</option>'; });
+        sortClassNames(Object.keys(cs)).forEach(function(c){ opts+='<option value="'+c+'">'+escapeHtmlAttr(c)+'</option>'; });
         return opts;
     }
     // 色块互斥展开/收起：点击已展开的收起；点击其他色块时前一个自动收起
@@ -2502,7 +2504,7 @@
         var sel=document.getElementById(nameSelectId);
         if(sel){
             var stus=className?DB.students.filter(function(s){return s.className===className;}):[];
-            sel.innerHTML='<option value="">'+(className?'请选择学生':'请先选择班级')+'</option>'+stus.map(function(s){return '<option value="'+s.name+'">'+s.name+(isNonResidentStudent(s)?'（走读）':'')+'</option>';}).join('');
+            sel.innerHTML='<option value="">'+(className?'请选择学生':'请先选择班级')+'</option>'+stus.map(function(s){return '<option value="'+s.name+'">'+escapeHtmlAttr(s.name)+(isNonResidentStudent(s)?'（走读）':'')+'</option>';}).join('');
         }
         // 联动宿舍号下拉：仅显示该班级学生入住的宿舍；取消班级则恢复全部宿舍
         var prefix = nameSelectId.replace('Name',''); // leave/stop/abs
@@ -2532,10 +2534,10 @@
             if(roomNumber){
                 nameSel.innerHTML = '<option value="">请选择学生</option>' + allStus.map(function(s){
                     var inDorm = stus.some(function(x){ return x.id === s.id; });
-                    return '<option value="'+s.name+'">'+s.name+(inDorm?'（'+roomNumber+'）':'')+'</option>';
+                    return '<option value="'+s.name+'">'+escapeHtmlAttr(s.name)+(inDorm?'（'+roomNumber+'）':'')+'</option>';
                 }).join('');
             } else {
-                nameSel.innerHTML = '<option value="">'+(className?'请选择学生':'请先选择班级')+'</option>' + allStus.map(function(s){return '<option value="'+s.name+'">'+s.name+'</option>';}).join('');
+                nameSel.innerHTML = '<option value="">'+(className?'请选择学生':'请先选择班级')+'</option>' + allStus.map(function(s){return '<option value="'+s.name+'">'+escapeHtmlAttr(s.name)+'</option>';}).join('');
             }
         }
         // 床号下拉：仅显示该宿舍可用床位
@@ -2593,7 +2595,7 @@
             pool=d0?getStudentsByDormitory(d0.id):[];
         }
         nameEl.innerHTML='<option value="">请选择学生</option>'
-            +pool.map(function(s){ return '<option value="'+s.name+'">'+s.name+(isNonResidentStudent(s)?'（走读）':'')+'</option>'; }).join('');
+            +pool.map(function(s){ return '<option value="'+s.name+'">'+escapeHtmlAttr(s.name)+(isNonResidentStudent(s)?'（走读）':'')+'</option>'; }).join('');
         if(nameVal) nameEl.value=nameVal;
         // 宿舍号：班级→该班学生入住的宿舍；未选班级→全部生效宿舍
         dormEl.innerHTML=dormSelectOptions(clsVal, dormVal);
@@ -2676,7 +2678,7 @@
         function absenceRowHtml(r){
             var stu = r.studentId ? getStudentById(r.studentId) : DB.students.find(function(s){return s.className===r.className&&s.name===r.name;});
             var resideTag = isNonResidentStudent(stu) ? '<span style="color:var(--info)">走读</span>' : '住宿';
-            return '<tr><td data-label="班级">'+r.className+'</td><td data-label="姓名">'+r.name+'</td><td data-label="住宿状态">'+resideTag+'</td><td data-label="宿舍号">'+getDormSnapshotDisplay(r.dormitory)+'</td><td data-label="床号">'+r.bed+'</td><td data-label="类型">'+(typeMap[r.type]||r.type)+'</td><td data-label="说明">'+(r.reason||'-')+'</td><td data-label="开始">'+r.startDate+'</td><td data-label="结束">'+r.endDate+'</td><td data-label="状态">'+getAbsenceStatusBadge(r)+'</td>'+(isAdm?'<td data-label="操作"><button class="btn btn-danger btn-xs delete-btn" onclick="deleteAbsenceRecord(\''+r.id+'\')">删除</button></td>':'')+'</tr>';
+            return '<tr><td data-label="班级">'+escapeHtmlAttr(r.className)+'</td><td data-label="姓名">'+escapeHtmlAttr(r.name)+'</td><td data-label="住宿状态">'+resideTag+'</td><td data-label="宿舍号">'+getDormSnapshotDisplay(r.dormitory)+'</td><td data-label="床号">'+r.bed+'</td><td data-label="类型">'+(typeMap[r.type]||r.type)+'</td><td data-label="说明">'+escapeHtmlAttr(r.reason||'-')+'</td><td data-label="开始">'+r.startDate+'</td><td data-label="结束">'+r.endDate+'</td><td data-label="状态">'+getAbsenceStatusBadge(r)+'</td>'+(isAdm?'<td data-label="操作"><button class="btn btn-danger btn-xs delete-btn" onclick="deleteAbsenceRecord(\''+r.id+'\')">删除</button></td>':'')+'</tr>';
         }
         var cntEl=document.getElementById('recCount-absence');
         if(cntEl) cntEl.textContent='（'+records.length+'条）';
@@ -2764,7 +2766,7 @@
         DB.students.forEach(function(s) { if (s.className) classSet[s.className] = true; });
         var classList = sortClassNames(Object.keys(classSet));
         var classOptions = '<option value="">全部班级</option>';
-        classList.forEach(function(c) { classOptions += '<option value="'+c+'">'+c+'</option>'; });
+        classList.forEach(function(c) { classOptions += '<option value="'+c+'">'+escapeHtmlAttr(c)+'</option>'; });
         if (isClassAdmin) {
             classOptions = '<option value="'+classAccountClassName+'" selected>'+classAccountClassName+'</option>';
         }
@@ -3086,7 +3088,7 @@
         var assigned = {};
         (u.assignedFloors||[]).forEach(function(fid){ assigned[fid] = true; });
         var checks = DB.floors.map(function(f){
-            return '<label style="display:inline-flex;align-items:center;gap:4px;margin:4px 10px 4px 0;font-weight:500"><input type="checkbox" class="assign-floor-check" value="'+f.id+'" '+(assigned[f.id]?'checked':'')+'> '+f.name+'</label>';
+            return '<label style="display:inline-flex;align-items:center;gap:4px;margin:4px 10px 4px 0;font-weight:500"><input type="checkbox" class="assign-floor-check" value="'+f.id+'" '+(assigned[f.id]?'checked':'')+'> '+escapeHtmlAttr(f.name)+'</label>';
         }).join('');
         return '<div class="form-group"><label>楼栋名称</label><input type="text" id="assignBuildingName" value="'+escapeHtmlAttr(u.buildingName||'')+'" placeholder="如：恩泽楼"></div>'
             + '<div class="form-group"><label>负责楼层（不勾选 = 全部楼层）</label><div class="checkbox-group">'+checks+'</div></div>'
@@ -3489,9 +3491,9 @@
                     + '<td data-label="'+dateLabel+'">'+r.date+'</td>'
                     + '<td data-label="宿舍号">'+getDormSnapshotDisplay(r.dormitory)+'</td>'
                     + '<td data-label="床号">'+r.bed+'</td>'
-                    + '<td data-label="班级">'+r.className+'</td>'
-                    + '<td data-label="姓名">'+r.name+'</td>'
-                    + '<td data-label="原因">'+r.reason+'</td></tr>';
+                    + '<td data-label="班级">'+escapeHtmlAttr(r.className)+'</td>'
+                    + '<td data-label="姓名">'+escapeHtmlAttr(r.name)+'</td>'
+                    + '<td data-label="原因">'+escapeHtmlAttr(r.reason)+'</td></tr>';
             }
             resultArea.innerHTML='<div class="card">'
                 + '<div class="card-header">查询结果（'+typeLabel+'记录 '+leaveRecords.length+' 条）</div>'
@@ -3528,8 +3530,8 @@
                 var absSt=((leaveCoversNight(absStart,absEnd,todayStr)||todayStr<absStart)?'请假中':'已结束');
                 return '<tr>'
                     + checkCell(r.id)
-                    + '<td data-label="班级">'+r.className+'</td>'
-                    + '<td data-label="姓名">'+r.name+'</td>'
+                    + '<td data-label="班级">'+escapeHtmlAttr(r.className)+'</td>'
+                    + '<td data-label="姓名">'+escapeHtmlAttr(r.name)+'</td>'
                     + '<td data-label="类型">'+(absTypeMap[r.type]||r.type)+'</td>'
                     + '<td data-label="说明">'+(r.reason||'-')+'</td>'
                     + '<td data-label="开始">'+r.startDate+'</td>'
@@ -3988,7 +3990,7 @@
         var dormOpts = allActiveDorms.map(function(d){
             var selected = (curDorm && d.id===curDorm.id) ? ' selected' : '';
             var fl = getFloorById(d.floorId);
-            return '<option value="'+d.id+'"'+selected+'>'+d.roomNumber+'（'+(fl?fl.name:'未分配楼层')+'）</option>';
+            return '<option value="'+d.id+'"'+selected+'>'+escapeHtmlAttr(d.roomNumber)+'（'+(fl?escapeHtmlAttr(fl.name):'未分配楼层')+'）</option>';
         }).join('');
         var bedOpts = '';
         if(curDorm){
@@ -4073,7 +4075,7 @@
         }).join('');
         var floorChecks=DB.floors.map(function(f){
             var checked=(u.assignedFloors||[]).indexOf(f.id)!==-1 ? 'checked' : '';
-            return '<label style="display:inline-flex;align-items:center;gap:4px;margin:4px 10px 4px 0;font-weight:500"><input type="checkbox" class="acct-floor-check" value="'+f.id+'" '+checked+'> '+f.name+'</label>';
+            return '<label style="display:inline-flex;align-items:center;gap:4px;margin:4px 10px 4px 0;font-weight:500"><input type="checkbox" class="acct-floor-check" value="'+f.id+'" '+checked+'> '+escapeHtmlAttr(f.name)+'</label>';
         }).join('');
         return '<div class="em-header"><span>'+(isEdit?'✏️ 编辑账号':'➕ 新增账号')+'</span><button class="em-close" aria-label="关闭" onclick="closeAccountModal()">✕</button></div>'
             +'<div class="em-body">'
@@ -4326,7 +4328,7 @@
         function buildChecks(items,recordIds,prefix,customLabel,customScoreText){
             var html=items.map(function(i){
                 var checked=(recordIds||[]).indexOf(i.id)!==-1?' checked':'';
-                return '<label><input type="checkbox" value="'+i.id+'" class="'+prefix+'-item"'+checked+' onchange="updateEditScores()"> '+i.name+' ('+formatScoreText(i.defaultScore,'deduct')+'分)</label>';
+                return '<label><input type="checkbox" value="'+i.id+'" class="'+prefix+'-item"'+checked+' onchange="updateEditScores()"> '+escapeHtmlAttr(i.name)+' ('+formatScoreText(i.defaultScore,'deduct')+'分)</label>';
             }).join('');
             var customName='';
             (recordIds||[]).forEach(function(v){ if(typeof v==='string'&&v.indexOf('custom:')===0) customName=v.substring(7); });

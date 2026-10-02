@@ -1731,7 +1731,10 @@
         if (SUPABASE_CONFIG.enabled && SUPABASE_CONFIG.url.indexOf('YOUR_') === -1) {
             syncEnabled = true;
             try {
-                supabaseClient = window.supabase.createClient(SUPABASE_CONFIG.url, SUPABASE_CONFIG.anonKey);
+                var _sbOpts = {};
+                // 【P0-1】若配置了云端写入口令，则所有请求附带 x-access-key 头，供 Supabase RLS 校验
+                if (SUPABASE_CONFIG.accessKey) { _sbOpts.global = { headers: { 'x-access-key': String(SUPABASE_CONFIG.accessKey) } }; }
+                supabaseClient = window.supabase.createClient(SUPABASE_CONFIG.url, SUPABASE_CONFIG.anonKey, _sbOpts);
                 // 网络恢复时自动重试未完成的增量上传（走重试队列）
                 window.addEventListener('online', function(){
                     if(syncEnabled&&supabaseClient&&DB){

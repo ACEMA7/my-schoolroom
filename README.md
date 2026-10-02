@@ -60,11 +60,13 @@ V3 记录类型（`V3_RECORD_TYPES`）：`floor / dormitory / student / user / d
 
 ## 内置账号
 
-| 用户名 | 密码 | 角色 | 权限 |
-| --- | --- | --- | --- |
-| `admin` | `admin123` | ADMIN 管理员 | 全部功能（删除/审核/重置云端/管理宿舍与项目） |
-| `staff` | `staff123` | STAFF 生活老师 | 住宿信息、扣分登记、统计、学生管理（无数据管理） |
-| `三1`～`三31` | `123456` | CLASS_ADMIN 班主任 | 仅本班学生/宿舍相关数据 + 学生管理 + 数据管理 |
+| 用户名 | 角色 | 权限 |
+| --- | --- | --- |
+| `admin` | ADMIN 管理员 | 全部功能（删除/审核/重置云端/管理宿舍与项目） |
+| `staff` | STAFF 生活老师 | 住宿信息、扣分登记、统计、学生管理（无数据管理） |
+| `三1`～`三31` | CLASS_ADMIN 班主任 | 仅本班学生/宿舍相关数据 + 学生管理 + 数据管理 |
+
+> 🔒 安全说明：首次初始化会为上述账号生成默认弱密码，**首次登录时将被强制要求修改**（新密码至少 8 位、须同时包含字母和数字）。默认密码仅用于首次登录，请登录后立即修改、切勿外传或记录在文档中。
 
 ## 核心功能
 
@@ -98,9 +100,19 @@ powershell -ExecutionPolicy Bypass -File .\_server.ps1
      device_id text,
      unique (record_type, record_id)
    );
-   -- 行级安全策略（anon 开放读写，按学校实际情况收紧）
+   -- ⚠️ 行级安全（RLS）：默认的 using(true) 等于"任何人拿到 anon key 即可任意增删改查全校数据"，务必收紧！
    alter table sync_store enable row level security;
-   create policy "anon all" on sync_store for all to anon using (true) with check (true);
+   -- 1) 先删除过度开放的策略（如已存在）
+   drop policy if exists "anon all" on sync_store;
+   -- 2) 匿名只读（读取本身不授予写权限）
+   create policy "anon read" on sync_store for select to anon using (true);
+   -- 3) 写操作需在请求头携带正确的访问口令 x-access-key。
+   --    把 <在此替换为你的强口令> 换成一个 ≥32 位的随机字符串（如用密码管理器生成），
+   --    并同步配置到应用侧（constants.js 的 SUPABASE_CONFIG.accessKey）。
+   create policy "protected write" on sync_store
+     for all to anon
+     using (current_setting('request.headers', true)::json->>'x-access-key' = '<在此替换为你的强口令>')
+     with check (current_setting('request.headers', true)::json->>'x-access-key' = '<在此替换为你的强口令>');
    ```
 2. 把项目 URL 与 anon key 填入 [constants.js](constants.js) 的 `SUPABASE_CONFIG`；`enabled:false` 可切换为纯本地单机模式。
 3. CDN 依赖（supabase-js/xlsx/lz-string）已被 Service Worker 预缓存，首次联网打开后离线可用。
