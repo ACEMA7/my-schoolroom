@@ -11,9 +11,9 @@
 // 会导致顶栏版本号显示旧值）。浏览器据此检测新版本并自动推送更新，
 // Service Worker 对同源 JS 为 cache-first，不升版本则设备持续加载旧缓存。
 // ============================================================
-var CACHE_NAME = 'dormitory-cache-2026-10-02-1958';
+var CACHE_NAME = 'dormitory-cache-2026-10-02-2120';
 // 页面通过 postMessage({type:'GET_VERSION'}) 读取，用于顶栏版本号显示（由脚本保证与 CACHE_NAME 同值）
-self.APP_VERSION = '2026-10-02-1958';
+self.APP_VERSION = '2026-10-02-2120';
 
 // 同源核心资源（任一失败都会阻断安装，保证离线可用的最小集合）
 var LOCAL_ASSETS = [
@@ -28,16 +28,15 @@ var LOCAL_ASSETS = [
     './data.js',
     './sync.js',
     './ui.js',
-    './app.js'
+    './app.js',
+    // 第三方库已本地化（lib/），随站点同源分发，避免国内 jsdelivr CDN 被墙
+    './lib/supabase.min.js',
+    './lib/xlsx.full.min.js',
+    './lib/lz-string.min.js'
 ];
 
-// 第三方 CDN 资源（版本号与 index.html 引用一致）；单独容错，单个失败不阻断 SW 安装
-// flatpickr 已内联在 index.html 中，无外部资源需要缓存
-var CDN_ASSETS = [
-    'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2',
-    'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js',
-    'https://cdn.jsdelivr.net/npm/lz-string@1.5.0/libs/lz-string.min.js'
-];
+// 第三方 CDN 资源：已全部本地化，无需再预缓存外部 CDN（保留空数组以兼容安装逻辑）
+var CDN_ASSETS = [];
 
 // 判断是否为 Supabase 云端数据接口（实时数据，禁止缓存）
 function isSupabaseApi(url) {
