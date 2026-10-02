@@ -178,14 +178,15 @@
      *   还要求本机 localStorage 存有与之完全一致的认证标记 dorm_master_auth。
      *   这样攻击者仅在控制台执行 localStorage.setItem('dorm_device_id', MASTER_DEVICE_ID)
      *   无法再获得主控权限——必须知道绑定密码才能生成匹配的认证标记。
-     *   未设置绑定密码的老部署保持原行为（IS_MASTER_DEVICE 仅由设备 ID 决定），不破坏现有用户。
+     *   【1.2 加固】未设置绑定密码（DB.masterBindHash 为空）时不再放行主控——
+     *   主控权限必须凭绑定密码认证，管理员需先执行一次"将当前设备设为主控设备"完成绑定密码设置。
      */
     function recomputeMasterFlag(){
         if(typeof IS_MASTER_DEVICE === 'undefined') return;
         var devMatch = (typeof DEVICE_ID !== 'undefined' && typeof MASTER_DEVICE_ID !== 'undefined' && DEVICE_ID === MASTER_DEVICE_ID);
         if(!devMatch){ IS_MASTER_DEVICE = false; return; }
         var bindHash = (typeof DB !== 'undefined' && DB && typeof DB.masterBindHash === 'string') ? DB.masterBindHash : '';
-        if(!bindHash){ IS_MASTER_DEVICE = true; return; } // 未设置绑定密码：保持原行为
+        if(!bindHash){ IS_MASTER_DEVICE = false; return; } // 未设置绑定密码：不放行，须先完成绑定密码设置
         var auth = '';
         try{ auth = localStorage.getItem('dorm_master_auth') || ''; }catch(e){ auth = ''; }
         IS_MASTER_DEVICE = (auth === bindHash);
@@ -245,8 +246,8 @@
         // 分支 B：masterBindHash 已设置 → 输入并校验绑定密码
         var pwd = prompt('请输入主控设备绑定密码：\n（绑定后当前设备将获得修改基础数据、重置云端等主控权限）');
         if(pwd === null) return; // 用户点了取消
-        hashPassword(pwd).then(function(inputHash){
-            if(inputHash !== DB.masterBindHash){
+        verifyPassword(pwd, DB.masterBindHash).then(function(ok){
+            if(!ok){
                 toast('绑定密码错误','error');
                 return;
             }
@@ -468,14 +469,21 @@
                 return;
             }
             // 【安全修复 P0-2】已删除"哈希直比登录"分支：任何能读到 localStorage 的人
-            // 都不能用存储的 passwordHash 当密码直接登录。密码框只能输入明文，经 hashPassword 后比对。
-            // 标准路径：输入密码哈希后与存储的 passwordHash 比对
-            hashPassword(password).then(function(inputHash){
-                if(hasHash && user.passwordHash === inputHash){
-                    completeLogin(user, username, inputHash);
-                } else {
-                    showLoginError();
+            // 都不能用存储的 passwordHash 当密码直接登录。密码框只能输入明文，经 verifyPassword 后比对。
+            // 标准路径：用 verifyPassword 兼容加盐/无盐/降级三种存量格式；
+            // 【2.1 加固】登录成功后若为旧格式（非 sha2$），rehash on login 平滑升级为加盐格式。
+            verifyPassword(password, user.passwordHash).then(function(ok){
+                if(!ok){ showLoginError(); return; }
+                if(user.passwordHash && user.passwordHash.indexOf('sha2$') !== 0){
+                    hashPassword(password).then(function(nh){
+                        user.passwordHash = nh;
+                        v3MarkDirty('user', user.id);
+                        saveDB(); // 落库并把加盐后的用户行加入上传队列，覆盖云端旧哈希
+                        completeLogin(user, username, nh);
+                    });
+                    return;
                 }
+                completeLogin(user, username, user.passwordHash);
             });
         });
     }
@@ -2373,7 +2381,7 @@
                 // 【关键】给派生的个人加分记录打上 autoDerived: true，
                 // 使其不计入宿舍汇总分（避免"一次集体加分被算成多人加分之和"），
                 // 但仍计入个人净分（学生个人账上确实加了分）。
-                var stuRecord={id:generateRecordId(),createdAt:Date.now(),lastModified:Date.now(),dormitoryId:addFormState.dormitoryId,studentId:s.id,studentNo:s.studentNo||null,hygieneItemIds:hygieneItemIds,hygieneScore:perHyScore,disciplineItemIds:disciplineItemIds,disciplineScore:perDisScore,recordDate:addFormState.recordDate,remark:addFormState.remark||'',recordMode:mode,autoDerived:true};
+                var stuRecord={id:generateRecordId(),createdAt:Date.now(),lastModified:Date.now(),dormitoryId:addFormState.dormitoryId,studentId:s.id,studentNo:s.studentNo||null,hygieneItemIds:hygieneItemIds,hygieneScore:perHyScore,disciplineItemIds:disciplineItemIds,disciplineScore:perDisScore,recordDate:addFormState.recordDate,remark:addFormState.remark||'',recordMode:mode,autoDerived:true,parentRecordId:dormRecord.id};
                 // 【第二道防线·孤儿派生自检】命中则隔离到待核查存储（不进 DB、不标脏、不上传云端）
                 if(quarantineIfOrphanDerived(stuRecord)) return;
                 DB.deductionRecords.push(stuRecord);
@@ -2436,7 +2444,8 @@
                         recordDate: addFormState.recordDate,
                         remark: addFormState.remark || '',
                         recordMode: 'deduct',
-                        autoDerived: true
+                        autoDerived: true,
+                        parentRecordId: newRecord.id
                     };
                     // 【第二道防线·孤儿派生自检】命中则隔离到待核查存储（不进 DB、不标脏、不上传云端）
                     if(quarantineIfOrphanDerived(stuRecord)) return;
@@ -3318,17 +3327,27 @@
         if(!DB){toast('数据未初始化','error');return;}
         try{
             var json = JSON.stringify(DB);
-            var today = getTodayLocalStr();  // YYYY-MM-DD
-            var dateTag = today.replace(/-/g, '');  // YYYYMMDD
+            // 文件名带精确到秒的时间戳，避免同一天多次备份互相覆盖
+            var d = new Date();
+            var pad = function(n){ return n < 10 ? '0' + n : '' + n; };
+            var dateTag = d.getFullYear() + pad(d.getMonth()+1) + pad(d.getDate())
+                        + '_' + pad(d.getHours()) + pad(d.getMinutes()) + pad(d.getSeconds());
+            var fileName = '宿舍系统备份_' + dateTag + '.json';
             var blob = new Blob([json], { type: 'application/json;charset=utf-8' });
             var link = document.createElement('a');
             link.href = URL.createObjectURL(blob);
-            link.download = '宿舍系统备份_' + dateTag + '.json';
+            link.download = fileName;
             document.body.appendChild(link);
             link.click();
             document.body.removeChild(link);
             setTimeout(function(){ URL.revokeObjectURL(link.href); }, 1000);
-            toast('备份已下载：宿舍系统备份_' + dateTag + '.json');
+            // 统计主要数据量，让用户对备份内容心里有数
+            var counts = [];
+            ['students','deductionRecords','leaveRecords','absenceRecords'].forEach(function(k){
+                if(Array.isArray(DB[k])) counts.push(k + ':' + DB[k].length);
+            });
+            var sizeMb = (blob.size / 1024 / 1024).toFixed(2);
+            toast('备份已下载：' + fileName + '（' + counts.join('，') + '，约 ' + sizeMb + ' MB）');
         }catch(e){
             handleError(e, '备份全部数据');
         }
@@ -6772,16 +6791,17 @@
         if(!target){ showChangePwdError('账号不存在，请重新登录'); return Promise.resolve(); }
         var hasHash = typeof target.passwordHash === 'string' && target.passwordHash.length > 0;
         var hasPlain = typeof target.password === 'string' && target.password.length > 0;
-        return hashPassword(curPwd).then(function(curHash){
-            // 兼容旧明文账号：若账号仅有明文 password，则明文比对
-            var ok = false;
-            if(hasHash){
-                ok = (target.passwordHash === curHash);
-                // 兼容"记住密码"回填的哈希直比场景：用户直接粘贴的是 64 位 hex 哈希
-                if(!ok && /^[0-9a-f]{64}$/i.test(curPwd) && curPwd === target.passwordHash){ ok = true; }
-            }else if(hasPlain){
-                ok = (target.password === curPwd);
-            }
+        // 5) 校验当前密码：【2.1 加固】用 verifyPassword 兼容加盐/无盐/降级三种哈希格式；
+        //    仅存明文 password 的旧账号走明文比对。已移除"粘贴 64 位 hex 哈希直比"的弱旁路。
+        var checkOk;
+        if(hasHash){
+            checkOk = verifyPassword(curPwd, target.passwordHash);
+        } else if(hasPlain){
+            checkOk = Promise.resolve(target.password === curPwd);
+        } else {
+            checkOk = Promise.resolve(false);
+        }
+        return checkOk.then(function(ok){
             if(!ok){ showChangePwdError('当前密码不正确'); return Promise.resolve(); }
             // 6) 计算新密码哈希并落库
             return hashPassword(newPwd).then(function(newHash){

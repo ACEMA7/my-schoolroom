@@ -2777,7 +2777,8 @@
         var isAdminRole = isAdmin();
         var summaryOption = isAdminRole ? '<option value="inspection_summary">巡查核实总结</option>' : '';
         var floorChangeOption = isAdminRole ? '<option value="floor_change">楼层调整记录</option>' : '';
-        var html = '<div class="content-header"><h2>📊 数据管理</h2></div>'
+        var html = '<div class="content-header" style="display:flex;align-items:center;flex-wrap:wrap;gap:8px"><h2 style="margin:0">📊 数据管理</h2>'
+            + '<div style="margin-left:auto;display:flex;gap:8px"><button class="btn btn-primary btn-sm" onclick="backupAllData()">📦 导出备份（全部数据）</button></div></div>'
             + buildSyncLogCardHtml()
             + '<div class="card"><div class="card-header">筛选导出条件</div><div class="card-body"><div class="filter-section">'
             + '<div class="form-group"><label>数据类型</label><select id="exportDataType" onchange="onExportDataTypeChange()"><option value="deduction">扣分记录</option><option value="leave">退宿记录</option><option value="stop">停宿记录</option><option value="absence">请假记录</option>'+summaryOption+floorChangeOption+'</select></div>'

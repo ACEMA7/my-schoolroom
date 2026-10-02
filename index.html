@@ -1010,6 +1010,8 @@ document.addEventListener('DOMContentLoaded',function(){ initDatePickers(documen
         <div class="edit-modal" id="batchEditQueryModalBox" role="dialog" aria-label="批量修改扣分记录"></div>
     </div>
 
+    <!-- 【1.1·方案A】部署机本地口令注入（文件已 gitignore，真实口令不入仓库）；必须先于 constants.js 加载 -->
+    <script src="access-key.local.js"></script>
     <!-- 业务逻辑模块化拆分：constants -> utils -> data -> sync -> ui -> app（经典脚本，全局作用域） -->
     <script src="constants.js"></script>
     <script src="utils.js"></script>

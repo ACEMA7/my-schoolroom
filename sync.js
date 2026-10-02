@@ -608,7 +608,7 @@
                 // 【二次确认】整体覆盖前弹出 confirm，防止管理员误重置导致普通设备数据被意外抹掉
                 syncLog('WARN', '检测到云端数据版本（epoch）变化：本机 ' + localEpoch + ' → 云端 ' + cloudEpoch + '，需整体重建（等待用户确认）',
                     {localEpoch: localEpoch, cloudEpoch: cloudEpoch});
-                var confirmMsg = '检测到云端数据版本更新（本机epoch='+localEpoch+'，云端epoch='+cloudEpoch+'）。云端可能被重置或更正。是否确认以云端数据覆盖本地？\n\n点击【确定】覆盖本地，点击【取消】保留本地并重新同步。';
+                var confirmMsg = '检测到云端数据版本更新（本机epoch='+localEpoch+'，云端epoch='+cloudEpoch+'）。云端可能被重置或更正。是否确认以云端数据覆盖本地？\n\n点击【确定】覆盖本地，点击【取消】保留本地并重新同步。\n\n⚠️ 注意：若点【取消】，本机尚未上传到云端的改动将被丢弃（不会再同步）；若本机有需要保留的最新数据，请优先点【确定】。';
                 if(!window.confirm(confirmMsg)){
                     // 用户取消：清空本地脏标记，将本地 epoch 对齐云端（假装已是最新，避免死循环触发确认）
                     V3_RECORD_TYPES.forEach(function(m){
@@ -778,7 +778,12 @@
                         v3MarkDirty('meta', 'main');
                         result.rescued++;
                     }
-                    // nextIds 逐键取最大值，防止多设备并发新建记录时 id 回退冲突
+                    // nextIds 逐键取最大值，防止多设备并发新建记录时 id 回退冲突。
+                    // 【5.1 说明】取最大值只能防"回退"，不能防"跳号"——多设备离线各自自增后取最大，
+                    // 会使后续新建从更大值开始、中间 id 空缺；极端情况下落后设备新建可能撞上已存在 id。
+                    // 该风险已被"主控锁定"基本消除：基础数据（学生/宿舍/账号/项目）仅主控设备可写，
+                    // nextIds 的并发自增场景极少见；业务记录用 generateRecordId() 与 nextIds 解耦，不受影响。
+                    // 故此处保持 Math.max 合并逻辑不变，仅作风险备注。
                     if(md.nextIds){
                         Object.keys(md.nextIds).forEach(function(k){
                             DB.nextIds[k] = Math.max(DB.nextIds[k] || 0, md.nextIds[k] || 0);

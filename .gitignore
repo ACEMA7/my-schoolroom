@@ -1,0 +1,8 @@
+# 【安全】部署机本地口令注入文件——含真实写入口令，绝不提交
+access-key.local.js
+
+# 依赖与系统文件
+node_modules/
+.DS_Store
+Thumbs.db
+*.log

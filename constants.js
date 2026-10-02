@@ -22,10 +22,18 @@
     var SUPABASE_CONFIG = {
         url: 'https://pburnvnfzwoyfxktqfho.supabase.co',
         anonKey: 'sb_publishable_sO8GOS5fm-k76SA7zZz0yQ_aSQkYg2u',
-        // 【P0-1】云端写入口令：对应 Supabase RLS 策略校验的请求头 x-access-key。
-        // 仅当你已在 Supabase 控制台配置了"protected write"策略后，才在这里填入相同的强口令；
-        // 留空（默认）则不附带该请求头，行为与原先一致。口令切勿写入 README 或提交到公开仓库。
-        accessKey: 'm3Tq9Zx6Lp2Vr8Nc4Wb7Kd1Hs5Jy0GfEi6A',
+        // 【1.1 加固·方案A】云端写入口令（对应 Supabase RLS 校验的 x-access-key 头）不再硬编码在源码里，
+        // 改为部署时外部注入：优先读 <meta name="dorm-access-key">，其次读 window.__DORM_ACCESS_KEY__
+        // （由不进仓库的 access-key.local.js 在 constants.js 之前写入）。两者都没有则为空字符串，
+        // 行为等同"未配置"——不附带 x-access-key 头，写操作会被 RLS 拒绝（防止源码泄露即全校可写）。
+        // 真实口令只存在于部署机的 access-key.local.js（已加入 .gitignore），切勿提交进仓库或写入 README。
+        accessKey: (function(){
+            try {
+                var m = document.querySelector('meta[name="dorm-access-key"]');
+                if (m && m.content) return String(m.content);
+            } catch(e) {}
+            return (typeof window !== 'undefined' && typeof window.__DORM_ACCESS_KEY__ === 'string') ? window.__DORM_ACCESS_KEY__ : '';
+        })(),
         enabled: true
     };
     // 本地数据库在 localStorage 中的键名（整库 JSON，经 lz-string 压缩后写入）

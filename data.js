@@ -473,12 +473,16 @@
             var collectiveList = collectiveBonusByKey[key];
             if (!collectiveList || collectiveList.length === 0) return; // 该宿舍当天没有集体加分
             // 检查是否有集体加分的 createdAt 与本记录相差 ≤ 5000 毫秒
-            var isDerived = collectiveList.some(function(c){
-                if (!c.createdAt) return false;
-                return Math.abs(r.createdAt - c.createdAt) <= 5000;
-            });
-            if (isDerived) {
+            var parentCollective = null;
+            for (var ci = 0; ci < collectiveList.length; ci++) {
+                var c = collectiveList[ci];
+                if (c && c.createdAt && Math.abs(r.createdAt - c.createdAt) <= 5000) { parentCollective = c; break; }
+            }
+            if (parentCollective) {
                 r.autoDerived = true;
+                // 【5.2 加固】补写显式派生标识 parentRecordId：精确指向父集体记录 id，
+                // 让 findDerivedRecords 走精确匹配，取代脆弱的时间容差启发式（幂等：已存在则不覆盖）。
+                if (r.parentRecordId == null) r.parentRecordId = parentCollective.id;
                 r.lastModified = Date.now();
                 v3MarkDirty('deduction_record', r.id); // 打脏标记，让云端和其他设备同步到新字段
                 marked++;
@@ -698,9 +702,18 @@
         if (!parentRecord || parentRecord.studentId != null) return [];
         if (parentRecord.autoDerived === true) return [];
         if (!DB || !Array.isArray(DB.deductionRecords)) return [];
+        var pid = String(parentRecord.id);
+        // 【5.2 加固】优先按显式派生标识 parentRecordId 精确匹配，取代脆弱的"5000ms 时间容差"，
+        // 避免网络卡顿/批量跨秒/时钟偏移导致的派生关联错乱或漏删。
+        var byParent = DB.deductionRecords.filter(function(r){
+            return r && r.autoDerived === true && String(r.parentRecordId) === pid;
+        });
+        if (byParent.length > 0) return byParent;
+        // 历史存量回退：无 parentRecordId 的旧记录沿用 5000ms 时间容差兜底（向后兼容）。
         var parentTime = parentRecord.createdAt || 0;
         return DB.deductionRecords.filter(function(r) {
             if (!r || r.autoDerived !== true) return false;
+            if (r.parentRecordId) return false; // 已有显式标识的不归入容差匹配，避免跨次误关联
             if (r.studentId == null) return false;
             if (String(r.dormitoryId) !== String(parentRecord.dormitoryId)) return false;
             if (r.recordDate !== parentRecord.recordDate) return false;
@@ -934,23 +947,23 @@
             return 'fb1:' + h.toString(16) + '-' + text.length.toString(16);
         }
     }
-    /**
-     * 异步计算密码哈希（供登录比对与账号落库使用）。
-     * 优先使用 window.crypto.subtle 的 SHA-256（HTTPS/localhost 安全上下文可用），
-     * 返回 64 位十六进制字符串；环境不支持时降级为 _hashPasswordFallback
-     * 的确定性混淆（'fb1:' 前缀，安全强度低，仅保证两端比对一致）。
-     * @param {string} plainText - 明文密码
-     * @returns {Promise<string>} 哈希字符串（64 位 hex 或 'fb1:' 前缀串）
-     */
-    function hashPassword(plainText){
+    // 【2.1 加固】生成 16 字节随机盐（hex），优先用 crypto.getRandomValues，不可用时退化 Math.random
+    function _randomSalt(){
+        var a = new Uint8Array(16);
+        try {
+            if (window.crypto && window.crypto.getRandomValues) { window.crypto.getRandomValues(a); }
+            else { for (var i = 0; i < 16; i++) a[i] = Math.floor(Math.random() * 256); }
+        } catch(e) { for (var j = 0; j < 16; j++) a[j] = Math.floor(Math.random() * 256); }
+        return Array.prototype.map.call(a, function(x){ return (x < 16 ? '0' : '') + x.toString(16); }).join('');
+    }
+    // 【2.1 加固】计算裸 SHA-256（不加盐），仅用于校验历史存量的"无盐 64 位 hex"旧哈希，
+    // 新账号一律走加盐的 hashPassword，不再产生无盐哈希。
+    function _sha256Hex(txt){
         return new Promise(function(resolve){
-            var txt = String(plainText == null ? '' : plainText);
             try {
                 if (window.crypto && window.crypto.subtle && typeof window.crypto.subtle.digest === 'function') {
-                    var data = new TextEncoder().encode(txt);
-                    window.crypto.subtle.digest('SHA-256', data).then(function(buf){
-                        var arr = new Uint8Array(buf);
-                        var hex = '';
+                    window.crypto.subtle.digest('SHA-256', new TextEncoder().encode(txt)).then(function(buf){
+                        var hex = ''; var arr = new Uint8Array(buf);
                         for (var i = 0; i < arr.length; i++) hex += (arr[i] < 16 ? '0' : '') + arr[i].toString(16);
                         resolve(hex);
                     }).catch(function(){ resolve(_hashPasswordFallback(txt)); });
@@ -959,6 +972,59 @@
             } catch(e) {}
             resolve(_hashPasswordFallback(txt));
         });
+    }
+    /**
+     * 异步计算密码哈希（供账号落库使用）。【2.1 加固】改为加盐：返回 'sha2$<salt>$<hex>'。
+     * 优先使用 window.crypto.subtle 的 SHA-256（HTTPS/localhost 安全上下文可用）；
+     * 环境不支持（非安全上下文 HTTP）时降级为 _hashPasswordFallback 的确定性混淆
+     * （'fb1:' 前缀，此时无法加盐，安全强度低，仅保证两端比对一致，并给出警告）。
+     * @param {string} plainText - 明文密码
+     * @param {string} [salt] - 校验时传入已存哈希中的盐；落库时留空自动生成新盐
+     * @returns {Promise<string>} 哈希字符串（'sha2$salt$hex' 或 'fb1:' 前缀串）
+     */
+    function hashPassword(plainText, salt){
+        return new Promise(function(resolve){
+            var txt = String(plainText == null ? '' : plainText);
+            try {
+                if (window.crypto && window.crypto.subtle && typeof window.crypto.subtle.digest === 'function') {
+                    salt = salt || _randomSalt();
+                    var data = new TextEncoder().encode(salt + txt);
+                    window.crypto.subtle.digest('SHA-256', data).then(function(buf){
+                        var arr = new Uint8Array(buf);
+                        var hex = '';
+                        for (var i = 0; i < arr.length; i++) hex += (arr[i] < 16 ? '0' : '') + arr[i].toString(16);
+                        resolve('sha2$' + salt + '$' + hex);
+                    }).catch(function(){ resolve(_hashPasswordFallback(txt)); });
+                    return;
+                } else {
+                    console.warn('[密码安全] 当前为非安全上下文（HTTP），密码哈希无法加盐、已降级为弱混淆，强烈建议改用 HTTPS 或 localhost 部署');
+                }
+            } catch(e) {}
+            resolve(_hashPasswordFallback(txt));
+        });
+    }
+    /**
+     * 【2.1 加固】校验明文密码是否匹配已存储哈希。兼容三种存量格式：
+     *   1) 'sha2$salt$hex'（新加盐格式）：取出盐重算比对；
+     *   2) 64 位 hex（旧无盐 SHA-256）：用 _sha256Hex 裸算比对（兼容老账号登录）；
+     *   3) 'fb1:' 前缀（HTTP 降级混淆）：用 _hashPasswordFallback 比对。
+     * 校验通过后，调用方可对非 'sha2$' 格式的旧哈希执行 rehash on login 平滑升级。
+     * @param {string} plainText - 明文密码
+     * @param {string} storedHash - 已存储的密码哈希
+     * @returns {Promise<boolean>} 是否匹配
+     */
+    function verifyPassword(plainText, storedHash){
+        var txt = String(plainText == null ? '' : plainText);
+        if(typeof storedHash !== 'string' || storedHash.length === 0) return Promise.resolve(false);
+        if(storedHash.indexOf('sha2$') === 0){
+            var parts = storedHash.split('$');
+            if(parts.length !== 3) return Promise.resolve(false);
+            return hashPassword(txt, parts[1]).then(function(h){ return h === storedHash; });
+        }
+        if(/^[0-9a-f]{64}$/i.test(storedHash)){
+            return _sha256Hex(txt).then(function(h){ return h.toLowerCase() === storedHash.toLowerCase(); });
+        }
+        return Promise.resolve(_hashPasswordFallback(txt) === storedHash);
     }
 
     // ==================== 密码迁移：明文 password → passwordHash ====================
@@ -1002,6 +1068,7 @@
         var seen = {};   // username -> 保留的用户记录
         var kept = [];
         var removedIds = {};
+        var remap = {};   // 被移除 userId -> 保留 userId（用于迁移孤儿通知归属）
         var removed = 0;
         // 按 id 升序遍历，保证"保留最小 id"规则确定性生效
         DB.users.slice().sort(function(a, b) { return (a && a.id || 0) - (b && b.id || 0); }).forEach(function(u) {
@@ -1009,6 +1076,7 @@
             if (seen[u.username]) {
                 removed++;
                 removedIds[String(u.id)] = true;
+                remap[String(u.id)] = String(seen[u.username].id); // 记录外键重指向
                 v3MarkDeleted('user', u.id); // 打墓碑通知其他设备删除同 id 重复行
                 return;
             }
@@ -1017,6 +1085,19 @@
         });
         if (removed === 0) return 0;
         DB.users = kept;
+        // 【4.1 加固】迁移孤儿通知：发给"被移除重复账号"的通知，其 userId 重指向保留账号，
+        // 否则该账号登录后查的是保留 id，旧 id 的通知成为无人认领的孤儿。标脏上传保证云端一致。
+        if (Array.isArray(DB.notifications)) {
+            var migratedN = 0;
+            DB.notifications.forEach(function(n){
+                if (n && remap[String(n.userId)]) {
+                    n.userId = remap[String(n.userId)];
+                    v3MarkDirty('notification', n.id);
+                    migratedN++;
+                }
+            });
+            if (migratedN > 0) console.log('[账号去重] 迁移孤儿通知 ' + migratedN + ' 条');
+        }
         // 当前登录账号若为被移除的重复账号：指向保留记录（同名），保持会话有效
         try {
             if (typeof currentUser !== 'undefined' && currentUser && removedIds[String(currentUser.id)]) {
@@ -1059,6 +1140,7 @@
         });
         var seen = {};       // key = className + '\u0001' + name
         var kept = [];
+        var remap = {};      // 被移除 studentId -> 保留 studentId（用于迁移历史业务记录外键）
         var removed = 0;
         sorted.forEach(function(s) {
             if (!s) { kept.push(s); return; }
@@ -1069,6 +1151,7 @@
             var key = cls + '\u0001' + nm;
             if (seen[key]) {
                 removed++;
+                remap[String(s.id)] = String(seen[key].id); // 记录外键重指向
                 v3MarkDeleted('student', s.id); // 打墓碑通知其他设备删除同 id 重复行
                 return;
             }
@@ -1077,6 +1160,19 @@
         });
         if (removed === 0) return 0;
         DB.students = kept;
+        // 【4.2 加固】迁移历史业务记录的 studentId：扣分/请假/缺勤记录若指向"被删重复学生"，
+        // getStudentById 将查不到，导致姓名/班级回显丢失。这里把外键重指向保留学生（同班同名），
+        // 标脏上传保证云端一致，不改变记录本身内容。
+        var arrTypeMap = { deductionRecords: 'deduction_record', leaveRecords: 'leave_record', absenceRecords: 'absence_record' };
+        Object.keys(arrTypeMap).forEach(function(arrKey){
+            if(!Array.isArray(DB[arrKey])) return;
+            DB[arrKey].forEach(function(r){
+                if(r && r.studentId != null && remap[String(r.studentId)]){
+                    r.studentId = remap[String(r.studentId)];
+                    v3MarkDirty(arrTypeMap[arrKey], r.id);
+                }
+            });
+        });
         saveDBToLocal();
         console.log('[学生去重] 清理同班同名重复学生 ' + removed + ' 名');
         return removed;
@@ -1101,6 +1197,9 @@
         // 在每次账号校准前先清理，防止名单被云端活行重复拉取而无限膨胀。
         // 主控设备执行后打墓碑上传云端（一次收敛）；非主控设备本地临时去重。
         dedupeStudentsByClassAndName();
+        // 【3.2 加固】启动/账号校准时清理已读且超期（15 天）的通知，防止数组无限膨胀。
+        // 幂等，走墓碑同步删除，不影响未读与近期通知。
+        try { pruneReadNotifications(15); } catch(e) { console.warn('[通知清理] 执行失败：', e); }
         var adminExists = false, staffExists = false;
         for (var i = 0; i < DB.users.length; i++) {
             if (DB.users[i].username === 'admin') { DB.users[i].role = 'ADMIN'; DB.users[i].realName = '管理人员'; adminExists = true; }
@@ -2193,6 +2292,35 @@
         });
     }
     /**
+     * 【3.2 加固】清理已读且超过保留期（默认 15 天）的站内通知，防止 notifications 数组
+     * 长期无限膨胀挤压 localStorage 与云端表。删除走 v3MarkDeleted 墓碑，与现有删除
+     * 机制一致，不破坏同步。幂等：无符合条件通知时零副作用。
+     * @param {number} [retentionDays=15] - 已读通知保留天数
+     * @returns {number} 本次清理的通知条数
+     */
+    function pruneReadNotifications(retentionDays){
+        if(!DB || !Array.isArray(DB.notifications)) return 0;
+        var days = (typeof retentionDays === 'number' && retentionDays > 0) ? retentionDays : 15;
+        var cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
+        var kept = [];
+        var removed = 0;
+        DB.notifications.forEach(function(n){
+            var ts = (n && (n.lastModified || n.createdAt)) || 0;
+            if(n && n.read && ts < cutoff){
+                v3MarkDeleted('notification', n.id); // 打墓碑同步删除到其他设备与云端
+                removed++;
+            } else {
+                kept.push(n);
+            }
+        });
+        if(removed > 0){
+            DB.notifications = kept;
+            saveDBToLocal();
+            console.log('[通知清理] 清理已读超期（>' + days + '天）通知 ' + removed + ' 条');
+        }
+        return removed;
+    }
+    /**
      * 统计指定用户的未读通知数量。
      * @param {number|string} userId - 用户 ID
      * @returns {number} 未读条数
@@ -2457,6 +2585,7 @@
 // 直接以变量名访问即可，无需经 window 中转；window.DB 改在 sync.js initializeData
 // 中 DB 就绪后挂载，确保始终指向最新实例。
 window.hashPassword = hashPassword;
+window.verifyPassword = verifyPassword;
 window.migrateUserPasswords = migrateUserPasswords;
 window.formatLocalDate = formatLocalDate;
 window.getTodayLocalStr = getTodayLocalStr;
