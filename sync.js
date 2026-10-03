@@ -465,12 +465,15 @@
      * @param {boolean} inCloudTomb 该记录是否存在于云端墓碑
      * @returns {boolean} true=保留到 keptArr；false=丢弃并计入 result.removed
      */
-    function v3ShouldKeepMutableRecord(r, dirtySet, lastSyncTime, inCloudLive, inCloudTomb){
+    function v3ShouldKeepMutableRecord(r, dirtySet, lastSyncTime, inCloudLive, inCloudTomb, isIncremental){
         var rid = String(r.id);
         // 规则1：墓碑删除（本地有未上传修改时除外，由 dirtySet[rid] 保护）
         if(inCloudTomb && !dirtySet[rid]) return false;
         // 规则2：云端不存在 → 有脏标记时用 lastModified 优先判定，无脏标记时丢弃
         if(!inCloudLive && !inCloudTomb){
+            // 【增量拉取安全闸门】增量模式下 split 只含变化的行，"不在本批"≠"云端不存在"。
+            // 无脏标记时保留本地（假设仍在云端），避免误删；有脏标记时走原有时间判定。
+            if(isIncremental && !dirtySet[rid]) return true;
             if(dirtySet[rid]){
                 var recTime = r.lastModified || r.createdAt || 0;
                 if(!lastSyncTime) return true;
@@ -515,6 +518,51 @@
     }
 
     /**
+     * 增量拉取：只拉取 updated_at 晚于 sinceMs 的行（含墓碑）。
+     * 用于日常同步，大幅减少扫描数据量（从 O(全表) 降到 O(增量)）。
+     * 首次同步或定期兜底走 fetchAllRows 全量拉取。
+     * @param {number} sinceMs - 本地上次成功同步的时间戳（毫秒）
+     * @returns {Promise<Array>} 增量行数组
+     */
+    function fetchIncrementalRows(sinceMs){
+        if(!supabaseClient) return Promise.resolve([]);
+        var sinceIso = new Date(sinceMs || 0).toISOString();
+        // 增量通常很少，单次查询即可；若超 1000 行则降级提示（极端情况）
+        return supabaseClient.from('sync_store')
+            .select('record_type,record_id,data,deleted,updated_at,device_id')
+            .gt('updated_at', sinceIso)
+            .order('updated_at', { ascending: true })
+            .limit(1000)
+            .then(function(res){
+                if(res.error){
+                    console.error('[V3] 增量拉取失败:', res.error.message);
+                    throw res.error;
+                }
+                var rows = res.data || [];
+                if(rows.length >= 1000){
+                    console.warn('[V3] 增量拉取命中 1000 行上限，可能存在未拉取的变更，建议尽快执行一次全量同步');
+                    syncLog('WARN', '增量拉取命中 1000 行上限，建议手动执行一次全量同步兜底', {增量行数: rows.length});
+                }
+                return rows;
+            });
+    }
+
+    /**
+     * 查询云端 sync_store 总行数（轻量，用于增量返回 0 行时判断是否为重置窗口）。
+     * @returns {Promise<number>} 云端行数；查询失败返回 -1（保守视为非空，不误判重置）
+     */
+    function countCloudRows(){
+        if(!supabaseClient) return Promise.resolve(-1);
+        return supabaseClient.from('sync_store')
+            .select('id', { count: 'exact', head: true })
+            .then(function(res){
+                if(res.error) return -1;
+                return res.count != null ? res.count : -1;
+            })
+            .catch(function(){ return -1; });
+    }
+
+    /**
      * V3 云端拉取与合并（核心合并流程）。
      * 步骤：
      *   1) fetchAllRows 分页拉取全部行（含墓碑），按 record_type 分组；
@@ -532,12 +580,39 @@
      *   4) 合并后落本地、返回 {added, updated, removed, rescued, basicChanged, reset?/aborted?}。
      * @returns {Promise<object|null>} 合并统计；同步未启用时返回 null
      */
-    function loadFromCloudV3(){
+    function loadFromCloudV3(opts){
+        opts = opts || {};
         if (!syncEnabled || !supabaseClient) return Promise.resolve(null);
         ensureSyncMeta();
-        // 分页全量拉取（含 deleted=true 墓碑行），超 1000 行也能完整取回
-        return fetchAllRows().then(function(rows){
-            console.log('[V3] 拉取到 ' + rows.length + ' 条行（含墓碑）');
+        // 拉取模式：opts.full===false 且存在有效 since → 增量；否则全量（默认安全）
+        var isIncrementalPull = (opts.full === false) && (opts.since > 0);
+        if(isIncrementalPull){
+            DB.lastFullPullTime = DB.lastFullPullTime || 0; // 确保字段存在
+        } else {
+            DB.lastFullPullTime = Date.now(); // 全量拉取时刷新兜底时间戳
+        }
+        var fetchPromise = isIncrementalPull
+            ? fetchIncrementalRows(opts.since)
+            : fetchAllRows();
+        return fetchPromise.then(function(rows){
+            // ── 增量模式快速通道：0 行变化 → 区分"无变化"与"重置窗口" ──
+            if(isIncrementalPull && rows.length === 0){
+                var localEpoch = DB.syncEpoch || 0;
+                if(localEpoch > 0){
+                    // 曾同步过：用 count 确认云端是否真的为空（管理员重置窗口）
+                    return countCloudRows().then(function(cnt){
+                        if(cnt === 0){
+                            console.warn('[V3][增量] 云端行数为 0，判定为重置窗口，跳过本次拉取');
+                            syncLog('WARN', '增量拉取检测到云端为空（重置窗口），本次拉取 aborted', {});
+                            return { aborted:true, total:0, added:0, updated:0, removed:0, rescued:0, basicChanged:false };
+                        }
+                        // 云端非空，只是无新变化 → 正常 noop，不触碰本地数据
+                        return { noop:true, total:0, added:0, updated:0, removed:0, rescued:0, basicChanged:false };
+                    });
+                }
+                return { noop:true, total:0, added:0, updated:0, removed:0, rescued:0, basicChanged:false };
+            }
+            console.log('[V3] 拉取到 ' + rows.length + ' 条行（含墓碑）' + (isIncrementalPull ? ' [增量]' : ' [全量]'));
             // 按 type 分组
             var byType = {};
             rows.forEach(function(r){
@@ -962,7 +1037,7 @@
                     var rid = String(r.id);
                     if(isMutableType){
                         // 业务记录：保留/丢弃决策完全由溯源清洗纯函数决定（便于单元测试）
-                        if(v3ShouldKeepMutableRecord(r, dirtySet, DB.lastSyncTime, !!split.live[rid], !!split.tomb[rid])){
+                        if(v3ShouldKeepMutableRecord(r, dirtySet, DB.lastSyncTime, !!split.live[rid], !!split.tomb[rid], isIncrementalPull)){
                             keptArr.push(r);
                         } else {
                             result.removed++;
@@ -974,13 +1049,16 @@
                         }
                         return;
                     }
-                    // ---- 以下为基础数据（floor/dormitory/student/user）逻辑，保持不变 ----
+                    // ---- 以下为基础数据（floor/dormitory/student/user）逻辑 ----
                     if(split.tomb[rid] && !dirtySet[rid]){
                         pushConflict(type, rid, r, (split.tomb[rid] && split.tomb[rid].data) || null, 'tombstoned');
                         result.removed++;
                         return;
                     }
                     if(!split.live[rid] && !split.tomb[rid] && !dirtySet[rid] && !deletedSet[rid]){
+                        // 【增量拉取安全闸门】增量模式下"不在本批"≠"云端不存在"，
+                        // 直接保留不标脏不丢弃，避免全量基础数据被反复重传
+                        if(isIncrementalPull){ keptArr.push(r); return; }
                         // 【主控设备锁定·防污染】基础数据：非主控设备上云端无记录 = 本地多余/脏数据，直接丢弃
                         if(V3_BASIC_TYPES.indexOf(type) !== -1 && DEVICE_ID !== MASTER_DEVICE_ID){
                             result.removed++;
@@ -1334,11 +1412,24 @@
                 var ds = (DB.dirtyByType && DB.dirtyByType[t]) || {};
                 mutableDirtyCount += Object.keys(ds).length;
             });
+            // ── 拉取模式决策：全量 vs 增量 ──
+            // 全量拉取条件（满足任一即走全量）：
+            //   1) 首次同步（无 lastSyncTime）
+            //   2) 距上次全量拉取超过 24 小时（兜底对账，防止增量漏检累积漂移）
+            //   3) 本地脏数据超过 50 条（大量变更时全量更安全）
+            var FULL_PULL_INTERVAL_MS = 24 * 60 * 60 * 1000;
+            var lastFullPull = DB.lastFullPullTime || 0;
+            var needFullPull = !DB.lastSyncTime
+                || (Date.now() - lastFullPull > FULL_PULL_INTERVAL_MS)
+                || (mutableDirtyCount > 50);
+            var pullOpts = needFullPull
+                ? { full: true }
+                : { full: false, since: DB.lastSyncTime || 0 };
             // 【关键】备份拉取前的 lastSyncTime：loadFromCloud 内部会把它刷新为当前时间，
             // 若不恢复，syncToCloudV3 的"陈旧过滤"（recTime < lastSyncTime）会把用户
             // 刚刚新登记/编辑的记录误判为历史废弃数据而丢弃（数据丢失事故）。
             var lastSyncBeforePull = DB.lastSyncTime;
-            var uploadPromise = loadFromCloud().then(function(pulled){
+            var uploadPromise = loadFromCloud(pullOpts).then(function(pulled){
                 // 恢复拉取前的 lastSyncTime，让 syncToCloudV3 使用正确的陈旧过滤基准
                 DB.lastSyncTime = lastSyncBeforePull;
                 // 拉取失败（返回 null）：跳过本次上传，交由外层重试机制处理，
@@ -1571,10 +1662,10 @@
      * 首次同步时清空本地示例记录。合并后落本地并返回统计信息。
      * @returns {Promise<object|null>} {added, updated, removed, rescued, basicChanged, ...}；失败/未启用返回 null
      */
-    function loadFromCloud() {
+    function loadFromCloud(opts) {
         if (!syncEnabled || !supabaseClient) return Promise.resolve(null);
         // V3 按行存储：表结构已升级时自动切换
-        if(_detectedSchemaVersion === 3) return loadFromCloudV3();
+        if(_detectedSchemaVersion === 3) return loadFromCloudV3(opts);
         return supabaseClient.from('sync_store').select('data').eq('id',1).maybeSingle().then(function(res){
             if (res.error) { console.error('拉取失败:', res.error.message); return null; }
             if (!res.data || res.data.data == null) return null;
@@ -1758,6 +1849,8 @@
                         _applyOfflineUI(false);
                         toast('网络已恢复，正在同步…');
                         ensureSyncMeta();
+                        // 网络恢复是显式同步意图：取消节流队列，避免后续定时器重复触发
+                        cancelPendingSync();
                         // 【强制先拉后推】网络恢复时先拉取云端合并（溯源清洗丢弃废弃数据），
                         // 再上传本地新增数据；拉取失败（如网络再次中断）则跳过上传，等待下次恢复。
                         loadFromCloud().then(function(){
@@ -1771,6 +1864,10 @@
                 // 断网瞬间即把状态点切为红色（无需等待下一次同步尝试），并启动“离线”标签延时
                 window.addEventListener('offline', function(){
                     if(syncEnabled&&supabaseClient&&DB){ updateSyncStatus('unsynced'); }
+                });
+                // 页面卸载前冲刷待执行的节流同步（尽量保证关闭前数据已上行）
+                window.addEventListener('beforeunload', function(){
+                    try { flushPendingSync(); } catch(e){}
                 });
                 // V3：检测表结构版本 + 旧数据迁移
                 return detectV3Schema().then(function(ver){
@@ -1897,15 +1994,57 @@
         }
         });
     }
+    // ==================== 同步节流（debounce）====================
+    // 背景：saveDB() 在 app.js 中被调用 50+ 次（每次登记/编辑/导入都触发），
+    //   若每次都立即 syncWithRetry()，会产生大量 Supabase API 调用 → 大量 API 日志
+    //   → 打开 Supabase Logs 页面时扫描成本飙升（Log Query 计费）。
+    // 策略：本地落盘（saveDBToLocal）始终立即执行（数据安全不可延迟）；
+    //   云端同步（syncWithRetry）延迟 SYNC_DEBOUNCE_MS 毫秒，窗口内的多次 saveDB
+    //   合并为 1 次同步。manualSync / online 事件等显式触发走独立路径，不受节流。
+    var SYNC_DEBOUNCE_MS = 3000;   // 节流窗口：3 秒内的连续 saveDB 合并为 1 次同步
+    var _syncDebounceTimer = null; // 待执行同步的定时器句柄
+    var _syncPending = false;      // 是否有待执行的同步（窗口内至少 1 次 saveDB）
+    /**
+     * 调度一次延迟同步。多次调用在窗口内只产生 1 次实际同步。
+     * 本函数只负责"登记意图 + 启动定时器"，不直接执行同步。
+     */
+    function scheduleSync(){
+        if(!syncEnabled || !supabaseClient) return;
+        _syncPending = true;
+        if(_syncDebounceTimer) return; // 已有定时器在等待，无需重复设置
+        _syncDebounceTimer = setTimeout(function(){
+            _syncDebounceTimer = null;
+            flushPendingSync();
+        }, SYNC_DEBOUNCE_MS);
+    }
+    /**
+     * 立即执行待同步（若有）。用于页面卸载、手动同步等不能等待的场景。
+     * 安全：无待同步时直接返回，不产生多余调用。
+     */
+    function flushPendingSync(){
+        if(_syncDebounceTimer){ clearTimeout(_syncDebounceTimer); _syncDebounceTimer = null; }
+        if(!_syncPending) return;
+        _syncPending = false;
+        if(syncEnabled && supabaseClient) syncWithRetry();
+    }
+    /**
+     * 取消待执行的同步（不执行）。用于 manualSync 启动前，
+     * 避免节流定时器与手动同步并发产生重复拉取。
+     */
+    function cancelPendingSync(){
+        if(_syncDebounceTimer){ clearTimeout(_syncDebounceTimer); _syncDebounceTimer = null; }
+        _syncPending = false;
+    }
     /**
      * 统一保存入口：所有业务数据修改后都应调用本函数。
-     * 动作：先同步落本地（saveDBToLocal），再触发云端增量上行（syncWithRetry）。
+     * 动作：先同步落本地（saveDBToLocal，立即执行，不可延迟），
+     *   再经 scheduleSync 调度云端同步（3 秒节流，窗口内多次合并）。
      * 与 saveDBToLocal 的区别：本函数是"落库 + 同步"的完整保存，
      * saveDBToLocal 只写本地（同步流程内部使用，避免回环）。
      */
     function saveDB() {
         saveDBToLocal();
-        if (syncEnabled && supabaseClient) syncWithRetry();
+        scheduleSync();
     }
     /**
      * 手动同步（顶栏 🔄 按钮）：先拉取后推送，并给出完整 toast 反馈。
@@ -1924,6 +2063,8 @@
      * @returns {Promise<boolean>}
      */
     function manualSync(){
+        // 手动同步是显式意图：先取消节流队列中待执行的同步，避免与手动同步并发
+        cancelPendingSync();
         return checkLatestVersion().then(function(verOk){
             if(!verOk){
                 toast('⚠️ 系统已更新，当前版本过旧，为保护数据安全已阻断同步。即将强制刷新页面，请稍后重试。', 'error');
